@@ -486,14 +486,14 @@ where
             );
         });
 
-        if packet.entity_id == 831749 {
-            panic!("{:#?}", packet);
-        }
+        // if packet.entity_id == 831749 {
+        //     panic!("{:#?}", packet);
+        // }
 
         match entity_type {
             EntityType::Vehicle => {
                 let mut props = VehicleProps::default();
-                props.update_from_args(&packet.props);
+                props.update_from_args(&packet.props, self.version.clone());
 
                 let player = self.player_entities.get(&packet.entity_id);
 
@@ -606,7 +606,7 @@ pub enum ChatChannel {
     Team,
 }
 
-fn parse_ship_config<'a>(blob: &'a [u8]) -> IResult<&'a [u8], ShipConfig> {
+fn parse_ship_config<'a>(blob: &'a [u8], version: Version) -> IResult<&'a [u8], ShipConfig> {
     let i = blob;
     let (i, _unk) = le_u32(i)?;
 
@@ -615,6 +615,18 @@ fn parse_ship_config<'a>(blob: &'a [u8]) -> IResult<&'a [u8], ShipConfig> {
 
     let (i, unit_count) = le_u32(i)?;
     let (i, units) = count(le_u32, unit_count as usize)(i)?;
+
+    let i = if version.is_at_least(&Version {
+        major: 13,
+        minor: 2,
+        patch: 0,
+        build: 0,
+    }) {
+        let (i, _unk) = le_u32(i)?;
+        i
+    } else {
+        i
+    };
 
     let (i, modernization_count) = le_u32(i)?;
     let (i, modernization) = count(le_u32, modernization_count as usize)(i)?;
@@ -674,14 +686,14 @@ pub struct CrewModifiersCompactParams {
 }
 
 trait UpdateFromReplayArgs {
-    fn update_by_name(&mut self, name: &str, value: &ArgValue<'_>) {
+    fn update_by_name(&mut self, name: &str, value: &ArgValue<'_>, version: Version) {
         // This is far from optimal, but is an easy solution for now
         let mut dict = HashMap::with_capacity(1);
         dict.insert(name, value.clone());
-        self.update_from_args(&dict);
+        self.update_from_args(&dict, version);
     }
 
-    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>);
+    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version);
 }
 
 macro_rules! set_arg_value {
@@ -785,7 +797,7 @@ macro_rules! arg_value_to_type {
 }
 
 impl UpdateFromReplayArgs for CrewModifiersCompactParams {
-    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>) {
+    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version) {
         const PARAMS_ID_KEY: &'static str = "paramsId";
         const IS_IN_ADAPTION_KEY: &'static str = "isInAdaption";
         const LEARNED_SKILLS_KEY: &'static str = "learnedSkills";
@@ -1108,13 +1120,13 @@ impl VehicleProps {
 }
 
 impl UpdateFromReplayArgs for VehicleProps {
-    fn update_by_name(&mut self, name: &str, value: &ArgValue<'_>) {
+    fn update_by_name(&mut self, name: &str, value: &ArgValue<'_>, version: Version) {
         // This is far from optimal, but is an easy solution for now
         let mut dict = HashMap::with_capacity(1);
         dict.insert(name, value.clone());
-        self.update_from_args(&dict);
+        self.update_from_args(&dict, version);
     }
-    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>) {
+    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version) {
         const IGNORE_MAP_BORDERS_KEY: &str = "ignoreMapBorders";
         const AIR_DEFENSE_DISPERSION_RADIUS_KEY: &str = "airDefenseDispRadius";
         const DEATH_SETTINGS_KEY: &str = "deathSettings";
@@ -1215,6 +1227,7 @@ impl UpdateFromReplayArgs for VehicleProps {
         if args.contains_key(CREW_MODIFIERS_COMPACT_PARAMS_KEY) {
             self.crew_modifiers_compact_params.update_from_args(
                 arg_value_to_type!(args, CREW_MODIFIERS_COMPACT_PARAMS_KEY, HashMap<(), ()>),
+                version,
             );
         }
 
@@ -1300,7 +1313,7 @@ impl UpdateFromReplayArgs for VehicleProps {
 
         if args.contains_key(SHIP_CONFIG_KEY) {
             let (_remainder, ship_config) =
-                parse_ship_config(arg_value_to_type!(args, SHIP_CONFIG_KEY, &[u8]))
+                parse_ship_config(arg_value_to_type!(args, SHIP_CONFIG_KEY, &[u8]), version)
                     .expect("failed to parse ship config");
 
             self.ship_config = ship_config;
@@ -1547,7 +1560,11 @@ where
                 if let Some(entity) = self.entities_by_id.get(&prop.entity_id) {
                     if let Some(vehicle) = entity.vehicle_ref() {
                         let mut vehicle = RefCell::borrow_mut(&vehicle);
-                        vehicle.props.update_by_name(prop.property, &prop.value);
+                        vehicle.props.update_by_name(
+                            prop.property,
+                            &prop.value,
+                            self.version.clone(),
+                        );
                     }
                 }
             }
