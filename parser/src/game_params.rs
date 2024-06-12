@@ -218,7 +218,7 @@ impl Vehicle {
 
 #[derive(Serialize, Deserialize, Clone, Builder, Debug)]
 pub struct AbilityCategory {
-    special_sound_id: String,
+    special_sound_id: Option<String>,
     consumable_type: String,
     description_id: String,
     group: String,
