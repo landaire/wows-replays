@@ -39,7 +39,7 @@ use crate::{
     IResult, Rc, ReplayMeta,
 };
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct ShipConfig {
     abilities: Vec<u32>,
     hull: u32,
@@ -70,7 +70,7 @@ impl ShipConfig {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Skills {
     aircraft_carrier: Vec<u8>,
     battleship: Vec<u8>,
@@ -106,7 +106,7 @@ impl Skills {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct ShipLoadout {
     config: Option<ShipConfig>,
     skills: Option<Skills>,
