@@ -1,7 +1,7 @@
 [package]
 name = "wows-replays"
 version = "0.1.0"
-authors = ["Lane Kolbly <lane@rscheme.org>"]
+authors = ["Lane Kolbly <lane@rscheme.org>, landaire"]
 edition = "2018"
 publish = false
 
