@@ -1,5 +1,5 @@
 [package]
-name = "wows-replays"
+name = "wows_replays"
 version = "0.1.0"
 authors = ["Lane Kolbly <lane@rscheme.org>, landaire"]
 edition = "2021"
