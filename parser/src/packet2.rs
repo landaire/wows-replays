@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 
 use crate::error::*;
-use crate::rpc::entitydefs::*;
-use crate::rpc::typedefs::ArgValue;
+use wowsunpack::rpc::entitydefs::*;
+use wowsunpack::rpc::typedefs::ArgValue;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Vec3 {
@@ -86,7 +86,7 @@ pub struct EntityCreatePacket<'argtype> {
     pub position: Vec3,
     pub rotation: Rot3,
     pub state_length: u32,
-    pub props: HashMap<&'argtype str, crate::rpc::typedefs::ArgValue<'argtype>>,
+    pub props: HashMap<&'argtype str, ArgValue<'argtype>>,
 }
 
 /// Note that this packet frequently appears twice - it appears that it
@@ -111,7 +111,7 @@ pub struct InvalidPacket<'a> {
 pub struct BasePlayerCreatePacket<'argtype> {
     pub entity_id: u32,
     pub entity_type: &'argtype str,
-    pub props: HashMap<&'argtype str, crate::rpc::typedefs::ArgValue<'argtype>>,
+    pub props: HashMap<&'argtype str, ArgValue<'argtype>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,7 +123,7 @@ pub struct CellPlayerCreatePacket<'argtype> {
     pub vehicle_id: u32,
     pub position: Vec3,
     pub rotation: Rot3,
-    pub props: HashMap<&'argtype str, crate::rpc::typedefs::ArgValue<'argtype>>,
+    pub props: HashMap<&'argtype str, ArgValue<'argtype>>,
 }
 
 #[derive(Debug, Serialize)]

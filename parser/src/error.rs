@@ -1,4 +1,5 @@
 use thiserror::Error;
+use wowsunpack::data::Version;
 
 #[derive(Debug)]
 pub struct Error {
@@ -54,10 +55,7 @@ pub enum ErrorKind {
         payload: Vec<u8>,
     },
     #[error("Data file not found")]
-    DatafileNotFound {
-        version: crate::version::Version,
-        path: String,
-    },
+    DatafileNotFound { version: Version, path: String },
     #[error("Decoder ring failure")]
     DecoderRingFailure(String),
     #[error("Unable to process packet")]

@@ -1,3 +1,5 @@
+use wowsunpack::data::Version;
+
 use crate::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
 use crate::analyzer::{Analyzer, AnalyzerBuilder};
 use crate::packet2::{Entity, Packet};
@@ -16,7 +18,7 @@ impl ChatLoggerBuilder {
 
 impl AnalyzerMutBuilder for ChatLoggerBuilder {
     fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
-        let version = crate::version::Version::from_client_exe(&meta.clientVersionFromExe);
+        let version = Version::from_client_exe(&meta.clientVersionFromExe);
         Box::new(ChatLogger {
             usernames: HashMap::new(),
             version,
@@ -26,7 +28,7 @@ impl AnalyzerMutBuilder for ChatLoggerBuilder {
 
 pub struct ChatLogger {
     usernames: HashMap<i32, String>,
-    version: crate::version::Version,
+    version: Version,
 }
 
 impl AnalyzerMut for ChatLogger {

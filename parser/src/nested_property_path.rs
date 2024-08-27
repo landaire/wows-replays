@@ -1,6 +1,6 @@
-use crate::rpc::typedefs::{ArgType, ArgValue};
 use bitreader::BitReader;
 use serde::Serialize;
+use wowsunpack::rpc::typedefs::{ArgType, ArgValue};
 
 #[derive(Debug, Serialize)]
 pub enum PropertyNestLevel<'argtype> {
@@ -180,10 +180,7 @@ pub fn get_nested_prop_path_helper<'argtype>(
     }
     //println!("{} {} {}", cont, prop_idx, cont2);
     match (t, prop_value) {
-        (
-            crate::rpc::typedefs::ArgType::FixedDict((_, propspec)),
-            ArgValue::FixedDict(propvalue),
-        ) => {
+        (ArgType::FixedDict((_, propspec)), ArgValue::FixedDict(propvalue)) => {
             let prop_idx = reader
                 .read_u8(propspec.len().next_power_of_two().trailing_zeros() as u8)
                 .unwrap();
@@ -202,10 +199,7 @@ pub fn get_nested_prop_path_helper<'argtype>(
             );
             return nesting;
         }
-        (
-            crate::rpc::typedefs::ArgType::FixedDict((_, propspec)),
-            ArgValue::NullableFixedDict(Some(propvalue)),
-        ) => {
+        (ArgType::FixedDict((_, propspec)), ArgValue::NullableFixedDict(Some(propvalue))) => {
             let prop_idx = reader
                 .read_u8(propspec.len().next_power_of_two().trailing_zeros() as u8)
                 .unwrap();
@@ -224,7 +218,7 @@ pub fn get_nested_prop_path_helper<'argtype>(
             );
             return nesting;
         }
-        (crate::rpc::typedefs::ArgType::Array((_size, element_type)), ArgValue::Array(arr)) => {
+        (ArgType::Array((_size, element_type)), ArgValue::Array(arr)) => {
             let idx = reader
                 .read_u8(arr.len().next_power_of_two().trailing_zeros() as u8)
                 .unwrap();

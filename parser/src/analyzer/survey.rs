@@ -1,3 +1,5 @@
+use wowsunpack::data::Version;
+
 use crate::analyzer::*;
 use crate::packet2::{Entity, Packet};
 use std::cell::{RefCell, RefMut};
@@ -40,7 +42,7 @@ impl SurveyBuilder {
 
 impl AnalyzerMutBuilder for SurveyBuilder {
     fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
-        let version = crate::version::Version::from_client_exe(&meta.clientVersionFromExe);
+        let version = Version::from_client_exe(&meta.clientVersionFromExe);
         {
             let mut stats: RefMut<_> = self.stats.borrow_mut();
             stats.date_time = meta.dateTime.clone();
@@ -58,7 +60,7 @@ struct Survey {
     skip_decoder: bool,
     decoder: Box<dyn AnalyzerMut>,
     stats: Rc<RefCell<SurveyStats>>,
-    version: crate::version::Version,
+    version: Version,
 }
 
 impl AnalyzerMut for Survey {

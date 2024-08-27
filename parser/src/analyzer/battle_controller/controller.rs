@@ -16,6 +16,11 @@ use strum::ParseError;
 use strum_macros::EnumString;
 use tracing::{debug, event, span, trace, warn, Level};
 use variantly::Variantly;
+use wowsunpack::{
+    data::{ResourceLoader, Version},
+    game_params::types::{CrewSkill, Param, ParamType, Species},
+    rpc::typedefs::ArgValue,
+};
 
 static TIME_UNTIL_GAME_START: Duration = Duration::from_secs(30);
 
@@ -28,14 +33,10 @@ use crate::{
         },
         Analyzer,
     },
-    game_params::{CrewSkill, GameParamProvider, Param, ParamType, Vehicle},
     packet2::{
         EntityCreatePacket, EntityMethodPacket, EntityPropertyPacket, Packet, PacketProcessor,
         PacketProcessorMut, PacketType, PacketTypeKind,
     },
-    resource_loader::{self, ResourceLoader},
-    rpc::{entitydefs::EntitySpec, typedefs::ArgValue},
-    version::Version,
     IResult, Rc, ReplayMeta,
 };
 
@@ -381,7 +382,7 @@ where
             property_callbacks: Default::default(),
             event_handler: None,
             game_chat: Default::default(),
-            version: crate::version::Version::from_client_exe(&game_meta.clientVersionFromExe),
+            version: Version::from_client_exe(&game_meta.clientVersionFromExe),
             damage_dealt: Default::default(),
             frags: Default::default(),
         }
@@ -1416,11 +1417,11 @@ impl VehicleEntity {
 
         let skills = &self.props.crew_modifiers_compact_params.learned_skills;
         let skills_for_species = match vehicle_species {
-            crate::game_params::Species::AirCarrier => skills.aircraft_carrier.as_slice(),
-            crate::game_params::Species::Battleship => skills.battleship.as_slice(),
-            crate::game_params::Species::Cruiser => skills.cruiser.as_slice(),
-            crate::game_params::Species::Destroyer => skills.destroyer.as_slice(),
-            crate::game_params::Species::Submarine => skills.submarine.as_slice(),
+            Species::AirCarrier => skills.aircraft_carrier.as_slice(),
+            Species::Battleship => skills.battleship.as_slice(),
+            Species::Cruiser => skills.cruiser.as_slice(),
+            Species::Destroyer => skills.destroyer.as_slice(),
+            Species::Submarine => skills.submarine.as_slice(),
             other => {
                 panic!("Unexpected vehicle species: {:?}", other);
             }
@@ -1455,11 +1456,11 @@ impl VehicleEntity {
 
         let skills = &self.props.crew_modifiers_compact_params.learned_skills;
         match vehicle_species {
-            crate::game_params::Species::AirCarrier => skills.aircraft_carrier.as_slice(),
-            crate::game_params::Species::Battleship => skills.battleship.as_slice(),
-            crate::game_params::Species::Cruiser => skills.cruiser.as_slice(),
-            crate::game_params::Species::Destroyer => skills.destroyer.as_slice(),
-            crate::game_params::Species::Submarine => skills.submarine.as_slice(),
+            Species::AirCarrier => skills.aircraft_carrier.as_slice(),
+            Species::Battleship => skills.battleship.as_slice(),
+            Species::Cruiser => skills.cruiser.as_slice(),
+            Species::Destroyer => skills.destroyer.as_slice(),
+            Species::Submarine => skills.submarine.as_slice(),
             other => {
                 panic!("Unexpected vehicle species: {:?}", other);
             }

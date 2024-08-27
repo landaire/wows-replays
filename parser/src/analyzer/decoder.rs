@@ -1,6 +1,6 @@
 use crate::analyzer::{Analyzer, AnalyzerBuilder};
 use crate::packet2::{Entity, EntityMethodPacket, Packet, PacketType};
-use crate::{unpack_rpc_args, ErrorKind, IResult};
+use crate::{ErrorKind, IResult};
 use kinded::Kinded;
 use modular_bitfield::prelude::*;
 use nom::number::complete::{le_f32, le_i32, le_u16, le_u32, le_u64, le_u8};
@@ -9,6 +9,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::FromIterator;
+use wowsunpack::data::Version;
+use wowsunpack::rpc::typedefs::ArgValue;
+use wowsunpack::unpack_rpc_args;
 
 use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
 
@@ -30,7 +33,7 @@ impl DecoderBuilder {
 
 impl AnalyzerMutBuilder for DecoderBuilder {
     fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
-        let version = crate::version::Version::from_client_exe(&meta.clientVersionFromExe);
+        let version = Version::from_client_exe(&meta.clientVersionFromExe);
         let mut decoder = Decoder {
             silent: self.silent,
             output: self.path.as_ref().map(|path| {
@@ -345,7 +348,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         /// A list of the updates to make to the minimap
         updates: Vec<MinimapUpdate>,
         /// Unknown
-        arg1: &'rawpacket Vec<crate::rpc::typedefs::ArgValue<'argtype>>,
+        arg1: &'rawpacket Vec<ArgValue<'argtype>>,
     },
     /// Indicates a property update. Note that many properties contain a hierarchy of properties,
     /// for example the "state" property on the battle manager contains nested dictionaries and
@@ -591,7 +594,7 @@ where
     'rawpacket: 'argtype,
 {
     fn from(
-        version: &crate::version::Version,
+        version: &Version,
         audit: bool,
         payload: &'rawpacket crate::packet2::PacketType<'replay, 'argtype>,
         packet_type: u32,
@@ -712,7 +715,7 @@ where
     }
 
     fn from_entity_method(
-        version: &crate::version::Version,
+        version: &Version,
         audit: bool,
         packet: &'rawpacket EntityMethodPacket<'argtype>,
     ) -> Self {
@@ -721,15 +724,15 @@ where
         let args = &packet.args;
         if *method == "onChatMessage" {
             let target = match &args[1] {
-                crate::rpc::typedefs::ArgValue::String(s) => s,
+                ArgValue::String(s) => s,
                 _ => panic!("foo"),
             };
             let message = match &args[2] {
-                crate::rpc::typedefs::ArgValue::String(s) => s,
+                ArgValue::String(s) => s,
                 _ => panic!("foo"),
             };
             let sender_id = match &args[0] {
-                crate::rpc::typedefs::ArgValue::Int32(i) => i,
+                ArgValue::Int32(i) => i,
                 _ => panic!("foo"),
             };
             let mut extra_data = None;
@@ -815,7 +818,7 @@ where
             }
         } else if *method == "receive_CommonCMD" {
             let (sender_id, message, is_global) =
-                if version.is_at_least(&crate::version::Version::from_client_exe("0,12,8,0")) {
+                if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
                     let sender = *args[0]
                         .int_32_ref()
                         .expect("receive_CommonCMD: sender is not an i32");
@@ -881,7 +884,7 @@ where
 
             let value = pickled::de::value_from_slice(
                 match &args[2] {
-                    crate::rpc::typedefs::ArgValue::Blob(x) => x,
+                    ArgValue::Blob(x) => x,
                     _ => panic!("foo"),
                 },
                 pickled::de::DeOptions::new(),
@@ -928,7 +931,7 @@ where
 
             let value = pickled::de::value_from_slice(
                 match &args[3] {
-                    crate::rpc::typedefs::ArgValue::Blob(x) => x,
+                    ArgValue::Blob(x) => x,
                     _ => panic!("foo"),
                 },
                 pickled::de::DeOptions::new(),
@@ -952,90 +955,85 @@ where
                         }
                     }
 
-                    let keys: HashMap<&'static str, i64> = if version
-                        .is_at_least(&crate::version::Version::from_client_exe("0,12,8,0"))
-                    {
-                        let mut h = HashMap::new();
-                        h.insert("accountDBID", 0);
-                        h.insert("antiAbuseEnabled", 1);
-                        h.insert("avatarId", 2);
-                        h.insert("camouflageInfo", 3);
-                        h.insert("clanColor", 4);
-                        h.insert("clanID", 5);
-                        h.insert("clanTag", 6);
-                        h.insert("crewParams", 7);
-                        h.insert("dogTag", 8);
-                        h.insert("fragsCount", 9);
-                        h.insert("friendlyFireEnabled", 10);
-                        h.insert("id", 11);
-                        h.insert("invitationsEnabled", 12);
-                        h.insert("isAbuser", 13);
-                        h.insert("isAlive", 14);
-                        h.insert("isBot", 15);
-                        h.insert("isClientLoaded", 16);
-                        h.insert("isConnected", 17);
-                        h.insert("isHidden", 18);
-                        h.insert("isLeaver", 19);
-                        h.insert("isPreBattleOwner", 20);
-                        h.insert("isTShooter", 21);
-                        h.insert("keyTargetMarkers", 22);
-                        h.insert("killedBuildingsCount", 23);
-                        h.insert("maxHealth", 24);
-                        h.insert("name", 25);
-                        h.insert("playerMode", 26);
-                        h.insert("preBattleIdOnStart", 27);
-                        h.insert("preBattleSign", 28);
-                        h.insert("prebattleId", 29);
-                        h.insert("realm", 30);
-                        h.insert("shipComponents", 31);
-                        h.insert("shipConfigDump", 32);
-                        h.insert("shipId", 33);
-                        h.insert("shipParamsId", 34);
-                        h.insert("skinId", 35);
-                        h.insert("teamId", 36);
-                        h.insert("ttkStatus", 37);
-                        h
-                    } else if version
-                        .is_at_least(&crate::version::Version::from_client_exe("0,10,9,0"))
-                    {
-                        // 0.10.9 inserted things at 0x1 and 0x1F
-                        let mut h = HashMap::new();
-                        h.insert("avatarId", 0x2);
-                        h.insert("clanTag", 0x6);
-                        h.insert("maxHealth", 0x17);
-                        h.insert("name", 0x18);
-                        h.insert("shipId", 0x20);
-                        h.insert("shipParamsId", 0x21);
-                        h.insert("skinId", 0x22);
-                        h.insert("teamId", 0x23);
-                        h
-                    } else if version
-                        .is_at_least(&crate::version::Version::from_client_exe("0,10,7,0"))
-                    {
-                        // 0.10.7
-                        let mut h = HashMap::new();
-                        h.insert("avatarId", 0x1);
-                        h.insert("clanTag", 0x5);
-                        h.insert("maxHealth", 0x16);
-                        h.insert("name", 0x17);
-                        h.insert("shipId", 0x1e);
-                        h.insert("shipParamsId", 0x1f);
-                        h.insert("skinId", 0x20);
-                        h.insert("teamId", 0x21);
-                        h
-                    } else {
-                        // 0.10.6 and earlier
-                        let mut h = HashMap::new();
-                        h.insert("avatarId", 0x1);
-                        h.insert("clanTag", 0x5);
-                        h.insert("maxHealth", 0x15);
-                        h.insert("name", 0x16);
-                        h.insert("shipId", 0x1d);
-                        h.insert("shipParamsId", 0x1e);
-                        h.insert("skinId", 0x1f);
-                        h.insert("teamId", 0x20);
-                        h
-                    };
+                    let keys: HashMap<&'static str, i64> =
+                        if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
+                            let mut h = HashMap::new();
+                            h.insert("accountDBID", 0);
+                            h.insert("antiAbuseEnabled", 1);
+                            h.insert("avatarId", 2);
+                            h.insert("camouflageInfo", 3);
+                            h.insert("clanColor", 4);
+                            h.insert("clanID", 5);
+                            h.insert("clanTag", 6);
+                            h.insert("crewParams", 7);
+                            h.insert("dogTag", 8);
+                            h.insert("fragsCount", 9);
+                            h.insert("friendlyFireEnabled", 10);
+                            h.insert("id", 11);
+                            h.insert("invitationsEnabled", 12);
+                            h.insert("isAbuser", 13);
+                            h.insert("isAlive", 14);
+                            h.insert("isBot", 15);
+                            h.insert("isClientLoaded", 16);
+                            h.insert("isConnected", 17);
+                            h.insert("isHidden", 18);
+                            h.insert("isLeaver", 19);
+                            h.insert("isPreBattleOwner", 20);
+                            h.insert("isTShooter", 21);
+                            h.insert("keyTargetMarkers", 22);
+                            h.insert("killedBuildingsCount", 23);
+                            h.insert("maxHealth", 24);
+                            h.insert("name", 25);
+                            h.insert("playerMode", 26);
+                            h.insert("preBattleIdOnStart", 27);
+                            h.insert("preBattleSign", 28);
+                            h.insert("prebattleId", 29);
+                            h.insert("realm", 30);
+                            h.insert("shipComponents", 31);
+                            h.insert("shipConfigDump", 32);
+                            h.insert("shipId", 33);
+                            h.insert("shipParamsId", 34);
+                            h.insert("skinId", 35);
+                            h.insert("teamId", 36);
+                            h.insert("ttkStatus", 37);
+                            h
+                        } else if version.is_at_least(&Version::from_client_exe("0,10,9,0")) {
+                            // 0.10.9 inserted things at 0x1 and 0x1F
+                            let mut h = HashMap::new();
+                            h.insert("avatarId", 0x2);
+                            h.insert("clanTag", 0x6);
+                            h.insert("maxHealth", 0x17);
+                            h.insert("name", 0x18);
+                            h.insert("shipId", 0x20);
+                            h.insert("shipParamsId", 0x21);
+                            h.insert("skinId", 0x22);
+                            h.insert("teamId", 0x23);
+                            h
+                        } else if version.is_at_least(&Version::from_client_exe("0,10,7,0")) {
+                            // 0.10.7
+                            let mut h = HashMap::new();
+                            h.insert("avatarId", 0x1);
+                            h.insert("clanTag", 0x5);
+                            h.insert("maxHealth", 0x16);
+                            h.insert("name", 0x17);
+                            h.insert("shipId", 0x1e);
+                            h.insert("shipParamsId", 0x1f);
+                            h.insert("skinId", 0x20);
+                            h.insert("teamId", 0x21);
+                            h
+                        } else {
+                            // 0.10.6 and earlier
+                            let mut h = HashMap::new();
+                            h.insert("avatarId", 0x1);
+                            h.insert("clanTag", 0x5);
+                            h.insert("maxHealth", 0x15);
+                            h.insert("name", 0x16);
+                            h.insert("shipId", 0x1d);
+                            h.insert("shipParamsId", 0x1e);
+                            h.insert("skinId", 0x1f);
+                            h.insert("teamId", 0x20);
+                            h
+                        };
 
                     /*
                     1: Player ID
@@ -1162,7 +1160,7 @@ where
         } else if *method == "receiveDamageStat" {
             let value = pickled::de::value_from_slice(
                 match &args[0] {
-                    crate::rpc::typedefs::ArgValue::Blob(x) => x,
+                    ArgValue::Blob(x) => x,
                     _ => panic!("foo"),
                 },
                 pickled::de::DeOptions::new(),
@@ -1295,11 +1293,11 @@ where
         } else if *method == "receiveDamagesOnShip" {
             let mut v = vec![];
             for elem in match &args[0] {
-                crate::rpc::typedefs::ArgValue::Array(a) => a,
+                ArgValue::Array(a) => a,
                 _ => panic!(),
             } {
                 let map = match elem {
-                    crate::rpc::typedefs::ArgValue::FixedDict(m) => m,
+                    ArgValue::FixedDict(m) => m,
                     _ => panic!(),
                 };
                 v.push(DamageReceived {
@@ -1316,13 +1314,13 @@ where
             DecodedPacketPayload::CheckPing(ping)
         } else if *method == "updateMinimapVisionInfo" {
             let v = match &args[0] {
-                crate::rpc::typedefs::ArgValue::Array(a) => a,
+                ArgValue::Array(a) => a,
                 _ => panic!(),
             };
             let mut updates = vec![];
             for minimap_update in v.iter() {
                 let minimap_update = match minimap_update {
-                    crate::rpc::typedefs::ArgValue::FixedDict(m) => m,
+                    ArgValue::FixedDict(m) => m,
                     _ => panic!(),
                 };
                 let vehicle_id = minimap_update.get("vehicleID").unwrap();
@@ -1340,7 +1338,7 @@ where
 
                 updates.push(MinimapUpdate {
                     entity_id: match vehicle_id {
-                        crate::rpc::typedefs::ArgValue::Uint32(u) => *u as i32,
+                        ArgValue::Uint32(u) => *u as i32,
                         _ => panic!(),
                     },
                     x,
@@ -1352,7 +1350,7 @@ where
             }
 
             let args1 = match &args[1] {
-                crate::rpc::typedefs::ArgValue::Array(a) => a,
+                ArgValue::Array(a) => a,
                 _ => panic!(),
             };
 
@@ -1362,7 +1360,7 @@ where
             }
         } else if *method == "onBattleEnd" {
             let (winning_team, unknown) =
-                if version.is_at_least(&crate::version::Version::from_client_exe("0,12,8,0")) {
+                if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
                     (None, None)
                 } else {
                     let (winning_team, unknown) = unpack_rpc_args!(args, i8, u8);
@@ -1424,11 +1422,7 @@ where
     'rawpacket: 'replay,
     'rawpacket: 'argtype,
 {
-    pub fn from(
-        version: &crate::version::Version,
-        audit: bool,
-        packet: &'rawpacket Packet<'_, '_>,
-    ) -> Self {
+    pub fn from(version: &Version, audit: bool, packet: &'rawpacket Packet<'_, '_>) -> Self {
         let decoded = Self {
             clock: packet.clock,
             packet_type: packet.packet_type,
@@ -1446,7 +1440,7 @@ where
 struct Decoder {
     silent: bool,
     output: Option<Box<dyn std::io::Write>>,
-    version: crate::version::Version,
+    version: Version,
 }
 
 impl Decoder {

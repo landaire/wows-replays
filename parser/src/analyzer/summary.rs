@@ -1,3 +1,5 @@
+use wowsunpack::rpc::typedefs::ArgValue;
+
 use crate::analyzer::*;
 use crate::packet2::{Entity, EntityMethodPacket, Packet, PacketType};
 use std::collections::HashMap;
@@ -88,7 +90,7 @@ impl AnalyzerMut for Summary {
             } => {
                 if *method == "onRibbon" {
                     let ribbon = match &args[0] {
-                        crate::rpc::typedefs::ArgValue::Int8(ribbon) => ribbon,
+                        ArgValue::Int8(ribbon) => ribbon,
                         _ => panic!("foo"),
                     };
                     let ribbon = match ribbon {
@@ -126,7 +128,7 @@ impl AnalyzerMut for Summary {
                 } else if *method == "receiveDamageStat" {
                     let value = pickled::de::value_from_slice(
                         match &args[0] {
-                            crate::rpc::typedefs::ArgValue::Blob(x) => x,
+                            ArgValue::Blob(x) => x,
                             _ => panic!("foo"),
                         },
                         pickled::de::DeOptions::new(),

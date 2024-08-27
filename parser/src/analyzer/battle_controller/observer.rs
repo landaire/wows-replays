@@ -1,4 +1,6 @@
-use crate::{analyzer::decoder::DecodedPacket, resource_loader::ResourceLoader};
+use wowsunpack::data::ResourceLoader;
+
+use crate::analyzer::decoder::DecodedPacket;
 
 use super::BattleController;
 
