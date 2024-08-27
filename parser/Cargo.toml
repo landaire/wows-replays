@@ -2,8 +2,7 @@
 name = "wows-replays"
 version = "0.1.0"
 authors = ["Lane Kolbly <lane@rscheme.org>, landaire"]
-edition = "2018"
-publish = false
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
