@@ -294,6 +294,7 @@ pub struct BattleReport {
     match_group: String,
     player_entities: Vec<Rc<VehicleEntity>>,
     game_chat: Vec<GameMessage>,
+    battle_results: Option<String>,
 }
 
 impl BattleReport {
@@ -328,6 +329,10 @@ impl BattleReport {
     pub fn game_type(&self) -> &str {
         self.game_type.as_ref()
     }
+
+    pub fn battle_results(&self) -> Option<&str> {
+        self.battle_results.as_deref()
+    }
 }
 
 type Id = u32;
@@ -350,6 +355,7 @@ pub struct BattleController<'res, 'replay, G> {
     event_handler: Option<Rc<dyn EventHandler>>,
     game_chat: Vec<GameMessage>,
     version: Version,
+    battle_results: Option<String>,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
@@ -385,6 +391,7 @@ where
             version: Version::from_client_exe(&game_meta.clientVersionFromExe),
             damage_dealt: Default::default(),
             frags: Default::default(),
+            battle_results: Default::default(),
         }
     }
 
@@ -517,6 +524,7 @@ where
                     captain,
                     damage: 0.0,
                     death_info: None,
+                    results_info: None,
                 }));
 
                 self.entities_by_id
@@ -569,13 +577,33 @@ where
             }
         });
 
+        let parsed_battle_results = self
+            .battle_results
+            .as_ref()
+            .and_then(|results| serde_json::Value::from_str(results.as_str()).ok());
+
         let player_entity_ids: Vec<_> = self.player_entities.keys().cloned().collect();
         let player_entities: Vec<Rc<VehicleEntity>> = self
             .entities_by_id
             .iter()
             .filter_map(|(entity_id, entity)| {
                 if player_entity_ids.contains(entity_id) {
-                    let vehicle: VehicleEntity = RefCell::borrow(entity.vehicle_ref()?).clone();
+                    let mut vehicle: VehicleEntity = RefCell::borrow(entity.vehicle_ref()?).clone();
+                    if let Some(battle_results) = parsed_battle_results
+                        .as_ref()
+                        .and_then(|results| results.as_object())
+                    {
+                        vehicle.results_info =
+                            battle_results.get("playersPublicInfo").and_then(|infos| {
+                                infos.as_object().and_then(|infos| {
+                                    if let Some(player_info) = vehicle.player.as_ref() {
+                                        infos.get(player_info.db_id.to_string().as_str()).cloned()
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                    }
                     Some(Rc::new(vehicle))
                 } else {
                     None
@@ -596,7 +624,12 @@ where
             game_type: self.game_type(),
             player_entities,
             game_chat: self.game_chat,
+            battle_results: self.battle_results,
         }
+    }
+
+    pub fn battle_results(&self) -> Option<&String> {
+        self.battle_results.as_ref()
     }
 }
 
@@ -1387,6 +1420,7 @@ pub struct VehicleEntity {
     captain: Option<Rc<Param>>,
     damage: f32,
     death_info: Option<DeathInfo>,
+    results_info: Option<serde_json::Value>,
 }
 
 impl VehicleEntity {
@@ -1477,6 +1511,10 @@ impl VehicleEntity {
 
     pub fn death_info(&self) -> Option<&DeathInfo> {
         self.death_info.as_ref()
+    }
+
+    pub fn results_info(&self) -> Option<&serde_json::Value> {
+        self.results_info.as_ref()
     }
 }
 
@@ -1672,8 +1710,8 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::Unknown(_) => trace!("UNKNOWN"),
             crate::analyzer::decoder::DecodedPacketPayload::Invalid(_) => trace!("INVALID"),
             crate::analyzer::decoder::DecodedPacketPayload::Audit(_) => trace!("AUDIT"),
-            crate::analyzer::decoder::DecodedPacketPayload::BattleResults(_json) => {
-                trace!("BATTLE RESULTS")
+            crate::analyzer::decoder::DecodedPacketPayload::BattleResults(json) => {
+                self.battle_results = Some(json.to_owned());
             }
         }
     }
