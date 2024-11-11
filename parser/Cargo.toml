@@ -1,6 +1,6 @@
 [package]
 name = "wows_replays"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["landaire, Lane Kolbly <lane@rscheme.org>"]
 edition = "2021"
 description = "A parser for World of Warships replay files"

@@ -142,6 +142,8 @@ pub struct Player {
     did_disconnect: bool,
     is_connected: bool,
     vehicle: Rc<Param>,
+    raw_props: HashMap<i64, String>,
+    raw_props_with_name: HashMap<String, serde_json::Value>,
 }
 
 impl Player {
@@ -161,6 +163,7 @@ impl Player {
             team_id: teamid,
             max_health: health,
             raw,
+            raw_with_names,
             is_abuser,
             is_hidden,
             is_client_loaded,
@@ -186,6 +189,11 @@ impl Player {
             is_client_loaded: *is_client_loaded,
             is_connected: *is_connected,
             did_disconnect: false,
+            raw_props: raw.clone(),
+            raw_props_with_name: raw_with_names
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect(),
         }
     }
 

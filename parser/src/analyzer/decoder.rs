@@ -167,6 +167,7 @@ pub struct OnArenaStateReceivedPlayer {
     /// This is a raw dump (with the values converted to strings) of every key for the player.
     // TODO: Replace String with the actual pickle value (which is cleanly serializable)
     pub raw: HashMap<i64, String>,
+    pub raw_with_names: HashMap<&'static str, serde_json::Value>,
 }
 
 /// Indicates that the given attacker has dealt damage
@@ -1153,6 +1154,18 @@ where
                         raw.insert(*k, format!("{:?}", v));
                     }
 
+                    let mut raw_with_names = HashMap::new();
+                    for (k, v) in values.iter() {
+                        for (name, idx) in &keys {
+                            if *k == *idx {
+                                raw_with_names.insert(
+                                    *name,
+                                    wowsunpack::game_params::convert::pickle_to_json(v.clone()),
+                                );
+                            }
+                        }
+                    }
+
                     players_out.push(OnArenaStateReceivedPlayer {
                         username,
                         clan,
@@ -1168,6 +1181,7 @@ where
                         raw,
                         is_connected,
                         is_client_loaded,
+                        raw_with_names,
                     });
                 }
             }
