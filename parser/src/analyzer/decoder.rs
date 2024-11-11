@@ -153,6 +153,8 @@ pub struct OnArenaStateReceivedPlayer {
     //playeravatarid: i64,
     /// Which team they're on.
     pub team_id: i64,
+    /// Division ID
+    pub prebattle_id: i64,
     /// Their starting health
     pub max_health: i64,
     /// ????
@@ -1114,6 +1116,13 @@ where
                         .cloned()
                         .expect("accountDBID is not an i64");
 
+                    let prebattle_id = values
+                        .get(keys.get("prebattleId").unwrap())
+                        .unwrap()
+                        .i64_ref()
+                        .cloned()
+                        .expect("accountDBID is not an i64");
+
                     let anti_abuse_enabled = values
                         .get(keys.get("antiAbuseEnabled").unwrap())
                         .unwrap()
@@ -1182,6 +1191,7 @@ where
                         is_connected,
                         is_client_loaded,
                         raw_with_names,
+                        prebattle_id,
                     });
                 }
             }

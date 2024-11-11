@@ -134,6 +134,7 @@ pub struct Player {
     avatar_id: u32,
     ship_id: u32,
     entity_id: u32,
+    division_id: u32,
     team_id: u32,
     max_health: u32,
     is_abuser: bool,
@@ -160,6 +161,7 @@ impl Player {
             avatar_id: avatarid,
             meta_ship_id: shipid,
             entity_id,
+            prebattle_id,
             team_id: teamid,
             max_health: health,
             raw,
@@ -179,6 +181,7 @@ impl Player {
             ship_id: *shipid as u32,
             entity_id: *entity_id as u32,
             team_id: *teamid as u32,
+            division_id: *prebattle_id as u32,
             max_health: *health as u32,
             vehicle: resources
                 .game_param_by_id(metadata_player.vehicle.id())
@@ -259,6 +262,10 @@ impl Player {
 
     pub fn is_connected(&self) -> bool {
         self.is_connected
+    }
+
+    pub fn division_id(&self) -> u32 {
+        self.division_id
     }
 }
 
@@ -1671,6 +1678,7 @@ where
                 arg2,
                 players,
             } => {
+                debug!("OnArenaStateReceived");
                 for player in &players {
                     let metadata_player = self
                         .metadata_players
