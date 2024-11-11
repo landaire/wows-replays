@@ -159,6 +159,10 @@ pub struct OnArenaStateReceivedPlayer {
     pub is_abuser: bool,
     /// Has hidden stats
     pub is_hidden: bool,
+    /// Has the client loaded into the game
+    pub is_client_loaded: bool,
+    /// Is the client connected into the game
+    pub is_connected: bool,
 
     /// This is a raw dump (with the values converted to strings) of every key for the player.
     // TODO: Replace String with the actual pickle value (which is cleanly serializable)
@@ -1130,6 +1134,20 @@ where
                         .cloned()
                         .expect("isHidden is not a bool");
 
+                    let is_connected = values
+                        .get(keys.get("isConnected").unwrap())
+                        .unwrap()
+                        .bool_ref()
+                        .cloned()
+                        .expect("isConnected is not a bool");
+
+                    let is_client_loaded = values
+                        .get(keys.get("isClientLoaded").unwrap())
+                        .unwrap()
+                        .bool_ref()
+                        .cloned()
+                        .expect("isClientLoaded is not a bool");
+
                     let mut raw = HashMap::new();
                     for (k, v) in values.iter() {
                         raw.insert(*k, format!("{:?}", v));
@@ -1148,6 +1166,8 @@ where
                         is_abuser,
                         is_hidden,
                         raw,
+                        is_connected,
+                        is_client_loaded,
                     });
                 }
             }

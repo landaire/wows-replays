@@ -1327,9 +1327,9 @@ dependencies = [
 
 [[package]]
 name = "wowsunpack"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5595ecf935e0d985535022e1eaf696f39fa3714c3e9bf75a3a86d0dd926a1ca"
+checksum = "d83b76ced0959a98cc5015c608ca7ffce49ceffcafcd0401eefe4914fdbfda40"
 dependencies = [
  "binrw",
  "byteorder",

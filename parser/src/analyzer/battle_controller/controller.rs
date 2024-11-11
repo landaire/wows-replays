@@ -138,6 +138,9 @@ pub struct Player {
     max_health: u32,
     is_abuser: bool,
     is_hidden: bool,
+    is_client_loaded: bool,
+    did_disconnect: bool,
+    is_connected: bool,
     vehicle: Rc<Param>,
 }
 
@@ -160,6 +163,8 @@ impl Player {
             raw,
             is_abuser,
             is_hidden,
+            is_client_loaded,
+            is_connected,
         } = player;
 
         Player {
@@ -178,6 +183,9 @@ impl Player {
             relation: metadata_player.relation,
             is_abuser: *is_abuser,
             is_hidden: *is_hidden,
+            is_client_loaded: *is_client_loaded,
+            is_connected: *is_connected,
+            did_disconnect: false,
         }
     }
 
@@ -231,6 +239,18 @@ impl Player {
 
     pub fn is_hidden(&self) -> bool {
         self.is_hidden
+    }
+
+    pub fn is_client_loaded(&self) -> bool {
+        self.is_client_loaded
+    }
+
+    pub fn did_disconnect(&self) -> bool {
+        self.did_disconnect
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.is_connected
     }
 }
 
@@ -356,6 +376,7 @@ pub struct BattleController<'res, 'replay, G> {
     game_chat: Vec<GameMessage>,
     version: Version,
     battle_results: Option<String>,
+    match_finished: bool,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
@@ -392,6 +413,7 @@ where
             damage_dealt: Default::default(),
             frags: Default::default(),
             battle_results: Default::default(),
+            match_finished: false,
         }
     }
 
@@ -1647,11 +1669,22 @@ where
                         .iter()
                         .find(|meta_player| meta_player.id == player.meta_ship_id as u32)
                         .expect("could not map arena player to metadata player");
-                    let battle_player = Rc::new(Player::from_arena_player(
+
+                    let mut battle_player = Player::from_arena_player(
                         player,
                         metadata_player.as_ref(),
                         self.game_resources,
-                    ));
+                    );
+
+                    if let Some(previous_state) = self.player_entities.get(&battle_player.entity_id)
+                    {
+                        if previous_state.is_connected && !self.match_finished {
+                            battle_player.did_disconnect =
+                                !battle_player.is_connected || previous_state.did_disconnect;
+                        }
+                    }
+
+                    let battle_player = Rc::new(battle_player);
 
                     self.player_entities
                         .insert(battle_player.entity_id, battle_player.clone());
@@ -1687,7 +1720,10 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::BattleEnd {
                 winning_team,
                 unknown,
-            } => trace!("BATTLE END"),
+            } => {
+                trace!("BATTLE END");
+                self.match_finished = true;
+            }
             crate::analyzer::decoder::DecodedPacketPayload::Consumable {
                 entity,
                 consumable,
