@@ -505,7 +505,7 @@ where
         debug!("chat message from sender {sender_name} in channel {channel:?}: {message}");
 
         let message = GameMessage {
-            sender_relation: sender_team.unwrap(),
+            sender_relation: sender_team,
             sender_name,
             channel,
             message: message.to_string(),
@@ -728,7 +728,7 @@ fn parse_ship_config<'a>(blob: &'a [u8], version: Version) -> IResult<&'a [u8], 
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GameMessage {
-    pub sender_relation: u32,
+    pub sender_relation: Option<u32>,
     pub sender_name: String,
     pub channel: ChatChannel,
     pub message: String,
