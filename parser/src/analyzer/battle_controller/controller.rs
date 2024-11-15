@@ -128,6 +128,7 @@ impl ShipLoadout {
 pub struct Player {
     name: String,
     clan: String,
+    clan_id: i64,
     realm: String,
     db_id: i64,
     relation: u32,
@@ -170,11 +171,13 @@ impl Player {
             is_hidden,
             is_client_loaded,
             is_connected,
+            clan_id,
         } = player;
 
         Player {
             name: username.clone(),
             clan: clan.clone(),
+            clan_id: *clan_id,
             realm: realm.clone(),
             db_id: *db_id,
             avatar_id: *avatarid as u32,
@@ -267,6 +270,10 @@ impl Player {
     pub fn division_id(&self) -> u32 {
         self.division_id
     }
+
+    pub fn clan_id(&self) -> i64 {
+        self.clan_id
+    }
 }
 
 #[derive(Debug)]
@@ -321,6 +328,7 @@ pub enum EntityType {
 }
 
 pub struct BattleReport {
+    arena_id: i64,
     self_entity: Rc<VehicleEntity>,
     version: Version,
     map_name: String,
@@ -330,6 +338,7 @@ pub struct BattleReport {
     player_entities: Vec<Rc<VehicleEntity>>,
     game_chat: Vec<GameMessage>,
     battle_results: Option<String>,
+    players: Vec<Rc<Player>>,
 }
 
 impl BattleReport {
@@ -368,6 +377,14 @@ impl BattleReport {
     pub fn battle_results(&self) -> Option<&str> {
         self.battle_results.as_deref()
     }
+
+    pub fn players(&self) -> &[Rc<Player>] {
+        &self.players
+    }
+
+    pub fn arena_id(&self) -> i64 {
+        self.arena_id
+    }
 }
 
 type Id = u32;
@@ -392,6 +409,7 @@ pub struct BattleController<'res, 'replay, G> {
     version: Version,
     battle_results: Option<String>,
     match_finished: bool,
+    arena_id: i64,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
@@ -429,6 +447,7 @@ where
             frags: Default::default(),
             battle_results: Default::default(),
             match_finished: false,
+            arena_id: 0,
         }
     }
 
@@ -649,6 +668,7 @@ where
             .collect();
 
         BattleReport {
+            arena_id: self.arena_id,
             self_entity: player_entities
                 .iter()
                 .find(|entity| entity.player.as_ref().unwrap().relation == 0)
@@ -662,6 +682,7 @@ where
             player_entities,
             game_chat: self.game_chat,
             battle_results: self.battle_results,
+            players: self.player_entities.values().cloned().collect(),
         }
     }
 
@@ -1679,6 +1700,7 @@ where
                 players,
             } => {
                 debug!("OnArenaStateReceived");
+                self.arena_id = arg0;
                 for player in &players {
                     let metadata_player = self
                         .metadata_players

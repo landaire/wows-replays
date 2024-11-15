@@ -140,6 +140,8 @@ pub struct OnArenaStateReceivedPlayer {
     pub username: String,
     /// The player's clan
     pub clan: String,
+    /// The player's clan DB id
+    pub clan_id: i64,
     /// The player's DB ID (unique player ID)
     pub db_id: i64,
     /// The realm this player belongs to
@@ -1071,6 +1073,13 @@ where
                         .expect("clanTag is not a string")
                         .clone();
 
+                    let clan_id = values
+                        .get(keys.get("clanID").unwrap())
+                        .unwrap()
+                        .i64_ref()
+                        .expect("clanID is not an i64")
+                        .clone();
+
                     let shipid = *values
                         .get(keys.get("shipId").unwrap())
                         .unwrap()
@@ -1178,6 +1187,7 @@ where
                     players_out.push(OnArenaStateReceivedPlayer {
                         username,
                         clan,
+                        clan_id,
                         realm,
                         db_id,
                         avatar_id: avatar,
