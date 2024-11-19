@@ -129,6 +129,7 @@ pub struct Player {
     name: String,
     clan: String,
     clan_id: i64,
+    clan_color: i64,
     realm: String,
     db_id: i64,
     relation: u32,
@@ -172,12 +173,14 @@ impl Player {
             is_client_loaded,
             is_connected,
             clan_id,
+            clan_color,
         } = player;
 
         Player {
             name: username.clone(),
             clan: clan.clone(),
             clan_id: *clan_id,
+            clan_color: *clan_color,
             realm: realm.clone(),
             db_id: *db_id,
             avatar_id: *avatarid as u32,
@@ -273,6 +276,15 @@ impl Player {
 
     pub fn clan_id(&self) -> i64 {
         self.clan_id
+    }
+
+    /// Player's clan tag color
+    pub fn clan_color(&self) -> i64 {
+        self.clan_color
+    }
+
+    pub fn raw_props_with_name(&self) -> &HashMap<String, serde_json::Value> {
+        &self.raw_props_with_name
     }
 }
 

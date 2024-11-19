@@ -142,6 +142,8 @@ pub struct OnArenaStateReceivedPlayer {
     pub clan: String,
     /// The player's clan DB id
     pub clan_id: i64,
+    /// The color of the player's clan tag as an RGB integer
+    pub clan_color: i64,
     /// The player's DB ID (unique player ID)
     pub db_id: i64,
     /// The realm this player belongs to
@@ -1167,6 +1169,13 @@ where
                         .cloned()
                         .expect("isClientLoaded is not a bool");
 
+                    let clan_color = values
+                        .get(keys.get("clanColor").unwrap())
+                        .unwrap()
+                        .i64_ref()
+                        .cloned()
+                        .expect("clanColor is not an integer");
+
                     let mut raw = HashMap::new();
                     for (k, v) in values.iter() {
                         raw.insert(*k, format!("{:?}", v));
@@ -1188,6 +1197,7 @@ where
                         username,
                         clan,
                         clan_id,
+                        clan_color,
                         realm,
                         db_id,
                         avatar_id: avatar,

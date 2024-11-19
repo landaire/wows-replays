@@ -1302,7 +1302,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "wows_replays"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bitreader",
  "derive_builder",
