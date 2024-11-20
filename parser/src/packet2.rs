@@ -706,7 +706,6 @@ impl<'argtype> Parser<'argtype> {
         &'b mut self,
         i: &'a [u8],
     ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
-        std::fs::write("map.bin", i);
         let (i, space_id) = le_u32(i)?;
         let (i, arena_id) = le_i64(i)?;
         let (i, unknown1) = le_u32(i)?;
