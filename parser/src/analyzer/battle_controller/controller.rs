@@ -517,6 +517,8 @@ where
             return;
         }
 
+        let sender_id = sender_id as u32;
+
         let channel = match audience {
             "battle_common" => ChatChannel::Global,
             "battle_team" => ChatChannel::Team,
@@ -526,10 +528,16 @@ where
 
         let mut sender_team = None;
         let mut sender_name = "Unknown".to_owned();
-        for player in &self.game_meta.vehicles {
-            if player.id == (sender_id as i64) {
-                sender_name = player.name.clone();
-                sender_team = Some(player.relation);
+        let mut player = None;
+        for meta_vehicle in &self.game_meta.vehicles {
+            if meta_vehicle.id == (sender_id as i64) {
+                sender_name = meta_vehicle.name.clone();
+                sender_team = Some(meta_vehicle.relation);
+                player = self
+                    .player_entities
+                    .values()
+                    .find(|player| player.ship_id == sender_id)
+                    .cloned();
             }
         }
 
@@ -540,6 +548,8 @@ where
             sender_name,
             channel,
             message: message.to_string(),
+            entity_id,
+            player,
         };
 
         self.game_chat.push(message.clone());
@@ -765,6 +775,8 @@ pub struct GameMessage {
     pub sender_name: String,
     pub channel: ChatChannel,
     pub message: String,
+    pub entity_id: u32,
+    pub player: Option<Rc<Player>>,
 }
 
 #[derive(Debug, Default, Clone)]
