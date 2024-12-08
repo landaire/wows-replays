@@ -1,8 +1,24 @@
+use anyhow::{anyhow, Context};
 use clap::{App, Arg, SubCommand};
-use std::collections::HashMap;
-use std::io::Write;
+use std::borrow::Cow;
+use std::fs::read_dir;
+use std::io::{Cursor, Write};
+use std::{collections::HashMap, path::Path};
+use wowsunpack::data::idx;
+use wowsunpack::data::pkg::PkgFileLoader;
+use wowsunpack::rpc::entitydefs::EntitySpec;
+use wowsunpack::{
+    data::{DataFileLoader, DataFileWithCallback, Version},
+    rpc::entitydefs::parse_scripts,
+};
 
-use wows_replays::{parse_scripts, ErrorKind, ReplayFile};
+use wows_replays::{
+    analyzer::{
+        chat::ChatLoggerBuilder, summary::SummaryBuilder, AnalyzerAdapter, AnalyzerBuilder,
+        AnalyzerMutBuilder,
+    },
+    ErrorKind, ReplayFile,
+};
 
 mod built_info {
     // The file has been placed there by the build script.
@@ -15,7 +31,7 @@ struct InvestigativePrinter {
     timestamp: Option<f32>,
     entity_id: Option<u32>,
     meta: bool,
-    version: wows_replays::version::Version,
+    version: Version,
 }
 
 impl wows_replays::analyzer::AnalyzerMut for InvestigativePrinter {
@@ -35,10 +51,10 @@ impl wows_replays::analyzer::AnalyzerMut for InvestigativePrinter {
                         println!(
                             "{} {}/{} ({:x?}/{:x?})",
                             player.username,
-                            player.shipid,
-                            player.avatarid,
-                            (player.shipid as u32).to_le_bytes(),
-                            (player.avatarid as u32).to_le_bytes()
+                            player.meta_ship_id,
+                            player.avatar_id,
+                            (player.meta_ship_id as u32).to_le_bytes(),
+                            (player.avatar_id as u32).to_le_bytes()
                         );
                     }
                 }
@@ -111,9 +127,12 @@ pub struct InvestigativeBuilder {
     entity_id: Option<String>,
 }
 
-impl wows_replays::analyzer::AnalyzerBuilder for InvestigativeBuilder {
-    fn build(&self, meta: &wows_replays::ReplayMeta) -> Box<dyn wows_replays::analyzer::Analyzer> {
-        let version = wows_replays::version::Version::from_client_exe(&meta.clientVersionFromExe);
+impl AnalyzerMutBuilder for InvestigativeBuilder {
+    fn build(
+        &self,
+        meta: &wows_replays::ReplayMeta,
+    ) -> Box<dyn wows_replays::analyzer::AnalyzerMut> {
+        let version = Version::from_client_exe(&meta.clientVersionFromExe);
         let decoder = InvestigativePrinter {
             version: version,
             filter_packet: self
@@ -147,8 +166,127 @@ impl wows_replays::analyzer::AnalyzerBuilder for InvestigativeBuilder {
     }
 }
 
-fn parse_replay<P: wows_replays::analyzer::AnalyzerBuilder>(
+fn load_game_data(
+    game_dir: Option<&str>,
+    extracted_dir: Option<&str>,
+    replay_version: &Version,
+) -> anyhow::Result<Vec<EntitySpec>> {
+    let specs = match (game_dir, extracted_dir) {
+        (Some(game_dir), _) => {
+            let mut idx_files = Vec::new();
+            let wows_directory = Path::new(game_dir);
+
+            let mut latest_build = None;
+            for file in read_dir(wows_directory.join("bin"))? {
+                if file.is_err() {
+                    continue;
+                }
+
+                let file = file.unwrap();
+                if let Ok(ty) = file.file_type() {
+                    if ty.is_file() {
+                        continue;
+                    }
+
+                    if let Some(build_num) = file
+                        .file_name()
+                        .to_str()
+                        .and_then(|name| name.parse::<usize>().ok())
+                    {
+                        if latest_build.is_none()
+                            || latest_build
+                                .map(|number| number < build_num)
+                                .unwrap_or(false)
+                        {
+                            latest_build = Some(build_num)
+                        }
+                    }
+                }
+            }
+
+            if latest_build.is_none() {
+                return Err(anyhow!(
+                    "Could not determine latest WoWs build from the provided game directory"
+                ));
+            }
+
+            for file in read_dir(
+                wows_directory
+                    .join("bin")
+                    .join(latest_build.unwrap().to_string())
+                    .join("idx"),
+            )
+            .context("failed to read wows idx directory")?
+            {
+                let file = file.unwrap();
+                if file.file_type().unwrap().is_file() {
+                    let file_data = std::fs::read(file.path()).unwrap();
+                    let mut file = Cursor::new(file_data.as_slice());
+                    idx_files.push(idx::parse(&mut file).unwrap());
+                }
+            }
+
+            let pkgs_path = wows_directory.join("res_packages");
+            if !pkgs_path.exists() {
+                return Err(anyhow!("Invalid wows directory -- res_packages not found"));
+            }
+
+            let pkg_loader = PkgFileLoader::new(pkgs_path);
+
+            let file_tree = idx::build_file_tree(idx_files.as_slice());
+
+            let loader = DataFileWithCallback::new(|path| {
+                let path = Path::new(path);
+
+                let mut file_data = Vec::new();
+                file_tree
+                    .read_file_at_path(path, &pkg_loader, &mut file_data)
+                    .with_context(|| {
+                        format!("failed to read file from packed game files: {:?}", path)
+                    })
+                    .unwrap();
+
+                Ok(Cow::Owned(file_data))
+            });
+
+            parse_scripts(&loader).unwrap()
+        }
+        (None, Some(extracted)) => {
+            let extracted_dir = Path::new(extracted).join(replay_version.to_path());
+            if !extracted_dir.exists() {
+                return Err(anyhow!(
+                    "Missing scripts for game version {}. Expected to be at {:?}",
+                    replay_version.to_path(),
+                    &extracted_dir
+                ));
+            }
+            let loader = DataFileWithCallback::new(|path| {
+                let path = Path::new(path);
+
+                let file_data = std::fs::read(extracted_dir.join(path))
+                    .with_context(|| {
+                        format!("failed to read game file from extracted dir: {:?}", path)
+                    })
+                    .unwrap();
+
+                Ok(Cow::Owned(file_data))
+            });
+            parse_scripts(&loader).unwrap()
+        }
+        (None, None) => {
+            return Err(anyhow!(
+                "Game directory or extracted files directory must be supplied"
+            ));
+        }
+    };
+
+    Ok(specs)
+}
+
+fn parse_replay<P: wows_replays::analyzer::AnalyzerMutBuilder>(
     replay: &std::path::PathBuf,
+    game_dir: Option<&str>,
+    extracted_dir: Option<&str>,
     processor: P,
 ) -> Result<(), wows_replays::ErrorKind> {
     let replay_file = ReplayFile::from_file(replay)?;
@@ -156,11 +294,12 @@ fn parse_replay<P: wows_replays::analyzer::AnalyzerBuilder>(
     //let mut file = std::fs::File::create("foo.bin").unwrap();
     //file.write_all(&replay_file.packet_data).unwrap();
 
-    let datafiles = wows_replays::version::EmbeddedDataFiles::new(
-        std::path::PathBuf::from("versions"),
-        wows_replays::version::Version::from_client_exe(&replay_file.meta.clientVersionFromExe),
-    )?;
-    let specs = parse_scripts(&datafiles)?;
+    let specs = load_game_data(
+        game_dir,
+        extracted_dir,
+        &Version::from_client_exe(replay_file.meta.clientVersionFromExe.as_str()),
+    )
+    .expect("failed to load game specs");
 
     let version_parts: Vec<_> = replay_file.meta.clientVersionFromExe.split(",").collect();
     assert!(version_parts.len() == 4);
@@ -169,16 +308,13 @@ fn parse_replay<P: wows_replays::analyzer::AnalyzerBuilder>(
 
     // Parse packets
     let mut p = wows_replays::packet2::Parser::new(&specs);
-    let mut analyzer_set = wows_replays::analyzer::AnalyzerAdapter::new(vec![processor]);
-    match p.parse_packets::<wows_replays::analyzer::AnalyzerAdapter>(
-        &replay_file.packet_data,
-        &mut analyzer_set,
-    ) {
+    let mut analyzer_set = AnalyzerAdapter::new(vec![processor]);
+    match p.parse_packets_mut::<AnalyzerAdapter>(&replay_file.packet_data, &mut analyzer_set) {
         Ok(()) => {
             analyzer_set.finish();
             Ok(())
         }
-        Err(e) => Err(e),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -189,7 +325,7 @@ fn truncate_string(s: &str, length: usize) -> &str {
     }
 }
 
-fn printspecs(specs: &Vec<wows_replays::rpc::entitydefs::EntitySpec>) {
+fn printspecs(specs: &Vec<wowsunpack::rpc::entitydefs::EntitySpec>) {
     println!("Have {} entities", specs.len());
     for entity in specs.iter() {
         println!();
@@ -332,7 +468,12 @@ impl SurveyResults {
     }
 }
 
-fn survey_file(skip_decode: bool, replay: std::path::PathBuf) -> SurveyResult {
+fn survey_file(
+    skip_decode: bool,
+    game_dir: Option<&str>,
+    extracted_dir: Option<&str>,
+    replay: std::path::PathBuf,
+) -> SurveyResult {
     let filename = replay.file_name().unwrap().to_str().unwrap();
     let filename = filename.to_string();
 
@@ -344,7 +485,12 @@ fn survey_file(skip_decode: bool, replay: std::path::PathBuf) -> SurveyResult {
     ));
     let survey =
         wows_replays::analyzer::survey::SurveyBuilder::new(survey_stats.clone(), skip_decode);
-    match parse_replay(&std::path::PathBuf::from(replay), survey) {
+    match parse_replay(
+        &std::path::PathBuf::from(replay),
+        game_dir,
+        extracted_dir,
+        survey,
+    ) {
         Ok(_) => {
             let stats = survey_stats.borrow();
             if stats.invalid_packets > 0 {
@@ -387,6 +533,8 @@ fn main() {
         .version(built_info::GIT_VERSION.unwrap_or("undefined"))
         .author("Lane Kolbly <lane@rscheme.org>")
         .about("Parses & processes World of Warships replay files")
+        .arg(Arg::with_name("GAME_DIRECTORY").help("Path to your game directory. Should be the base game directory like E:\\WoWs\\World_of_Warships\\").short("g").long("game").takes_value(true))
+        .arg(Arg::with_name("EXTRACTED_FILES_DIRECTORY").help("Path to extracted game files").short("e").long("extracted").takes_value(true))
         .subcommand(
             SubCommand::with_name("survey")
                 .about("Runs the parser against a directory of replays to validate the parser")
@@ -437,7 +585,7 @@ fn main() {
                         .help("Version to dump. Must be comma-delimited: major,minor,patch,build")
                         .takes_value(true)
                         .required(true),
-                ),
+                )
         )
         .subcommand(
             SubCommand::with_name("search")
@@ -500,6 +648,11 @@ fn main() {
 
     let matches = matches.get_matches();
 
+    let (game_dir, extracted) = (
+        matches.value_of("GAME_DIRECTORY"),
+        matches.value_of("EXTRACTED_FILES_DIRECTORY"),
+    );
+
     if let Some(matches) = matches.subcommand_matches("dump") {
         let input = matches.value_of("REPLAY").unwrap();
         let dump = wows_replays::analyzer::decoder::DecoderBuilder::new(
@@ -507,7 +660,7 @@ fn main() {
             matches.is_present("no-meta"),
             matches.value_of("output"),
         );
-        parse_replay(&std::path::PathBuf::from(input), dump).unwrap();
+        parse_replay(&std::path::PathBuf::from(input), game_dir, extracted, dump).unwrap();
     }
     if let Some(matches) = matches.subcommand_matches("investigate") {
         let input = matches.value_of("REPLAY").unwrap();
@@ -518,26 +671,29 @@ fn main() {
             entity_id: matches.value_of("entity-id").map(|s| s.to_string()),
             timestamp: matches.value_of("timestamp").map(|s| s.to_string()),
         };
-        parse_replay(&std::path::PathBuf::from(input), dump).unwrap();
+        parse_replay(&std::path::PathBuf::from(input), game_dir, extracted, dump).unwrap();
     }
     if let Some(matches) = matches.subcommand_matches("spec") {
-        let datafiles = wows_replays::version::EmbeddedDataFiles::new(
-            std::path::PathBuf::from("versions"),
-            wows_replays::version::Version::from_client_exe(matches.value_of("version").unwrap()),
-        )
-        .unwrap();
-        let specs = parse_scripts(&datafiles).unwrap();
+        let target_version = Version::from_client_exe(matches.value_of("version").unwrap());
+        let specs =
+            load_game_data(None, extracted, &target_version).expect("failed to load game data");
         printspecs(&specs);
     }
     if let Some(matches) = matches.subcommand_matches("summary") {
         let input = matches.value_of("REPLAY").unwrap();
-        let dump = wows_replays::analyzer::summary::SummaryBuilder::new();
-        parse_replay(&std::path::PathBuf::from(input), dump).unwrap();
+        let dump = SummaryBuilder::new();
+        parse_replay(&std::path::PathBuf::from(input), game_dir, extracted, dump).unwrap();
     }
     if let Some(matches) = matches.subcommand_matches("chat") {
         let input = matches.value_of("REPLAY").unwrap();
-        let chatlogger = wows_replays::analyzer::chat::ChatLoggerBuilder::new();
-        parse_replay(&std::path::PathBuf::from(input), chatlogger).unwrap();
+        let chatlogger = ChatLoggerBuilder::new();
+        parse_replay(
+            &std::path::PathBuf::from(input),
+            game_dir,
+            extracted,
+            chatlogger,
+        )
+        .unwrap();
     }
     #[cfg(feature = "graphics")]
     {
@@ -545,7 +701,13 @@ fn main() {
             let input = matches.value_of("REPLAY").unwrap();
             let output = matches.value_of("out").unwrap();
             let trailer = analysis::trails::TrailsBuilder::new(output);
-            parse_replay(&std::path::PathBuf::from(input), trailer).unwrap();
+            parse_replay(
+                &std::path::PathBuf::from(input),
+                game_dir,
+                extracted,
+                trailer,
+            )
+            .unwrap();
         }
     }
     if let Some(matches) = matches.subcommand_matches("survey") {
@@ -557,7 +719,12 @@ fn main() {
                     continue;
                 }
                 let replay = entry.path().to_path_buf();
-                let result = survey_file(matches.is_present("skip-decode"), replay);
+                let result = survey_file(
+                    matches.is_present("skip-decode"),
+                    game_dir,
+                    extracted,
+                    replay,
+                );
                 survey_result.add(result);
             }
         }

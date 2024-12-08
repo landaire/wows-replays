@@ -46,7 +46,10 @@ impl AnalyzerMut for ChatLogger {
                 println!(
                     "{}: {}: {} {}",
                     decoded.clock,
-                    self.usernames.get(&sender_id).unwrap(),
+                    self.usernames
+                        .get(&sender_id)
+                        .map(String::as_str)
+                        .unwrap_or("<UNKNOWN_USERNAME>"),
                     audience,
                     message
                 );
@@ -57,14 +60,17 @@ impl AnalyzerMut for ChatLogger {
                 println!(
                     "{}: {}: voiceline {:#?}",
                     decoded.clock,
-                    self.usernames.get(&sender_id).unwrap(),
+                    self.usernames
+                        .get(&sender_id)
+                        .map(String::as_str)
+                        .unwrap_or("<UNKNOWN_USERNAME>"),
                     message
                 );
             }
             DecodedPacketPayload::OnArenaStateReceived { players, .. } => {
                 for player in players.iter() {
                     self.usernames.insert(
-                        player.avatar_id.try_into().unwrap(),
+                        player.meta_ship_id.try_into().unwrap(),
                         player.username.clone(),
                     );
                 }

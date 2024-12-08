@@ -1,3 +1,4 @@
+use image::DynamicImage;
 use image::GenericImageView;
 use image::Pixel;
 use image::{imageops::FilterType, ImageFormat, RgbImage};
@@ -6,8 +7,9 @@ use std::collections::HashMap;
 use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
 use wows_replays::analyzer::*;
 use wows_replays::packet2::{EntityMethodPacket, Packet, PacketType};
-use wows_replays::version::Version;
 use wows_replays::ReplayMeta;
+use wowsunpack::data::Version;
+use wowsunpack::rpc;
 
 pub struct DamageTrailsBuilder {
     output: String,
@@ -21,8 +23,8 @@ impl DamageTrailsBuilder {
     }
 }
 
-impl AnalyzerBuilder for DamageTrailsBuilder {
-    fn build(&self, meta: &ReplayMeta) -> Box<dyn Analyzer> {
+impl AnalyzerMutBuilder for DamageTrailsBuilder {
+    fn build(&self, meta: &ReplayMeta) -> Box<dyn AnalyzerMut> {
         Box::new(DamageMonitor {
             version: Version::from_client_exe(&meta.clientVersionFromExe),
             username: meta.playerName.clone(),
@@ -231,8 +233,8 @@ impl AnalyzerMut for DamageMonitor {
             DecodedPacketPayload::OnArenaStateReceived { players, .. } => {
                 for player in players.iter() {
                     if player.username == self.username {
-                        self.shipid = Some(player.shipid as u32);
-                        self.avatarid = Some(player.avatarid as u32);
+                        self.shipid = Some(player.meta_ship_id as u32);
+                        self.avatarid = Some(player.avatar_id as u32);
                         break;
                     }
                 }
@@ -261,7 +263,7 @@ impl AnalyzerMut for DamageMonitor {
                 if *method == "receiveDamageStat" {
                     let value = pickled::de::value_from_slice(
                         match &args[0] {
-                            wows_replays::rpc::typedefs::ArgValue::Blob(x) => x,
+                            rpc::typedefs::ArgValue::Blob(x) => x,
                             _ => panic!("foo"),
                         },
                         pickled::de::DeOptions::new(),
@@ -271,7 +273,7 @@ impl AnalyzerMut for DamageMonitor {
                 } else if *method == "receiveDamageReport" {
                     let value = pickled::de::value_from_slice(
                         match &args[0] {
-                            wows_replays::rpc::typedefs::ArgValue::Blob(x) => x,
+                            rpc::typedefs::ArgValue::Blob(x) => x,
                             _ => panic!("foo"),
                         },
                         pickled::de::DeOptions::new(),
@@ -287,18 +289,18 @@ impl AnalyzerMut for DamageMonitor {
                         return;
                     }
                     match &args[0] {
-                        wows_replays::rpc::typedefs::ArgValue::Array(a) => {
+                        wowsunpack::rpc::typedefs::ArgValue::Array(a) => {
                             for damage in a.iter() {
                                 let damage = match damage {
-                                    wows_replays::rpc::typedefs::ArgValue::FixedDict(m) => m,
+                                    wowsunpack::rpc::typedefs::ArgValue::FixedDict(m) => m,
                                     _ => panic!("foo"),
                                 };
                                 let aggressor = match damage.get("vehicleID").unwrap() {
-                                    wows_replays::rpc::typedefs::ArgValue::Int32(i) => *i,
+                                    wowsunpack::rpc::typedefs::ArgValue::Int32(i) => *i,
                                     _ => panic!("foo"),
                                 };
                                 let amount = match damage.get("damage").unwrap() {
-                                    wows_replays::rpc::typedefs::ArgValue::Float32(f) => *f,
+                                    wowsunpack::rpc::typedefs::ArgValue::Float32(f) => *f,
                                     _ => panic!("foo"),
                                 };
 
@@ -335,24 +337,24 @@ impl AnalyzerMut for DamageMonitor {
                 } else if *method == "receiveArtilleryShots" {
                     println!("{}: receiveArtilleryShots({:?})", time, args);
                     match &args[0] {
-                        wows_replays::rpc::typedefs::ArgValue::Array(a) => {
+                        wowsunpack::rpc::typedefs::ArgValue::Array(a) => {
                             for salvo in a.iter() {
                                 //println!("Salvo: {:?}", salvo);
                                 let salvo = match salvo {
-                                    wows_replays::rpc::typedefs::ArgValue::FixedDict(m) => m,
+                                    wowsunpack::rpc::typedefs::ArgValue::FixedDict(m) => m,
                                     _ => panic!("foo"),
                                 };
                                 let owner_id = match salvo.get("ownerID").unwrap() {
-                                    wows_replays::rpc::typedefs::ArgValue::Int32(i) => *i,
+                                    wowsunpack::rpc::typedefs::ArgValue::Int32(i) => *i,
                                     _ => panic!("foo"),
                                 };
                                 for shot in match salvo.get("shots").unwrap() {
-                                    wows_replays::rpc::typedefs::ArgValue::Array(a) => a,
+                                    wowsunpack::rpc::typedefs::ArgValue::Array(a) => a,
                                     _ => panic!("foo"),
                                 } {
                                     //println!("Shot: {:?}", shot);
                                     let shot = match shot {
-                                        wows_replays::rpc::typedefs::ArgValue::FixedDict(m) => m,
+                                        wowsunpack::rpc::typedefs::ArgValue::FixedDict(m) => m,
                                         _ => panic!("foo"),
                                     };
                                     if !self.artillery_shots.contains_key(&owner_id) {
@@ -362,15 +364,15 @@ impl AnalyzerMut for DamageMonitor {
                                         ArtilleryShot {
                                             start_time: packet.clock,
                                             start_pos: match shot.get("pos").unwrap() {
-                                                wows_replays::rpc::typedefs::ArgValue::Vector3(
-                                                    v,
-                                                ) => v.clone(),
+                                                wowsunpack::rpc::typedefs::ArgValue::Vector3(v) => {
+                                                    v.clone()
+                                                }
                                                 _ => panic!("foo"),
                                             },
                                             target: match shot.get("tarPos").unwrap() {
-                                                wows_replays::rpc::typedefs::ArgValue::Vector3(
-                                                    v,
-                                                ) => v.clone(),
+                                                wowsunpack::rpc::typedefs::ArgValue::Vector3(v) => {
+                                                    v.clone()
+                                                }
                                                 _ => panic!("foo"),
                                             },
                                         },

@@ -7,7 +7,7 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-graphics = ["plotters", "image"]
+graphics = ["dep:plotters", "dep:image"]
 
 [dependencies]
 #nom = "7.0.0"
@@ -19,10 +19,11 @@ graphics = ["plotters", "image"]
 #thiserror = "1.0.19"
 #rust-crypto = "0.2.36"
 #roxmltree = "0.14.1"
-serde-pickle = "1.0.0"
-plotters = { version = "0.3.1", optional = true }
-image = { version = "0.23.4", optional = true }
+pickled = "1.0.0"
+plotters = { version = "0.3.7", optional = true }
+image = { version = "0.24.3", optional = true }
 #rust-embed = "6.0.0"
 #modular-bitfield = "0.11.2"
 #bitreader = "0.3.4"
 wows_replays = { path = "../parser" }
+wowsunpack = "0.4"

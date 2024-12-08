@@ -20,6 +20,8 @@ walkdir = "2.3.2"
 chrono = "0.4.19"
 serde_json = "1.0"
 parse_int = "0.6.0"
+wowsunpack = "0.4"
+anyhow = "1.0"
 
 [build-dependencies]
 built = { version = "0.5.1", features = ["git2", "chrono"] }
