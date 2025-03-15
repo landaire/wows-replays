@@ -646,11 +646,16 @@ where
                     .values()
                     .find_map(|deaths| deaths.iter().find(|death| death.victim == vehicle.id))
                 {
-                    vehicle.death_info = Some(DeathInfo {
-                        time_lived: death.timestamp - TIME_UNTIL_GAME_START,
-                        killer: death.killer,
-                        cause: death.cause,
-                    })
+                    if death.timestamp > TIME_UNTIL_GAME_START {
+                        vehicle.death_info = Some(DeathInfo {
+                            time_lived: death.timestamp - TIME_UNTIL_GAME_START,
+                            killer: death.killer,
+                            cause: death.cause,
+                        })
+                    } else {
+                        // println!("{:?}", vehicle);
+                        // println!("{:?}", death.timestamp);
+                    }
                 }
             }
         });
