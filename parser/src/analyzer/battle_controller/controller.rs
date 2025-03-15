@@ -339,6 +339,7 @@ pub enum EntityType {
     SmokeScreen,
 }
 
+#[derive(Serialize)]
 pub struct BattleReport {
     arena_id: i64,
     self_entity: Rc<VehicleEntity>,
@@ -784,13 +785,13 @@ pub struct GameMessage {
     pub player: Option<Rc<Player>>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct AAAura {
     id: u32,
     enabled: bool,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct VehicleState {
     /// TODO
     buffs: Option<()>,
@@ -799,7 +800,7 @@ pub struct VehicleState {
     battery: Option<()>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct CrewModifiersCompactParams {
     params_id: u32,
     is_in_adaption: bool,
@@ -955,7 +956,7 @@ impl UpdateFromReplayArgs for CrewModifiersCompactParams {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Serialize, Clone)]
 pub struct VehicleProps {
     ignore_map_borders: bool,
     air_defense_dispersion_radius: f32,
@@ -1477,7 +1478,7 @@ impl UpdateFromReplayArgs for VehicleProps {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeathInfo {
     time_lived: Duration,
     killer: u32,
@@ -1498,7 +1499,7 @@ impl DeathInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct VehicleEntity {
     id: u32,
     player: Option<Rc<Player>>,
