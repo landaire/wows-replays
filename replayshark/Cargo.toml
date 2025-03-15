@@ -14,7 +14,7 @@ graphics = ["analysis/graphics"]
 
 [dependencies]
 analysis = { path = "../analysis", default-features = false }
-wows_replays = { version = "0.1.0", path = "../parser" }
+wows_replays = { version = "0.2.0", path = "../parser" }
 clap = "2.33.1"
 walkdir = "2.3.2"
 chrono = "0.4.19"
