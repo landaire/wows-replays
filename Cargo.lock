@@ -2414,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "wows_replays"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitreader",
  "derive_builder",

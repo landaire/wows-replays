@@ -120,9 +120,9 @@ impl ReplayFile {
     }
 
     pub fn from_file(replay: &std::path::Path) -> Result<ReplayFile, ErrorKind> {
-        let mut f = std::fs::File::open(replay).unwrap();
+        let mut f = std::fs::File::options().read(true).open(replay)?;
         let mut contents = vec![];
-        f.read_to_end(&mut contents).unwrap();
+        f.read_to_end(&mut contents)?;
 
         let (remaining, result) = replay_format(&contents)?;
 
@@ -134,8 +134,7 @@ impl ReplayFile {
         let blowfish = crypto::blowfish::Blowfish::new(&key);
         assert!(blowfish.block_size() == 8);
         let encrypted = remaining; //result.compressed_stream
-        let mut decrypted = vec![];
-        decrypted.resize(encrypted.len(), 0u8);
+        let mut decrypted = vec![0; encrypted.len()];
         let num_blocks = encrypted.len() / blowfish.block_size();
         let mut previous = [0; 8]; // 8 == block size
         for i in 0..num_blocks {
@@ -145,7 +144,7 @@ impl ReplayFile {
                 &mut decrypted[offset..offset + blowfish.block_size()],
             );
             for j in 0..8 {
-                decrypted[offset + j] = decrypted[offset + j] ^ previous[j];
+                decrypted[offset + j] ^= previous[j];
                 previous[j] = decrypted[offset + j];
             }
         }

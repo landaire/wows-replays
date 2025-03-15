@@ -8,6 +8,7 @@ pub struct Error {
 }
 
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum ErrorKind {
     #[error("Nom error")]
     Nom {
@@ -60,6 +61,11 @@ pub enum ErrorKind {
     DecoderRingFailure(String),
     #[error("Unable to process packet")]
     ParsingFailure(String),
+    #[error("IO error")]
+    IoError {
+        #[from]
+        err: std::io::Error,
+    },
 }
 
 impl nom::error::ParseError<&[u8]> for Error {
