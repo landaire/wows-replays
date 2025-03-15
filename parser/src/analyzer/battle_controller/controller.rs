@@ -149,6 +149,21 @@ pub struct Player {
     raw_props_with_name: HashMap<String, serde_json::Value>,
 }
 
+impl std::cmp::PartialEq for Player {
+    fn eq(&self, other: &Self) -> bool {
+        self.db_id == other.db_id && self.realm == other.realm
+    }
+}
+
+impl std::cmp::Eq for Player {}
+
+impl std::hash::Hash for Player {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.db_id.hash(state);
+        self.realm.hash(state);
+    }
+}
+
 impl Player {
     fn from_arena_player<G: ResourceLoader>(
         player: &OnArenaStateReceivedPlayer,
@@ -352,6 +367,7 @@ pub struct BattleReport {
     game_chat: Vec<GameMessage>,
     battle_results: Option<String>,
     players: Vec<Rc<Player>>,
+    frags: HashMap<Rc<Player>, Vec<DeathInfo>>,
 }
 
 impl BattleReport {
@@ -397,6 +413,15 @@ impl BattleReport {
 
     pub fn arena_id(&self) -> i64 {
         self.arena_id
+    }
+
+    /// Returns a map of players and their frags. This intentionally
+    /// returns a map keyed of fof players rather than vehicle entities,
+    /// since eventually we will have to do massive refactoring to inverse this heirarchy
+    /// of Vehicle -> Player to Player -> Vehicle. Might as well not make it any more
+    /// painful than it has to be.
+    pub fn frags(&self) -> &HashMap<Rc<Player>, Vec<DeathInfo>> {
+        &self.frags
     }
 }
 
@@ -604,6 +629,7 @@ where
                     damage: 0.0,
                     death_info: None,
                     results_info: None,
+                    frags: Vec::default(),
                 }));
 
                 self.entities_by_id
@@ -647,16 +673,7 @@ where
                     .values()
                     .find_map(|deaths| deaths.iter().find(|death| death.victim == vehicle.id))
                 {
-                    if death.timestamp > TIME_UNTIL_GAME_START {
-                        vehicle.death_info = Some(DeathInfo {
-                            time_lived: death.timestamp - TIME_UNTIL_GAME_START,
-                            killer: death.killer,
-                            cause: death.cause,
-                        })
-                    } else {
-                        // println!("{:?}", vehicle);
-                        // println!("{:?}", death.timestamp);
-                    }
+                    vehicle.death_info = Some(death.into());
                 }
             }
         });
@@ -687,6 +704,12 @@ where
                                     }
                                 })
                             });
+
+                        if let Some(player) = vehicle.player().as_ref() {
+                            if let Some(frags) = self.frags.get(&player.entity_id) {
+                                vehicle.frags = frags.iter().map(DeathInfo::from).collect();
+                            }
+                        }
                     }
                     Some(Rc::new(vehicle))
                 } else {
@@ -695,6 +718,16 @@ where
             })
             .collect();
 
+        let frags: HashMap<Rc<Player>, Vec<DeathInfo>> =
+            HashMap::from_iter(self.frags.drain().map(|(entity_id, kills)| {
+                let player = self
+                    .player_entities
+                    .get(&entity_id)
+                    .expect("could not find player")
+                    .clone();
+                let kills: Vec<DeathInfo> = kills.iter().map(DeathInfo::from).collect();
+                (player, kills)
+            }));
         BattleReport {
             arena_id: self.arena_id,
             self_entity: player_entities
@@ -711,6 +744,7 @@ where
             game_chat: self.game_chat,
             battle_results: self.battle_results,
             players: self.player_entities.values().cloned().collect(),
+            frags,
         }
     }
 
@@ -1480,6 +1514,8 @@ impl UpdateFromReplayArgs for VehicleProps {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeathInfo {
+    /// Time lived in the game. This may not be accurate if a game rejoin occurs
+    /// as there's no known way to detect this event.
     time_lived: Duration,
     killer: u32,
     cause: DeathCause,
@@ -1499,6 +1535,23 @@ impl DeathInfo {
     }
 }
 
+impl From<&Death> for DeathInfo {
+    fn from(death: &Death) -> Self {
+        // Can occur if the player rejoins a game
+        let time_lived = if death.timestamp > TIME_UNTIL_GAME_START {
+            death.timestamp - TIME_UNTIL_GAME_START
+        } else {
+            Duration::from_secs(0)
+        };
+
+        DeathInfo {
+            time_lived: time_lived,
+            killer: death.killer,
+            cause: death.cause,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VehicleEntity {
     id: u32,
@@ -1509,6 +1562,7 @@ pub struct VehicleEntity {
     damage: f32,
     death_info: Option<DeathInfo>,
     results_info: Option<serde_json::Value>,
+    frags: Vec<DeathInfo>,
 }
 
 impl VehicleEntity {
@@ -1603,6 +1657,10 @@ impl VehicleEntity {
 
     pub fn results_info(&self) -> Option<&serde_json::Value> {
         self.results_info.as_ref()
+    }
+
+    pub fn frags(&self) -> &[DeathInfo] {
+        &self.frags
     }
 }
 
