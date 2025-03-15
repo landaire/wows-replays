@@ -408,7 +408,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         winning_team: Option<i8>,
         /// Unknown
         // TODO: Probably how the game was won? (time expired, score, or ships destroyed)
-        unknown: Option<u8>,
+        state: Option<u8>,
     },
     /// Sent when a consumable is activated
     Consumable {
@@ -1423,7 +1423,7 @@ where
                 arg1: args1,
             }
         } else if *method == "onBattleEnd" {
-            let (winning_team, unknown) =
+            let (winning_team, state) =
                 if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
                     (None, None)
                 } else {
@@ -1432,7 +1432,7 @@ where
                 };
             DecodedPacketPayload::BattleEnd {
                 winning_team,
-                unknown,
+                state,
             }
         } else if *method == "consumableUsed" {
             let (consumable, duration) = unpack_rpc_args!(args, i8, f32);

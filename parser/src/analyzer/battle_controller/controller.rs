@@ -354,6 +354,16 @@ pub enum EntityType {
     SmokeScreen,
 }
 
+#[derive(Copy, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum BattleResult {
+    /// A win, and which team won (inferred to be the team of the player)
+    Win(i8),
+    /// A loss, and which other team won
+    Loss(i8),
+    Draw,
+}
+
 #[derive(Serialize)]
 pub struct BattleReport {
     arena_id: i64,
@@ -368,6 +378,7 @@ pub struct BattleReport {
     battle_results: Option<String>,
     players: Vec<Rc<Player>>,
     frags: HashMap<Rc<Player>, Vec<DeathInfo>>,
+    match_result: Option<BattleResult>,
 }
 
 impl BattleReport {
@@ -423,6 +434,11 @@ impl BattleReport {
     pub fn frags(&self) -> &HashMap<Rc<Player>, Vec<DeathInfo>> {
         &self.frags
     }
+
+    /// The result of the battle. This may be `None` if the player left the match before it finished.
+    pub fn battle_result(&self) -> Option<&BattleResult> {
+        self.match_result.as_ref()
+    }
 }
 
 type Id = u32;
@@ -447,6 +463,7 @@ pub struct BattleController<'res, 'replay, G> {
     version: Version,
     battle_results: Option<String>,
     match_finished: bool,
+    winning_team: Option<i8>,
     arena_id: i64,
 }
 
@@ -485,6 +502,7 @@ where
             frags: Default::default(),
             battle_results: Default::default(),
             match_finished: false,
+            winning_team: None,
             arena_id: 0,
         }
     }
@@ -719,22 +737,33 @@ where
             .collect();
 
         let frags: HashMap<Rc<Player>, Vec<DeathInfo>> =
-            HashMap::from_iter(self.frags.drain().map(|(entity_id, kills)| {
-                let player = self
-                    .player_entities
-                    .get(&entity_id)
-                    .expect("could not find player")
-                    .clone();
+            HashMap::from_iter(self.frags.drain().filter_map(|(entity_id, kills)| {
+                let player = self.player_entities.get(&entity_id)?;
                 let kills: Vec<DeathInfo> = kills.iter().map(DeathInfo::from).collect();
-                (player, kills)
+                Some((Rc::clone(player), kills))
             }));
+
+        let self_entity = player_entities
+            .iter()
+            .find(|entity| entity.player.as_ref().unwrap().relation == 0)
+            .cloned()
+            .expect("could not find self_player");
         BattleReport {
             arena_id: self.arena_id,
-            self_entity: player_entities
-                .iter()
-                .find(|entity| entity.player.as_ref().unwrap().relation == 0)
-                .cloned()
-                .expect("could not find self_player"),
+            match_result: if self.match_finished {
+                self.winning_team.map(|team| {
+                    if team == self_entity.player.as_ref().unwrap().team_id as i8 {
+                        BattleResult::Win(team)
+                    } else if team > 0 {
+                        BattleResult::Loss(1)
+                    } else {
+                        BattleResult::Draw
+                    }
+                })
+            } else {
+                None
+            },
+            self_entity,
             version: Version::from_client_exe(self.game_version()),
             match_group: self.match_group().to_owned(),
             map_name: self.map_name(),
@@ -1845,10 +1874,10 @@ where
             }
             crate::analyzer::decoder::DecodedPacketPayload::BattleEnd {
                 winning_team,
-                unknown,
+                state,
             } => {
-                trace!("BATTLE END");
                 self.match_finished = true;
+                self.winning_team = winning_team;
             }
             crate::analyzer::decoder::DecodedPacketPayload::Consumable {
                 entity,
