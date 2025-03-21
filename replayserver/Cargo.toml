@@ -12,7 +12,7 @@ rocket = "0.5.0-rc.1"
 lazy_static = "1.4.0"
 walkdir = "2.3.2"
 tera = "1.12.1"
-wows_replays = { version = "0.2.0", path = "../parser" }
+wows_replays = { version = "0.3.0", path = "../parser" }
 serde = { version = "1.0", features = ["derive"] }
 chrono = "0.4.19"
 rust-embed = "6.0.0"

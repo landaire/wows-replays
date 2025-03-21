@@ -3,7 +3,7 @@ use crate::packet2::{Entity, EntityMethodPacket, Packet, PacketType};
 use crate::{ErrorKind, IResult};
 use kinded::Kinded;
 use modular_bitfield::prelude::*;
-use nom::number::complete::{le_f32, le_i32, le_u16, le_u32, le_u64, le_u8};
+use nom::number::complete::{le_f32, le_i32, le_u8, le_u16, le_u32, le_u64};
 use pickled::Value;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -611,7 +611,7 @@ where
         packet_type: u32,
     ) -> Self {
         match payload {
-            PacketType::EntityMethod(ref em) => {
+            PacketType::EntityMethod(em) => {
                 DecodedPacketPayload::from_entity_method(version, audit, em)
             }
             PacketType::Camera(camera) => DecodedPacketPayload::Camera(camera),

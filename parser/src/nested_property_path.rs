@@ -90,7 +90,7 @@ fn nested_update_command<'argtype>(
                 },
             };
         }
-        (ArgType::Array((_size, element_type)), ArgValue::Array(ref mut elements)) => {
+        (ArgType::Array((_size, element_type)), ArgValue::Array(elements)) => {
             let idx_bits = if is_slice {
                 elements.len() + 1
             } else {
