@@ -3,7 +3,6 @@ name = "replayshark"
 version = "0.1.0"
 authors = ["Lane Kolbly <lane@rscheme.org>"]
 edition = "2018"
-build = "build.rs"
 publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -22,6 +21,3 @@ serde_json = "1.0"
 parse_int = "0.6.0"
 wowsunpack = "0.5"
 anyhow = "1.0"
-
-[build-dependencies]
-built = { version = "0.5.1", features = ["git2", "chrono"] }

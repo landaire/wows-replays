@@ -20,11 +20,6 @@ use wows_replays::{
     ErrorKind, ReplayFile,
 };
 
-mod built_info {
-    // The file has been placed there by the build script.
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
 struct InvestigativePrinter {
     filter_packet: Option<u32>,
     filter_method: Option<String>,
@@ -530,7 +525,6 @@ fn main() {
         .required(true)
         .index(1);
     let matches = App::new("World of Warships Replay Parser Utility")
-        .version(built_info::GIT_VERSION.unwrap_or("undefined"))
         .author("Lane Kolbly <lane@rscheme.org>")
         .about("Parses & processes World of Warships replay files")
         .arg(Arg::with_name("GAME_DIRECTORY").help("Path to your game directory. Should be the base game directory like E:\\WoWs\\World_of_Warships\\").short("g").long("game").takes_value(true))
