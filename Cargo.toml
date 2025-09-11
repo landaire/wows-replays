@@ -7,3 +7,6 @@ members = [
     "replayshark",
     # "replayserver",
 ]
+
+[workspace.dependencies]
+wowsunpack = { version = "0.6", default-features = false, features = ["json"] }

@@ -1,6 +1,6 @@
 [package]
 name = "wows_replays"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["landaire, Lane Kolbly <lane@rscheme.org>"]
 edition = "2024"
 description = "A parser for World of Warships replay files"
@@ -28,7 +28,7 @@ strum = "0.25"
 strum_macros = "0.25"
 derive_builder = "0.12"
 tracing = "0.1"
-wowsunpack = { version = "0.5", default-features = false, features = ["json"] }
+wowsunpack = { workspace = true }
 
 [patch.crates-io]
 #wowsunpack = { path = "../../../wowsunpack" }
