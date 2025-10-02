@@ -9,4 +9,4 @@ members = [
 ]
 
 [workspace.dependencies]
-wowsunpack = { version = "0.6", default-features = false, features = ["json"] }
+wowsunpack = { version = "0.7", default-features = false, features = ["json"] }
