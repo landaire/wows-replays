@@ -1,12 +1,11 @@
-use crate::analyzer::{Analyzer, AnalyzerBuilder};
-use crate::packet2::{Entity, EntityMethodPacket, Packet, PacketType};
-use crate::{ErrorKind, IResult};
+use crate::IResult;
+use crate::packet2::{EntityMethodPacket, Packet, PacketType};
 use kinded::Kinded;
 use modular_bitfield::prelude::*;
-use nom::number::complete::{le_f32, le_i32, le_u8, le_u16, le_u32, le_u64};
+use nom::number::complete::{le_f32, le_u8, le_u16, le_u64};
 use pickled::Value;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::iter::FromIterator;
 use wowsunpack::data::Version;
@@ -39,7 +38,7 @@ impl AnalyzerMutBuilder for DecoderBuilder {
             output: self.path.as_ref().map(|path| {
                 Box::new(std::fs::File::create(path).unwrap()) as Box<dyn std::io::Write>
             }),
-            version: version,
+            version,
         };
         if !self.no_meta {
             decoder.write(&serde_json::to_string(&meta).unwrap());
@@ -454,21 +453,27 @@ fn try_convert_hashable_pickle_to_string(
 ) -> pickled::value::HashableValue {
     match value {
         pickled::value::HashableValue::Bytes(b) => {
-            if let Ok(s) = std::str::from_utf8(&b) {
-                pickled::value::HashableValue::String(s.to_owned())
+            if let Ok(s) = std::str::from_utf8(&b.inner()) {
+                pickled::value::HashableValue::String(s.to_owned().into())
             } else {
                 pickled::value::HashableValue::Bytes(b)
             }
         }
         pickled::value::HashableValue::Tuple(t) => pickled::value::HashableValue::Tuple(
-            t.into_iter()
-                .map(|item| try_convert_hashable_pickle_to_string(item))
-                .collect(),
+            t.inner()
+                .iter()
+                .cloned()
+                .map(try_convert_hashable_pickle_to_string)
+                .collect::<Vec<_>>()
+                .into(),
         ),
         pickled::value::HashableValue::FrozenSet(s) => pickled::value::HashableValue::FrozenSet(
-            s.into_iter()
-                .map(|item| try_convert_hashable_pickle_to_string(item))
-                .collect(),
+            s.inner()
+                .iter()
+                .cloned()
+                .map(try_convert_hashable_pickle_to_string)
+                .collect::<BTreeSet<_>>()
+                .into(),
         ),
         value => value,
     }
@@ -477,41 +482,55 @@ fn try_convert_hashable_pickle_to_string(
 fn try_convert_pickle_to_string(value: pickled::value::Value) -> pickled::value::Value {
     match value {
         pickled::value::Value::Bytes(b) => {
-            if let Ok(s) = std::str::from_utf8(&b) {
-                pickled::value::Value::String(s.to_owned())
+            if let Ok(s) = std::str::from_utf8(&b.inner()) {
+                pickled::value::Value::String(s.to_owned().into())
             } else {
                 pickled::value::Value::Bytes(b)
             }
         }
         pickled::value::Value::List(l) => pickled::value::Value::List(
-            l.into_iter()
-                .map(|item| try_convert_pickle_to_string(item))
-                .collect(),
+            l.inner()
+                .iter()
+                .cloned()
+                .map(try_convert_pickle_to_string)
+                .collect::<Vec<_>>()
+                .into(),
         ),
         pickled::value::Value::Tuple(t) => pickled::value::Value::Tuple(
-            t.into_iter()
-                .map(|item| try_convert_pickle_to_string(item))
-                .collect(),
+            t.inner()
+                .iter()
+                .cloned()
+                .map(try_convert_pickle_to_string)
+                .collect::<Vec<_>>()
+                .into(),
         ),
         pickled::value::Value::Set(s) => pickled::value::Value::Set(
-            s.into_iter()
-                .map(|item| try_convert_hashable_pickle_to_string(item))
-                .collect(),
+            s.inner()
+                .iter()
+                .cloned()
+                .map(try_convert_hashable_pickle_to_string)
+                .collect::<BTreeSet<_>>()
+                .into(),
         ),
         pickled::value::Value::FrozenSet(s) => pickled::value::Value::FrozenSet(
-            s.into_iter()
-                .map(|item| try_convert_hashable_pickle_to_string(item))
-                .collect(),
+            s.inner()
+                .iter()
+                .cloned()
+                .map(try_convert_hashable_pickle_to_string)
+                .collect::<BTreeSet<_>>()
+                .into(),
         ),
         pickled::value::Value::Dict(d) => pickled::value::Value::Dict(
-            d.into_iter()
+            d.inner()
+                .iter()
                 .map(|(k, v)| {
                     (
-                        try_convert_hashable_pickle_to_string(k),
-                        try_convert_pickle_to_string(v),
+                        try_convert_hashable_pickle_to_string(k.clone()),
+                        try_convert_pickle_to_string(v.clone()),
                     )
                 })
-                .collect(),
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into(),
         ),
         value => value,
     }
@@ -562,7 +581,7 @@ fn parse_receive_common_cmd_blob(blob: &[u8]) -> IResult<&[u8], (VoiceLine, bool
         11 => (i, VoiceLine::ProvideAntiAircraft),
         // BACK
         12 => {
-            let (i, target_type) = le_u16(i)?;
+            let (i, _target_type) = le_u16(i)?;
             let (i, target_id) = le_u64(i)?;
             (
                 i,
@@ -712,15 +731,15 @@ where
                             0xbf,
                         ]
                     {
-                        DecodedPacketPayload::Audit(format!("Camera18 unexpected value!"))
+                        DecodedPacketPayload::Audit("Camera18 unexpected value!".to_string())
                     } else {
-                        DecodedPacketPayload::Unknown(&u)
+                        DecodedPacketPayload::Unknown(u)
                     }
                 } else {
-                    DecodedPacketPayload::Unknown(&u)
+                    DecodedPacketPayload::Unknown(u)
                 }
             }
-            PacketType::Invalid(u) => DecodedPacketPayload::Invalid(&u),
+            PacketType::Invalid(u) => DecodedPacketPayload::Invalid(u),
             PacketType::BattleResults(results) => DecodedPacketPayload::BattleResults(results),
         }
     }
@@ -757,12 +776,15 @@ where
                     extra
                         .dict()
                         .expect("value is not a dictionary")
-                        .into_iter()
+                        .inner()
+                        .iter()
                         .map(|(key, value)| {
                             let key = match key {
-                                pickled::HashableValue::Bytes(bytes) => String::from_utf8(bytes)
-                                    .expect("key is not a valid utf-8 sequence"),
-                                pickled::HashableValue::String(string) => string,
+                                pickled::HashableValue::Bytes(bytes) => {
+                                    String::from_utf8(bytes.inner().clone())
+                                        .expect("key is not a valid utf-8 sequence")
+                                }
+                                pickled::HashableValue::String(string) => string.inner().clone(),
                                 other => {
                                     panic!("unexpected key type {:?}", other)
                                 }
@@ -770,13 +792,13 @@ where
 
                             let value = match value {
                                 Value::Bytes(bytes) => {
-                                    if let Ok(result) = String::from_utf8(bytes.clone()) {
-                                        Value::String(result)
+                                    if let Ok(result) = String::from_utf8(bytes.inner().clone()) {
+                                        Value::String(result.into())
                                     } else {
-                                        Value::Bytes(bytes)
+                                        Value::Bytes(bytes.clone())
                                     }
                                 }
-                                other => other,
+                                other => other.clone(),
                             };
 
                             (key, value)
@@ -798,7 +820,9 @@ where
                         .remove("playerClanTag")
                         .unwrap()
                         .string()
-                        .expect("playerClanTag is not a string"),
+                        .expect("playerClanTag is not a string")
+                        .inner()
+                        .clone(),
                     typ: extra_dict
                         .remove("type")
                         .unwrap()
@@ -813,7 +837,9 @@ where
                         .remove("playerName")
                         .unwrap()
                         .string()
-                        .expect("playerName is not a string"),
+                        .expect("playerName is not a string")
+                        .inner()
+                        .clone(),
                 };
 
                 assert!(extra_dict.is_empty());
@@ -823,8 +849,8 @@ where
             DecodedPacketPayload::Chat {
                 entity_id: *entity_id,
                 sender_id: *sender_id,
-                audience: std::str::from_utf8(&target).unwrap(),
-                message: std::str::from_utf8(&message).unwrap(),
+                audience: std::str::from_utf8(target).unwrap(),
+                message: std::str::from_utf8(message).unwrap(),
                 extra_data,
             }
         } else if *method == "receive_CommonCMD" {
@@ -858,7 +884,7 @@ where
                     };
                     let message = match line {
                         1 => VoiceLine::AttentionToSquare(a, b as u32),
-                        2 => VoiceLine::QuickTactic(a as u16, b as u64),
+                        2 => VoiceLine::QuickTactic(a as u16, b),
                         3 => VoiceLine::RequestingSupport(None),
                         5 => VoiceLine::Wilco,
                         6 => VoiceLine::Negative,
@@ -907,7 +933,7 @@ where
                 _ => panic!(),
             };
             let mut arg2 = HashMap::new();
-            for (k, v) in value.iter() {
+            for (k, v) in value.inner().iter() {
                 let k = match k {
                     pickled::value::HashableValue::I64(i) => *i,
                     _ => panic!(),
@@ -917,14 +943,16 @@ where
                     _ => panic!(),
                 };
                 let v: Vec<_> = v
+                    .inner()
                     .iter()
                     .map(|elem| match elem {
                         pickled::value::Value::Dict(d) => Some(
-                            d.iter()
+                            d.inner()
+                                .iter()
                                 .map(|(k, v)| {
                                     let k = match k {
                                         pickled::value::HashableValue::Bytes(b) => {
-                                            std::str::from_utf8(b).unwrap().to_string()
+                                            std::str::from_utf8(&b.inner()).unwrap().to_string()
                                         }
                                         _ => panic!(),
                                     };
@@ -952,16 +980,16 @@ where
 
             let mut players_out = vec![];
             if let pickled::value::Value::List(players) = &value {
-                for player in players.iter() {
+                for player in players.inner().iter() {
                     let mut values = HashMap::new();
                     if let pickled::value::Value::List(elements) = player {
-                        for elem in elements.iter() {
+                        for elem in elements.inner().iter() {
                             if let pickled::value::Value::Tuple(kv) = elem {
-                                let key = match kv[0] {
-                                    pickled::value::Value::I64(key) => key,
+                                let key = match &kv.inner()[0] {
+                                    pickled::value::Value::I64(key) => *key,
                                     _ => panic!(),
                                 };
-                                values.insert(key, kv[1].clone());
+                                values.insert(key, kv.inner()[1].clone());
                             }
                         }
                     }
@@ -1066,6 +1094,7 @@ where
                         .unwrap()
                         .string_ref()
                         .expect("name is not a string")
+                        .inner()
                         .clone();
 
                     let clan = values
@@ -1073,14 +1102,14 @@ where
                         .unwrap()
                         .string_ref()
                         .expect("clanTag is not a string")
+                        .inner()
                         .clone();
 
-                    let clan_id = values
+                    let clan_id = *values
                         .get(keys.get("clanID").unwrap())
                         .unwrap()
                         .i64_ref()
-                        .expect("clanID is not an i64")
-                        .clone();
+                        .expect("clanID is not an i64");
 
                     let shipid = *values
                         .get(keys.get("shipId").unwrap())
@@ -1092,7 +1121,7 @@ where
                         .unwrap()
                         .i64_ref()
                         .expect("shipId is not an i64");
-                    let playerid = *values
+                    let _playerid = *values
                         .get(keys.get("shipParamsId").unwrap())
                         .unwrap()
                         .i64_ref()
@@ -1117,8 +1146,9 @@ where
                         .get(keys.get("realm").unwrap())
                         .unwrap()
                         .string_ref()
-                        .cloned()
-                        .expect("maxHealth is not an i64");
+                        .expect("realm is not a string")
+                        .inner()
+                        .clone();
 
                     let db_id = values
                         .get(keys.get("accountDBID").unwrap())
@@ -1134,7 +1164,7 @@ where
                         .cloned()
                         .expect("accountDBID is not an i64");
 
-                    let anti_abuse_enabled = values
+                    let _anti_abuse_enabled = values
                         .get(keys.get("antiAbuseEnabled").unwrap())
                         .unwrap()
                         .bool_ref()
@@ -1234,17 +1264,18 @@ where
             let mut stats = vec![];
             match value {
                 pickled::value::Value::Dict(d) => {
-                    for (k, v) in d.iter() {
+                    for (k, v) in d.inner().iter() {
                         let k = match k {
                             pickled::value::HashableValue::Tuple(t) => {
+                                let t = t.inner();
                                 assert!(t.len() == 2);
                                 (
-                                    match t[0] {
-                                        pickled::value::HashableValue::I64(i) => i,
+                                    match &t[0] {
+                                        pickled::value::HashableValue::I64(i) => *i,
                                         _ => panic!("foo"),
                                     },
-                                    match t[1] {
-                                        pickled::value::HashableValue::I64(i) => i,
+                                    match &t[1] {
+                                        pickled::value::HashableValue::I64(i) => *i,
                                         _ => panic!("foo"),
                                     },
                                 )
@@ -1253,17 +1284,18 @@ where
                         };
                         let v = match v {
                             pickled::value::Value::List(t) => {
+                                let t = t.inner();
                                 assert!(t.len() == 2);
                                 (
-                                    match t[0] {
-                                        pickled::value::Value::I64(i) => i,
+                                    match &t[0] {
+                                        pickled::value::Value::I64(i) => *i,
                                         _ => panic!("foo"),
                                     },
-                                    match t[1] {
-                                        pickled::value::Value::F64(i) => i,
+                                    match &t[1] {
+                                        pickled::value::Value::F64(i) => *i,
                                         // TODO: This appears in the (17,2) key,
                                         // it is unknown what it means
-                                        pickled::value::Value::I64(i) => i as f64,
+                                        pickled::value::Value::I64(i) => *i as f64,
                                         _ => panic!("foo"),
                                     },
                                 )
@@ -1465,8 +1497,8 @@ where
             };
             DecodedPacketPayload::Consumable {
                 entity: *entity_id,
-                consumable: consumable,
-                duration: duration,
+                consumable,
+                duration,
             }
         } else {
             DecodedPacketPayload::EntityMethod(packet)
@@ -1487,7 +1519,8 @@ where
     'rawpacket: 'argtype,
 {
     pub fn from(version: &Version, audit: bool, packet: &'rawpacket Packet<'_, '_>) -> Self {
-        let decoded = Self {
+        
+        Self {
             clock: packet.clock,
             packet_type: packet.packet_type,
             payload: DecodedPacketPayload::from(
@@ -1496,8 +1529,7 @@ where
                 &packet.payload,
                 packet.packet_type,
             ),
-        };
-        decoded
+        }
     }
 }
 

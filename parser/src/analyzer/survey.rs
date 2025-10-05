@@ -1,9 +1,8 @@
 use wowsunpack::data::Version;
 
 use crate::analyzer::*;
-use crate::packet2::{Entity, Packet};
+use crate::packet2::Packet;
 use std::cell::{RefCell, RefMut};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
@@ -13,6 +12,12 @@ pub struct SurveyStats {
     pub invalid_packets: usize,
     pub audits: Vec<String>,
     pub date_time: String,
+}
+
+impl Default for SurveyStats {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SurveyStats {
@@ -51,7 +56,7 @@ impl AnalyzerMutBuilder for SurveyBuilder {
             skip_decoder: self.skip_decoder,
             decoder: decoder::DecoderBuilder::new(true, true, None).build(meta),
             stats: self.stats.clone(),
-            version: version,
+            version,
         })
     }
 }
@@ -74,19 +79,13 @@ impl AnalyzerMut for Survey {
         if !self.skip_decoder {
             //let decoded = self.decoder.process(packet);
             let decoded = decoder::DecodedPacket::from(&self.version, true, packet);
-            match &decoded.payload {
-                crate::analyzer::decoder::DecodedPacketPayload::Audit(s) => {
-                    stats.audits.push(s.to_string());
-                }
-                _ => {}
+            if let crate::analyzer::decoder::DecodedPacketPayload::Audit(s) = &decoded.payload {
+                stats.audits.push(s.to_string());
             }
         }
 
-        match &packet.payload {
-            crate::packet2::PacketType::Invalid(_) => {
-                stats.invalid_packets += 1;
-            }
-            _ => {}
+        if let crate::packet2::PacketType::Invalid(_) = &packet.payload {
+            stats.invalid_packets += 1;
         }
         stats.total_packets += 1;
     }

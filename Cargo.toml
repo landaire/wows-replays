@@ -10,3 +10,8 @@ members = [
 
 [workspace.dependencies]
 wowsunpack = { version = "0.8", default-features = false, features = ["json"] }
+pickled = "2.0.0-alpha2"
+
+[patch.crates-io]
+#wowsunpack = { path = "../wowsunpack" }
+#pickled = { path = "../pickled" }

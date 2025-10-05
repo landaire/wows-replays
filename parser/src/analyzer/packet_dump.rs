@@ -1,11 +1,16 @@
-use std::collections::HashMap;
 
 use crate::analyzer::{Analyzer, AnalyzerBuilder};
-use crate::packet2::{Entity, Packet};
+use crate::packet2::Packet;
 
 use super::analyzer::AnalyzerMut;
 
 pub struct PacketDumpBuilder {}
+
+impl Default for PacketDumpBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl PacketDumpBuilder {
     pub fn new() -> Self {

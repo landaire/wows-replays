@@ -1,4 +1,3 @@
-use image::DynamicImage;
 use image::GenericImageView;
 use image::Pixel;
 use image::{imageops::FilterType, ImageFormat, RgbImage};
@@ -81,7 +80,7 @@ impl AnalyzerMut for DamageMonitor {
             println!("Map name = {}", self.meta.as_ref().unwrap().mapName);
             let minimap = image::load(
                 std::io::BufReader::new(
-                    std::fs::File::open(&format!(
+                    std::fs::File::open(format!(
                         "versions/0.10.3/{}/minimap.png",
                         self.meta.as_ref().unwrap().mapName
                     ))
@@ -92,7 +91,7 @@ impl AnalyzerMut for DamageMonitor {
             .unwrap();
             let minimap_background = image::load(
                 std::io::BufReader::new(
-                    std::fs::File::open(&format!(
+                    std::fs::File::open(format!(
                         "versions/0.10.3/{}/minimap_water.png",
                         self.meta.as_ref().unwrap().mapName
                     ))
@@ -110,7 +109,7 @@ impl AnalyzerMut for DamageMonitor {
                 for y in 0..760 {
                     let bg = minimap_background.get_pixel(x, y);
                     let fg = minimap.get_pixel(x, y);
-                    let mut bg = bg.clone();
+                    let mut bg = bg;
                     bg.blend(&fg);
                     image.put_pixel(x, y, bg.to_rgb());
                 }
@@ -178,10 +177,8 @@ impl AnalyzerMut for DamageMonitor {
         // 700 for Fault Line (42x42km)
         let scale = map_widths
             .get(&self.meta.as_ref().unwrap().mapName)
-            .expect(&format!(
-                "Could not find size of map {}!",
-                self.meta.as_ref().unwrap().mapName
-            ))
+            .unwrap_or_else(|| panic!("Could not find size of map {}!",
+                self.meta.as_ref().unwrap().mapName))
             * 50
             / 3;
         let scale = scale as f64;
@@ -229,17 +226,14 @@ impl AnalyzerMut for DamageMonitor {
         let time = format!("{:02}:{:02}", minutes, seconds);
 
         let decoded = DecodedPacket::from(&self.version, false, packet);
-        match &decoded.payload {
-            DecodedPacketPayload::OnArenaStateReceived { players, .. } => {
-                for player in players.iter() {
-                    if player.username == self.username {
-                        self.shipid = Some(player.meta_ship_id as u32);
-                        self.avatarid = Some(player.avatar_id as u32);
-                        break;
-                    }
+        if let DecodedPacketPayload::OnArenaStateReceived { players, .. } = &decoded.payload {
+            for player in players.iter() {
+                if player.username == self.username {
+                    self.shipid = Some(player.meta_ship_id as u32);
+                    self.avatarid = Some(player.avatar_id as u32);
+                    break;
                 }
             }
-            _ => {}
         }
 
         match &packet.payload {
@@ -324,7 +318,7 @@ impl AnalyzerMut for DamageMonitor {
                                             self.damages.push(DamageVector {
                                                 start: (shot.start_pos.0, shot.start_pos.2),
                                                 target: (self.position.0, self.position.2),
-                                                amount: amount,
+                                                amount,
                                             });
                                             break;
                                         }
@@ -357,21 +351,19 @@ impl AnalyzerMut for DamageMonitor {
                                         wowsunpack::rpc::typedefs::ArgValue::FixedDict(m) => m,
                                         _ => panic!("foo"),
                                     };
-                                    if !self.artillery_shots.contains_key(&owner_id) {
-                                        self.artillery_shots.insert(owner_id, vec![]);
-                                    }
+                                    self.artillery_shots.entry(owner_id).or_default();
                                     self.artillery_shots.get_mut(&owner_id).unwrap().push(
                                         ArtilleryShot {
                                             start_time: packet.clock,
                                             start_pos: match shot.get("pos").unwrap() {
                                                 wowsunpack::rpc::typedefs::ArgValue::Vector3(v) => {
-                                                    v.clone()
+                                                    *v
                                                 }
                                                 _ => panic!("foo"),
                                             },
                                             target: match shot.get("tarPos").unwrap() {
                                                 wowsunpack::rpc::typedefs::ArgValue::Vector3(v) => {
-                                                    v.clone()
+                                                    *v
                                                 }
                                                 _ => panic!("foo"),
                                             },

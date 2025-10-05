@@ -8,7 +8,7 @@ use wowsunpack::data::idx;
 use wowsunpack::data::pkg::PkgFileLoader;
 use wowsunpack::rpc::entitydefs::EntitySpec;
 use wowsunpack::{
-    data::{DataFileLoader, DataFileWithCallback, Version},
+    data::{DataFileWithCallback, Version},
     rpc::entitydefs::parse_scripts,
 };
 
@@ -129,7 +129,7 @@ impl AnalyzerMutBuilder for InvestigativeBuilder {
     ) -> Box<dyn wows_replays::analyzer::AnalyzerMut> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         let decoder = InvestigativePrinter {
-            version: version,
+            version,
             filter_packet: self
                 .filter_packet
                 .as_ref()
@@ -309,7 +309,7 @@ fn parse_replay<P: wows_replays::analyzer::AnalyzerMutBuilder>(
             analyzer_set.finish();
             Ok(())
         }
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e),
     }
 }
 
@@ -393,7 +393,7 @@ impl SurveyResults {
                 if ninvalid > 0 {
                     self.successes_with_invalids += 1;
                 }
-                if audits.len() > 0 {
+                if !audits.is_empty() {
                     self.audits.insert(hash, (datetime, audits));
                 }
             }
@@ -455,7 +455,7 @@ impl SurveyResults {
             self.version_failures,
             100. * self.version_failures as f64 / self.total as f64
         );
-        if self.invalid_versions.len() > 0 {
+        if !self.invalid_versions.is_empty() {
             for (k, v) in self.invalid_versions.iter() {
                 println!("  - Version {} appeared {} times", k, v);
             }
@@ -481,7 +481,7 @@ fn survey_file(
     let survey =
         wows_replays::analyzer::survey::SurveyBuilder::new(survey_stats.clone(), skip_decode);
     match parse_replay(
-        &std::path::PathBuf::from(replay),
+        &replay,
         game_dir,
         extracted_dir,
         survey,

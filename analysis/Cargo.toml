@@ -19,7 +19,7 @@ graphics = ["dep:plotters", "dep:image"]
 #thiserror = "1.0.19"
 #rust-crypto = "0.2.36"
 #roxmltree = "0.14.1"
-pickled = "1.0.0"
+pickled = "2.0.0-alpha"
 plotters = { version = "0.3.7", optional = true }
 image = { version = "0.24.3", optional = true }
 #rust-embed = "6.0.0"

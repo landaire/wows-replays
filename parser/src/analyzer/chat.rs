@@ -1,14 +1,19 @@
 use wowsunpack::data::Version;
 
 use crate::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
-use crate::analyzer::{Analyzer, AnalyzerBuilder};
-use crate::packet2::{Entity, Packet};
+use crate::packet2::Packet;
 use std::collections::HashMap;
 use std::convert::TryInto;
 
 use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
 
 pub struct ChatLoggerBuilder;
+
+impl Default for ChatLoggerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ChatLoggerBuilder {
     pub fn new() -> ChatLoggerBuilder {

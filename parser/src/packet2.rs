@@ -264,7 +264,7 @@ impl<'argtype> Parser<'argtype> {
         let (i, method_id) = le_u32(i)?;
         let (i, payload_length) = le_u32(i)?;
         let (i, payload) = take(payload_length)(i)?;
-        assert!(i.len() == 0);
+        assert!(i.is_empty());
 
         let entity_type = self.entities.get(&entity_id).unwrap().entity_type;
 
@@ -277,7 +277,7 @@ impl<'argtype> Parser<'argtype> {
                 Ok(x) => x,
                 Err(e) => {
                     return Err(failure_from_kind(crate::ErrorKind::UnableToParseRpcValue {
-                        method: format!("{}", spec.name),
+                        method: spec.name.to_string(),
                         argnum: idx,
                         argtype: format!("{:?}", arg),
                         packet: i.to_vec(),
@@ -492,14 +492,14 @@ impl<'argtype> Parser<'argtype> {
         let mut props: HashMap<&str, _> = HashMap::new();
         let mut stored_props: Vec<_> = vec![];
         for prop_id in 0..spec.base_properties.len() {
-            let spec = &spec.base_properties[prop_id as usize];
+            let spec = &spec.base_properties[prop_id];
             let (new_i, value) = match spec.prop_type.parse_value(i) {
                 Ok(x) => x,
                 Err(e) => {
                     panic!("ERROR");
                     return Err(failure_from_kind(crate::ErrorKind::UnableToParseRpcValue {
                         method: format!("BasePlayerCreate::{}", spec.name),
-                        argnum: prop_id as usize,
+                        argnum: prop_id,
                         argtype: format!("{:?}", spec),
                         packet: i.to_vec(),
                         error: format!("{:?}", e),
@@ -637,14 +637,14 @@ impl<'argtype> Parser<'argtype> {
         let mut props: HashMap<&str, _> = HashMap::new();
         let mut stored_props: Vec<_> = vec![];
         for prop_id in 0..spec.internal_properties.len() {
-            let spec = &spec.internal_properties[prop_id as usize];
+            let spec = &spec.internal_properties[prop_id];
             let (new_i, value) = match spec.prop_type.parse_value(i) {
                 Ok(x) => x,
                 Err(e) => {
                     panic!("ERROR");
                     return Err(failure_from_kind(crate::ErrorKind::UnableToParseRpcValue {
                         method: format!("CellPlayerCreate::{}", spec.name),
-                        argnum: prop_id as usize,
+                        argnum: prop_id,
                         argtype: format!("{:?}", spec),
                         packet: i.to_vec(),
                         error: format!("{:?}", e),
@@ -803,22 +803,22 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             remaining,
             Packet {
-                packet_size: packet_size,
-                packet_type: packet_type,
-                clock: clock,
-                payload: payload,
-                raw: raw,
+                packet_size,
+                packet_type,
+                clock,
+                payload,
+                raw,
             },
         ))
     }
 
-    pub fn parse_packets_mut<'a, 'b, P: PacketProcessorMut>(
-        &'b mut self,
-        i: &'a [u8],
+    pub fn parse_packets_mut<P: PacketProcessorMut>(
+        &mut self,
+        i: &[u8],
         p: &mut P,
     ) -> Result<(), ErrorKind> {
         let mut i = i;
-        while i.len() > 0 {
+        while !i.is_empty() {
             let (remaining, packet) = self.parse_packet(i)?;
             i = remaining;
             p.process_mut(packet);
@@ -826,13 +826,13 @@ impl<'argtype> Parser<'argtype> {
         Ok(())
     }
 
-    pub fn parse_packets<'a, 'b, P: PacketProcessor>(
-        &'b mut self,
-        i: &'a [u8],
+    pub fn parse_packets<P: PacketProcessor>(
+        &mut self,
+        i: &[u8],
         p: &P,
     ) -> Result<(), ErrorKind> {
         let mut i = i;
-        while i.len() > 0 {
+        while !i.is_empty() {
             let (remaining, packet) = self.parse_packet(i)?;
             i = remaining;
             p.process(packet);

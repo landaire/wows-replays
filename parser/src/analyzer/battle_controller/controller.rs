@@ -1,20 +1,15 @@
 use std::{
     borrow::Borrow,
-    cell::{Ref, RefCell},
+    cell::RefCell,
     collections::HashMap,
-    fs::File,
     str::FromStr,
-    sync::atomic::AtomicUsize,
     time::Duration,
 };
 
-use derive_builder::Builder;
 use nom::{multi::count, number::complete::le_u32, sequence::pair};
-use pickled::{HashableValue, Value};
 use serde::{Deserialize, Serialize};
-use strum::ParseError;
 use strum_macros::EnumString;
-use tracing::{debug, event, span, trace, warn, Level};
+use tracing::{debug, span, trace, Level};
 use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
@@ -28,14 +23,12 @@ use crate::{
     analyzer::{
         analyzer::AnalyzerMut,
         decoder::{
-            ChatMessageExtra, DamageReceived, DeathCause, DecodedPacket, DecodedPacketPayloadKind,
-            DecoderBuilder, OnArenaStateReceivedPlayer,
+            ChatMessageExtra, DeathCause, DecodedPacket, OnArenaStateReceivedPlayer,
         },
-        Analyzer,
     },
     packet2::{
-        EntityCreatePacket, EntityMethodPacket, EntityPropertyPacket, Packet, PacketProcessor,
-        PacketProcessorMut, PacketType, PacketTypeKind,
+        EntityCreatePacket, Packet,
+        PacketProcessorMut, PacketType,
     },
     IResult, Rc, ReplayMeta,
 };
@@ -623,7 +616,7 @@ where
         match entity_type {
             EntityType::Vehicle => {
                 let mut props = VehicleProps::default();
-                props.update_from_args(&packet.props, self.version.clone());
+                props.update_from_args(&packet.props, self.version);
 
                 let player = self.player_entities.get(&packet.entity_id);
 
@@ -667,7 +660,7 @@ where
 
     pub fn build_report(mut self) -> BattleReport {
         for (aggressor, damage_events) in &self.damage_dealt {
-            if let Some(aggressor_player) = self.entities_by_id.get_mut(&aggressor) {
+            if let Some(aggressor_player) = self.entities_by_id.get_mut(aggressor) {
                 let vehicle = aggressor_player
                     .vehicle_ref()
                     .expect("aggressor has no vehicle?");
@@ -723,11 +716,10 @@ where
                                 })
                             });
 
-                        if let Some(player) = vehicle.player().as_ref() {
-                            if let Some(frags) = self.frags.get(&player.entity_id) {
+                        if let Some(player) = vehicle.player().as_ref()
+                            && let Some(frags) = self.frags.get(&player.entity_id) {
                                 vehicle.frags = frags.iter().map(DeathInfo::from).collect();
                             }
-                        }
                     }
                     Some(Rc::new(vehicle))
                 } else {
@@ -789,7 +781,7 @@ pub enum ChatChannel {
     Team,
 }
 
-fn parse_ship_config<'a>(blob: &'a [u8], version: Version) -> IResult<&'a [u8], ShipConfig> {
+fn parse_ship_config(blob: &[u8], version: Version) -> IResult<&[u8], ShipConfig> {
     let i = blob;
     let (i, _unk) = le_u32(i)?;
 
@@ -983,9 +975,9 @@ macro_rules! arg_value_to_type {
 
 impl UpdateFromReplayArgs for CrewModifiersCompactParams {
     fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version) {
-        const PARAMS_ID_KEY: &'static str = "paramsId";
-        const IS_IN_ADAPTION_KEY: &'static str = "isInAdaption";
-        const LEARNED_SKILLS_KEY: &'static str = "learnedSkills";
+        const PARAMS_ID_KEY: &str = "paramsId";
+        const IS_IN_ADAPTION_KEY: &str = "isInAdaption";
+        const LEARNED_SKILLS_KEY: &str = "learnedSkills";
 
         if args.contains_key(PARAMS_ID_KEY) {
             self.params_id = arg_value_to_type!(args, PARAMS_ID_KEY, u32);
@@ -1386,9 +1378,8 @@ impl UpdateFromReplayArgs for VehicleProps {
             let value: Vec<u32> = arg_value_to_type!(args, ATBA_TARGETS_KEY, &[()])
                 .iter()
                 .map(|elem| {
-                    elem.uint_32_ref()
+                    *elem.uint_32_ref()
                         .expect("atbaTargets elem is not a u32")
-                        .clone()
                 })
                 .collect();
             self.atba_targets = value;
@@ -1574,7 +1565,7 @@ impl From<&Death> for DeathInfo {
         };
 
         DeathInfo {
-            time_lived: time_lived,
+            time_lived,
             killer: death.killer,
             cause: death.cause,
         }
@@ -1702,7 +1693,7 @@ impl Entity {
     fn update_arena_player(&self, arena_player: Rc<Player>) {
         match self {
             Entity::Vehicle(vehicle) => {
-                RefCell::borrow_mut(&*vehicle).player = Some(arena_player);
+                RefCell::borrow_mut(vehicle).player = Some(arena_player);
             }
         }
     }
@@ -1771,16 +1762,15 @@ where
                 debug!("ENTITY METHOD, {:#?}", method)
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityProperty(prop) => {
-                if let Some(entity) = self.entities_by_id.get(&prop.entity_id) {
-                    if let Some(vehicle) = entity.vehicle_ref() {
-                        let mut vehicle = RefCell::borrow_mut(&vehicle);
+                if let Some(entity) = self.entities_by_id.get(&prop.entity_id)
+                    && let Some(vehicle) = entity.vehicle_ref() {
+                        let mut vehicle = RefCell::borrow_mut(vehicle);
                         vehicle.props.update_by_name(
                             prop.property,
                             &prop.value,
-                            self.version.clone(),
+                            self.version,
                         );
                     }
-                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::BasePlayerCreate(base) => {
                 trace!("BASE PLAYER CREATE");
@@ -1832,12 +1822,10 @@ where
                     );
 
                     if let Some(previous_state) = self.player_entities.get(&battle_player.entity_id)
-                    {
-                        if previous_state.is_connected && !self.match_finished {
+                        && previous_state.is_connected && !self.match_finished {
                             battle_player.did_disconnect =
                                 !battle_player.is_connected || previous_state.did_disconnect;
                         }
-                    }
 
                     let battle_player = Rc::new(battle_player);
 

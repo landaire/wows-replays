@@ -1,6 +1,4 @@
-use std::collections::HashMap;
 
-use crate::packet2::Entity;
 
 pub trait AnalyzerBuilder {
     fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer>;

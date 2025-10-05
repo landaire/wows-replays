@@ -68,7 +68,7 @@ fn parse_meta(i: &[u8]) -> IResult<&[u8], (&str, ReplayMeta)> {
     let meta = match decode_meta(raw_meta) {
         Ok(x) => x,
         Err(e) => {
-            return Err(nom::Err::Error(e.into()));
+            return Err(nom::Err::Error(e));
         }
     };
     Ok((i, meta))
@@ -90,7 +90,7 @@ fn replay_format(i: &[u8]) -> IResult<&[u8], Replay> {
     Ok((
         i,
         Replay {
-            meta: meta,
+            meta,
             raw_meta,
             extra_data: blocks,
             decompressed_size,

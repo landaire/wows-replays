@@ -62,7 +62,7 @@ fn nested_update_command<'argtype>(
             let entry_idx = reader
                 .read_u8(entries.len().next_power_of_two().trailing_zeros() as u8)
                 .unwrap();
-            while reader.remaining() % 8 != 0 {
+            while !reader.remaining().is_multiple_of(8) {
                 reader.read_u8(1).unwrap();
             }
             let mut remaining = vec![0; reader.remaining() as usize / 8];
@@ -82,13 +82,13 @@ fn nested_update_command<'argtype>(
                 ArgValue::NullableFixedDict(None) => unimplemented!(),
                 _ => panic!("FixedDict type caused unexpected value {:?}", prop_value),
             }
-            return PropertyNesting {
+            PropertyNesting {
                 levels: vec![],
                 action: UpdateAction::SetKey {
                     key: &entries[entry_idx as usize].name,
-                    value: value,
+                    value,
                 },
-            };
+            }
         }
         (ArgType::Array((_size, element_type)), ArgValue::Array(elements)) => {
             let idx_bits = if is_slice {
@@ -105,13 +105,13 @@ fn nested_update_command<'argtype>(
                 None
             };
 
-            while reader.remaining() % 8 != 0 {
+            while !reader.remaining().is_multiple_of(8) {
                 reader.read_u8(1).unwrap();
             }
             let mut remaining = vec![0; reader.remaining() as usize / 8];
             reader.read_u8_slice(&mut remaining[..]).unwrap();
 
-            if remaining.len() == 0 {
+            if remaining.is_empty() {
                 // Remove elements
                 if is_slice {
                     slice_insert(idx1 as usize, idx2.unwrap() as usize, elements, vec![]);
@@ -129,7 +129,7 @@ fn nested_update_command<'argtype>(
 
             let mut new_elements = vec![];
             let mut i = &remaining[..];
-            while i.len() > 0 {
+            while !i.is_empty() {
                 let (new_i, element) = element_type.parse_value(i).unwrap();
                 i = new_i;
                 new_elements.push(element);
@@ -142,23 +142,23 @@ fn nested_update_command<'argtype>(
                     elements,
                     new_elements.clone(),
                 );
-                return PropertyNesting {
+                PropertyNesting {
                     levels: vec![],
                     action: UpdateAction::SetRange {
                         start: idx1 as usize,
                         stop: idx2.unwrap() as usize,
                         values: new_elements,
                     },
-                };
+                }
             } else {
                 elements[idx1 as usize] = new_elements.remove(0);
-                return PropertyNesting {
+                PropertyNesting {
                     levels: vec![],
                     action: UpdateAction::SetElement {
                         index: idx1 as usize,
                         value: elements[idx1 as usize].clone(),
                     },
-                };
+                }
             }
         }
         x => {
@@ -197,7 +197,7 @@ pub fn get_nested_prop_path_helper<'argtype>(
                 0,
                 PropertyNestLevel::DictKey(&propspec[prop_idx as usize].name),
             );
-            return nesting;
+            nesting
         }
         (ArgType::FixedDict((_, propspec)), ArgValue::NullableFixedDict(Some(propvalue))) => {
             let prop_idx = reader
@@ -216,7 +216,7 @@ pub fn get_nested_prop_path_helper<'argtype>(
                 0,
                 PropertyNestLevel::DictKey(&propspec[prop_idx as usize].name),
             );
-            return nesting;
+            nesting
         }
         (ArgType::Array((_size, element_type)), ArgValue::Array(arr)) => {
             let idx = reader
@@ -227,7 +227,7 @@ pub fn get_nested_prop_path_helper<'argtype>(
             nesting
                 .levels
                 .insert(0, PropertyNestLevel::ArrayIndex(idx as usize));
-            return nesting;
+            nesting
         }
         x => {
             println!("{:#?}", x);

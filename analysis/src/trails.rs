@@ -41,9 +41,7 @@ impl AnalyzerMut for TrailRenderer {
     fn process_mut(&mut self, packet: &Packet<'_, '_>) {
         match &packet.payload {
             PacketType::Position(pos) => {
-                if !self.trails.contains_key(&pos.pid) {
-                    self.trails.insert(pos.pid, vec![]);
-                }
+                self.trails.entry(pos.pid).or_default();
                 self.trails
                     .get_mut(&pos.pid)
                     .unwrap()
@@ -65,7 +63,7 @@ impl AnalyzerMut for TrailRenderer {
         {
             let minimap = image::load(
                 std::io::BufReader::new(
-                    std::fs::File::open(&format!(
+                    std::fs::File::open(format!(
                         "versions/0.10.3/{}/minimap.png",
                         self.meta.as_ref().unwrap().mapName
                     ))
@@ -76,7 +74,7 @@ impl AnalyzerMut for TrailRenderer {
             .unwrap();
             let minimap_background = image::load(
                 std::io::BufReader::new(
-                    std::fs::File::open(&format!(
+                    std::fs::File::open(format!(
                         "versions/0.10.3/{}/minimap_water.png",
                         self.meta.as_ref().unwrap().mapName
                     ))
@@ -91,7 +89,7 @@ impl AnalyzerMut for TrailRenderer {
                 for y in 0..760 {
                     let bg = minimap_background.get_pixel(x, y);
                     let fg = minimap.get_pixel(x, y);
-                    let mut bg = bg.clone();
+                    let mut bg = bg;
                     bg.blend(&fg);
                     image.put_pixel(x, y, bg.to_rgb());
                 }
@@ -151,10 +149,8 @@ impl AnalyzerMut for TrailRenderer {
         // 700 for Fault Line (42x42km)
         let scale = map_widths
             .get(&self.meta.as_ref().unwrap().mapName)
-            .expect(&format!(
-                "Could not find size of map {}!",
-                self.meta.as_ref().unwrap().mapName
-            ))
+            .unwrap_or_else(|| panic!("Could not find size of map {}!",
+                self.meta.as_ref().unwrap().mapName))
             * 50
             / 3;
         let scale = scale as f64;
