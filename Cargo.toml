@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.dependencies]
-wowsunpack = { version = "0.8", default-features = false, features = ["json"] }
+wowsunpack = { version = "0.9", default-features = false, features = ["json"] }
 pickled = "2.0.0-alpha2"
 
 [patch.crates-io]
