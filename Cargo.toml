@@ -9,8 +9,8 @@ members = [
 ]
 
 [workspace.dependencies]
-wowsunpack = { version = "0.9", default-features = false, features = ["json"] }
-pickled = "2.0.0-alpha2"
+wowsunpack = { version = "0.10", default-features = false, features = ["json"] }
+pickled = "2.0.0-alpha3"
 
 [patch.crates-io]
 #wowsunpack = { path = "../wowsunpack" }
