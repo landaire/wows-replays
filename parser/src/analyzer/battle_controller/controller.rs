@@ -1,15 +1,9 @@
-use std::{
-    borrow::Borrow,
-    cell::RefCell,
-    collections::HashMap,
-    str::FromStr,
-    time::Duration,
-};
+use std::{borrow::Borrow, cell::RefCell, collections::HashMap, str::FromStr, time::Duration};
 
 use nom::{multi::count, number::complete::le_u32, sequence::pair};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tracing::{debug, span, trace, Level};
+use tracing::{Level, debug, span, trace};
 use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
@@ -20,17 +14,12 @@ use wowsunpack::{
 static TIME_UNTIL_GAME_START: Duration = Duration::from_secs(30);
 
 use crate::{
+    IResult, Rc, ReplayMeta,
     analyzer::{
         analyzer::AnalyzerMut,
-        decoder::{
-            ChatMessageExtra, DeathCause, DecodedPacket, OnArenaStateReceivedPlayer,
-        },
+        decoder::{ChatMessageExtra, DeathCause, DecodedPacket, OnArenaStateReceivedPlayer},
     },
-    packet2::{
-        EntityCreatePacket, Packet,
-        PacketProcessorMut, PacketType,
-    },
-    IResult, Rc, ReplayMeta,
+    packet2::{EntityCreatePacket, Packet, PacketProcessorMut, PacketType},
 };
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -717,9 +706,10 @@ where
                             });
 
                         if let Some(player) = vehicle.player().as_ref()
-                            && let Some(frags) = self.frags.get(&player.entity_id) {
-                                vehicle.frags = frags.iter().map(DeathInfo::from).collect();
-                            }
+                            && let Some(frags) = self.frags.get(&player.entity_id)
+                        {
+                            vehicle.frags = frags.iter().map(DeathInfo::from).collect();
+                        }
                     }
                     Some(Rc::new(vehicle))
                 } else {
@@ -746,7 +736,7 @@ where
                 self.winning_team.map(|team| {
                     if team == self_entity.player.as_ref().unwrap().team_id as i8 {
                         BattleResult::Win(team)
-                    } else if team > 0 {
+                    } else if team >= 0 {
                         BattleResult::Loss(1)
                     } else {
                         BattleResult::Draw
@@ -1377,10 +1367,7 @@ impl UpdateFromReplayArgs for VehicleProps {
         if args.contains_key(ATBA_TARGETS_KEY) {
             let value: Vec<u32> = arg_value_to_type!(args, ATBA_TARGETS_KEY, &[()])
                 .iter()
-                .map(|elem| {
-                    *elem.uint_32_ref()
-                        .expect("atbaTargets elem is not a u32")
-                })
+                .map(|elem| *elem.uint_32_ref().expect("atbaTargets elem is not a u32"))
                 .collect();
             self.atba_targets = value;
         }
@@ -1763,14 +1750,13 @@ where
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityProperty(prop) => {
                 if let Some(entity) = self.entities_by_id.get(&prop.entity_id)
-                    && let Some(vehicle) = entity.vehicle_ref() {
-                        let mut vehicle = RefCell::borrow_mut(vehicle);
-                        vehicle.props.update_by_name(
-                            prop.property,
-                            &prop.value,
-                            self.version,
-                        );
-                    }
+                    && let Some(vehicle) = entity.vehicle_ref()
+                {
+                    let mut vehicle = RefCell::borrow_mut(vehicle);
+                    vehicle
+                        .props
+                        .update_by_name(prop.property, &prop.value, self.version);
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::BasePlayerCreate(base) => {
                 trace!("BASE PLAYER CREATE");
@@ -1822,10 +1808,12 @@ where
                     );
 
                     if let Some(previous_state) = self.player_entities.get(&battle_player.entity_id)
-                        && previous_state.is_connected && !self.match_finished {
-                            battle_player.did_disconnect =
-                                !battle_player.is_connected || previous_state.did_disconnect;
-                        }
+                        && previous_state.is_connected
+                        && !self.match_finished
+                    {
+                        battle_player.did_disconnect =
+                            !battle_player.is_connected || previous_state.did_disconnect;
+                    }
 
                     let battle_player = Rc::new(battle_player);
 
