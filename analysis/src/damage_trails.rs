@@ -1,12 +1,12 @@
 use image::GenericImageView;
 use image::Pixel;
-use image::{imageops::FilterType, ImageFormat, RgbImage};
+use image::{ImageFormat, RgbImage, imageops::FilterType};
 use plotters::prelude::*;
 use std::collections::HashMap;
+use wows_replays::ReplayMeta;
 use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
 use wows_replays::analyzer::*;
 use wows_replays::packet2::{EntityMethodPacket, Packet, PacketType};
-use wows_replays::ReplayMeta;
 use wowsunpack::data::Version;
 use wowsunpack::rpc;
 
@@ -177,8 +177,12 @@ impl AnalyzerMut for DamageMonitor {
         // 700 for Fault Line (42x42km)
         let scale = map_widths
             .get(&self.meta.as_ref().unwrap().mapName)
-            .unwrap_or_else(|| panic!("Could not find size of map {}!",
-                self.meta.as_ref().unwrap().mapName))
+            .unwrap_or_else(|| {
+                panic!(
+                    "Could not find size of map {}!",
+                    self.meta.as_ref().unwrap().mapName
+                )
+            })
             * 50
             / 3;
         let scale = scale as f64;
@@ -226,11 +230,15 @@ impl AnalyzerMut for DamageMonitor {
         let time = format!("{:02}:{:02}", minutes, seconds);
 
         let decoded = DecodedPacket::from(&self.version, false, packet);
-        if let DecodedPacketPayload::OnArenaStateReceived { players, .. } = &decoded.payload {
+        if let DecodedPacketPayload::OnArenaStateReceived {
+            player_states: players,
+            ..
+        } = &decoded.payload
+        {
             for player in players.iter() {
-                if player.username == self.username {
-                    self.shipid = Some(player.meta_ship_id as u32);
-                    self.avatarid = Some(player.avatar_id as u32);
+                if player.username() == self.username {
+                    self.shipid = Some(player.meta_ship_id() as u32);
+                    self.avatarid = Some(player.avatar_id() as u32);
                     break;
                 }
             }

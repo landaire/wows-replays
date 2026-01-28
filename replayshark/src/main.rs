@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use clap::{App, Arg, SubCommand};
 use std::borrow::Cow;
 use std::fs::read_dir;
@@ -13,11 +13,11 @@ use wowsunpack::{
 };
 
 use wows_replays::{
-    analyzer::{
-        chat::ChatLoggerBuilder, summary::SummaryBuilder, AnalyzerAdapter, AnalyzerBuilder,
-        AnalyzerMutBuilder,
-    },
     ErrorKind, ReplayFile,
+    analyzer::{
+        AnalyzerAdapter, AnalyzerBuilder, AnalyzerMutBuilder, chat::ChatLoggerBuilder,
+        summary::SummaryBuilder,
+    },
 };
 
 struct InvestigativePrinter {
@@ -39,17 +39,17 @@ impl wows_replays::analyzer::AnalyzerMut for InvestigativePrinter {
         if self.meta {
             match &decoded.payload {
                 wows_replays::analyzer::decoder::DecodedPacketPayload::OnArenaStateReceived {
-                    players,
+                    player_states: players,
                     ..
                 } => {
                     for player in players.iter() {
                         println!(
                             "{} {}/{} ({:x?}/{:x?})",
-                            player.username,
-                            player.meta_ship_id,
-                            player.avatar_id,
-                            (player.meta_ship_id as u32).to_le_bytes(),
-                            (player.avatar_id as u32).to_le_bytes()
+                            player.username(),
+                            player.meta_ship_id(),
+                            player.avatar_id(),
+                            (player.meta_ship_id() as u32).to_le_bytes(),
+                            (player.avatar_id() as u32).to_le_bytes()
                         );
                     }
                 }
@@ -480,12 +480,7 @@ fn survey_file(
     ));
     let survey =
         wows_replays::analyzer::survey::SurveyBuilder::new(survey_stats.clone(), skip_decode);
-    match parse_replay(
-        &replay,
-        game_dir,
-        extracted_dir,
-        survey,
-    ) {
+    match parse_replay(&replay, game_dir, extracted_dir, survey) {
         Ok(_) => {
             let stats = survey_stats.borrow();
             if stats.invalid_packets > 0 {

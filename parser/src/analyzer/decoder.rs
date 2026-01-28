@@ -4,11 +4,12 @@ use kinded::Kinded;
 use modular_bitfield::prelude::*;
 use nom::number::complete::{le_f32, le_u8, le_u16, le_u64};
 use pickled::Value;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::iter::FromIterator;
 use wowsunpack::data::Version;
+use wowsunpack::game_params::convert::pickle_to_json;
 use wowsunpack::rpc::typedefs::ArgValue;
 use wowsunpack::unpack_rpc_args;
 
@@ -133,46 +134,531 @@ pub enum DeathCause {
 }
 
 /// Contains the information describing a player
-#[derive(Debug, Clone, Serialize)]
-pub struct OnArenaStateReceivedPlayer {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerStateData {
     /// The username of this player
-    pub username: String,
+    pub(crate) username: String,
     /// The player's clan
-    pub clan: String,
+    pub(crate) clan: String,
     /// The player's clan DB id
-    pub clan_id: i64,
+    pub(crate) clan_id: i64,
     /// The color of the player's clan tag as an RGB integer
-    pub clan_color: i64,
+    pub(crate) clan_color: i64,
     /// The player's DB ID (unique player ID)
-    pub db_id: i64,
+    pub(crate) db_id: i64,
     /// The realm this player belongs to
-    pub realm: String,
+    pub(crate) realm: String,
     /// Their avatar ID in the game
-    pub avatar_id: i64,
+    pub(crate) avatar_id: i64,
     /// Their ship ID in the game
-    pub meta_ship_id: i64,
+    pub(crate) meta_ship_id: i64,
     /// This player's entity created by a CreateEntity packet
-    pub entity_id: i64,
+    pub(crate) entity_id: i64,
     //playeravatarid: i64,
     /// Which team they're on.
-    pub team_id: i64,
+    pub(crate) team_id: i64,
     /// Division ID
-    pub prebattle_id: i64,
+    pub(crate) prebattle_id: i64,
     /// Their starting health
-    pub max_health: i64,
+    pub(crate) max_health: i64,
     /// ????
-    pub is_abuser: bool,
+    pub(crate) is_abuser: bool,
     /// Has hidden stats
-    pub is_hidden: bool,
+    pub(crate) is_hidden: bool,
     /// Has the client loaded into the game
-    pub is_client_loaded: bool,
+    pub(crate) is_client_loaded: bool,
     /// Is the client connected into the game
-    pub is_connected: bool,
+    pub(crate) is_connected: bool,
 
     /// This is a raw dump (with the values converted to strings) of every key for the player.
     // TODO: Replace String with the actual pickle value (which is cleanly serializable)
-    pub raw: HashMap<i64, String>,
-    pub raw_with_names: HashMap<&'static str, serde_json::Value>,
+    #[serde(skip_deserializing)]
+    pub(crate) raw: HashMap<i64, String>,
+    #[serde(skip_deserializing)]
+    pub(crate) raw_with_names: HashMap<&'static str, serde_json::Value>,
+}
+
+impl PlayerStateData {
+    // Key string constants for player data fields
+    pub(crate) const KEY_ACCOUNT_DBID: &'static str = "accountDBID";
+    pub(crate) const KEY_ANTI_ABUSE_ENABLED: &'static str = "antiAbuseEnabled";
+    pub(crate) const KEY_AVATAR_ID: &'static str = "avatarId";
+    pub(crate) const KEY_CAMOUFLAGE_INFO: &'static str = "camouflageInfo";
+    pub(crate) const KEY_CLAN_COLOR: &'static str = "clanColor";
+    pub(crate) const KEY_CLAN_ID: &'static str = "clanID";
+    pub(crate) const KEY_CLAN_TAG: &'static str = "clanTag";
+    pub(crate) const KEY_CREW_PARAMS: &'static str = "crewParams";
+    pub(crate) const KEY_DOG_TAG: &'static str = "dogTag";
+    pub(crate) const KEY_FRAGS_COUNT: &'static str = "fragsCount";
+    pub(crate) const KEY_FRIENDLY_FIRE_ENABLED: &'static str = "friendlyFireEnabled";
+    pub(crate) const KEY_ID: &'static str = "id";
+    pub(crate) const KEY_INVITATIONS_ENABLED: &'static str = "invitationsEnabled";
+    pub(crate) const KEY_IS_ABUSER: &'static str = "isAbuser";
+    pub(crate) const KEY_IS_ALIVE: &'static str = "isAlive";
+    pub(crate) const KEY_IS_BOT: &'static str = "isBot";
+    pub(crate) const KEY_IS_CLIENT_LOADED: &'static str = "isClientLoaded";
+    pub(crate) const KEY_IS_CONNECTED: &'static str = "isConnected";
+    pub(crate) const KEY_IS_HIDDEN: &'static str = "isHidden";
+    pub(crate) const KEY_IS_LEAVER: &'static str = "isLeaver";
+    pub(crate) const KEY_IS_PRE_BATTLE_OWNER: &'static str = "isPreBattleOwner";
+    pub(crate) const KEY_IS_T_SHOOTER: &'static str = "isTShooter";
+    pub(crate) const KEY_KEY_TARGET_MARKERS: &'static str = "keyTargetMarkers";
+    pub(crate) const KEY_KILLED_BUILDINGS_COUNT: &'static str = "killedBuildingsCount";
+    pub(crate) const KEY_MAX_HEALTH: &'static str = "maxHealth";
+    pub(crate) const KEY_NAME: &'static str = "name";
+    pub(crate) const KEY_PLAYER_MODE: &'static str = "playerMode";
+    pub(crate) const KEY_PRE_BATTLE_ID_ON_START: &'static str = "preBattleIdOnStart";
+    pub(crate) const KEY_PRE_BATTLE_SIGN: &'static str = "preBattleSign";
+    pub(crate) const KEY_PREBATTLE_ID: &'static str = "prebattleId";
+    pub(crate) const KEY_REALM: &'static str = "realm";
+    pub(crate) const KEY_SHIP_COMPONENTS: &'static str = "shipComponents";
+    pub(crate) const KEY_SHIP_CONFIG_DUMP: &'static str = "shipConfigDump";
+    pub(crate) const KEY_SHIP_ID: &'static str = "shipId";
+    pub(crate) const KEY_SHIP_PARAMS_ID: &'static str = "shipParamsId";
+    pub(crate) const KEY_SKIN_ID: &'static str = "skinId";
+    pub(crate) const KEY_TEAM_ID: &'static str = "teamId";
+    pub(crate) const KEY_TTK_STATUS: &'static str = "ttkStatus";
+
+    fn convert_raw_dict(
+        values: &HashMap<i64, Value>,
+        version: &Version,
+    ) -> HashMap<&'static str, Value> {
+        let keys: HashMap<&'static str, i64> =
+            if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
+                let mut h = HashMap::new();
+                h.insert(Self::KEY_ACCOUNT_DBID, 0);
+                h.insert(Self::KEY_ANTI_ABUSE_ENABLED, 1);
+                h.insert(Self::KEY_AVATAR_ID, 2);
+                h.insert(Self::KEY_CAMOUFLAGE_INFO, 3);
+                h.insert(Self::KEY_CLAN_COLOR, 4);
+                h.insert(Self::KEY_CLAN_ID, 5);
+                h.insert(Self::KEY_CLAN_TAG, 6);
+                h.insert(Self::KEY_CREW_PARAMS, 7);
+                h.insert(Self::KEY_DOG_TAG, 8);
+                h.insert(Self::KEY_FRAGS_COUNT, 9);
+                h.insert(Self::KEY_FRIENDLY_FIRE_ENABLED, 10);
+                h.insert(Self::KEY_ID, 11);
+                h.insert(Self::KEY_INVITATIONS_ENABLED, 12);
+                h.insert(Self::KEY_IS_ABUSER, 13);
+                h.insert(Self::KEY_IS_ALIVE, 14);
+                h.insert(Self::KEY_IS_BOT, 15);
+                h.insert(Self::KEY_IS_CLIENT_LOADED, 16);
+                h.insert(Self::KEY_IS_CONNECTED, 17);
+                h.insert(Self::KEY_IS_HIDDEN, 18);
+                h.insert(Self::KEY_IS_LEAVER, 19);
+                h.insert(Self::KEY_IS_PRE_BATTLE_OWNER, 20);
+                h.insert(Self::KEY_IS_T_SHOOTER, 21);
+                h.insert(Self::KEY_KEY_TARGET_MARKERS, 22);
+                h.insert(Self::KEY_KILLED_BUILDINGS_COUNT, 23);
+                h.insert(Self::KEY_MAX_HEALTH, 24);
+                h.insert(Self::KEY_NAME, 25);
+                h.insert(Self::KEY_PLAYER_MODE, 26);
+                h.insert(Self::KEY_PRE_BATTLE_ID_ON_START, 27);
+                h.insert(Self::KEY_PRE_BATTLE_SIGN, 28);
+                h.insert(Self::KEY_PREBATTLE_ID, 29);
+                h.insert(Self::KEY_REALM, 30);
+                h.insert(Self::KEY_SHIP_COMPONENTS, 31);
+                h.insert(Self::KEY_SHIP_CONFIG_DUMP, 32);
+                h.insert(Self::KEY_SHIP_ID, 33);
+                h.insert(Self::KEY_SHIP_PARAMS_ID, 34);
+                h.insert(Self::KEY_SKIN_ID, 35);
+                h.insert(Self::KEY_TEAM_ID, 36);
+                h.insert(Self::KEY_TTK_STATUS, 37);
+                h
+            } else if version.is_at_least(&Version::from_client_exe("0,10,9,0")) {
+                // 0.10.9 inserted things at 0x1 and 0x1F
+                let mut h = HashMap::new();
+                h.insert(Self::KEY_AVATAR_ID, 0x2);
+                h.insert(Self::KEY_CLAN_TAG, 0x6);
+                h.insert(Self::KEY_MAX_HEALTH, 0x17);
+                h.insert(Self::KEY_NAME, 0x18);
+                h.insert(Self::KEY_SHIP_ID, 0x20);
+                h.insert(Self::KEY_SHIP_PARAMS_ID, 0x21);
+                h.insert(Self::KEY_SKIN_ID, 0x22);
+                h.insert(Self::KEY_TEAM_ID, 0x23);
+                h
+            } else if version.is_at_least(&Version::from_client_exe("0,10,7,0")) {
+                // 0.10.7
+                let mut h = HashMap::new();
+                h.insert(Self::KEY_AVATAR_ID, 0x1);
+                h.insert(Self::KEY_CLAN_TAG, 0x5);
+                h.insert(Self::KEY_MAX_HEALTH, 0x16);
+                h.insert(Self::KEY_NAME, 0x17);
+                h.insert(Self::KEY_SHIP_ID, 0x1e);
+                h.insert(Self::KEY_SHIP_PARAMS_ID, 0x1f);
+                h.insert(Self::KEY_SKIN_ID, 0x20);
+                h.insert(Self::KEY_TEAM_ID, 0x21);
+                h
+            } else {
+                // 0.10.6 and earlier
+                let mut h = HashMap::new();
+                h.insert(Self::KEY_AVATAR_ID, 0x1);
+                h.insert(Self::KEY_CLAN_TAG, 0x5);
+                h.insert(Self::KEY_MAX_HEALTH, 0x15);
+                h.insert(Self::KEY_NAME, 0x16);
+                h.insert(Self::KEY_SHIP_ID, 0x1d);
+                h.insert(Self::KEY_SHIP_PARAMS_ID, 0x1e);
+                h.insert(Self::KEY_SKIN_ID, 0x1f);
+                h.insert(Self::KEY_TEAM_ID, 0x20);
+                h
+            };
+
+        let mut raw_with_names = HashMap::new();
+        for (k, v) in values.iter() {
+            if let Some(name) = keys
+                .iter()
+                .find_map(|(name, idx)| if *idx == *k { Some(*name) } else { None })
+            {
+                raw_with_names.insert(name, v.clone());
+            }
+        }
+
+        raw_with_names
+    }
+
+    fn from_pickle(value: &pickled::Value, version: &Version) -> Self {
+        let raw_values = convert_flat_dict_to_real_dict(value);
+
+        let mapped_values = Self::convert_raw_dict(&raw_values, version);
+        Self::from_values(raw_values, mapped_values, version)
+    }
+
+    fn from_values(
+        raw_values: HashMap<i64, pickled::Value>,
+        mut mapped_values: HashMap<&'static str, pickled::Value>,
+        _version: &Version,
+    ) -> Self {
+        let avatar = *mapped_values
+            .get(Self::KEY_AVATAR_ID)
+            .unwrap()
+            .i64_ref()
+            .expect("avatarId is not an i64");
+
+        let username = mapped_values
+            .get(Self::KEY_NAME)
+            .unwrap()
+            .string_ref()
+            .expect("name is not a string")
+            .inner()
+            .clone();
+
+        let clan = mapped_values
+            .get(Self::KEY_CLAN_TAG)
+            .unwrap()
+            .string_ref()
+            .expect("clanTag is not a string")
+            .inner()
+            .clone();
+
+        let clan_id = *mapped_values
+            .get(Self::KEY_CLAN_ID)
+            .unwrap()
+            .i64_ref()
+            .expect("clanID is not an i64");
+
+        let shipid = *mapped_values
+            .get(Self::KEY_SHIP_ID)
+            .unwrap()
+            .i64_ref()
+            .expect("shipId is not an i64");
+        let meta_ship_id = *mapped_values
+            .get(Self::KEY_ID)
+            .unwrap()
+            .i64_ref()
+            .expect("shipId is not an i64");
+        let _playerid = *mapped_values
+            .get(Self::KEY_SHIP_PARAMS_ID)
+            .unwrap()
+            .i64_ref()
+            .expect("shipParamsId is not an i64");
+        let _playeravatarid = *mapped_values
+            .get(Self::KEY_SKIN_ID)
+            .unwrap()
+            .i64_ref()
+            .expect("skinId is not an i64");
+        let team = *mapped_values
+            .get(Self::KEY_TEAM_ID)
+            .unwrap()
+            .i64_ref()
+            .expect("teamId is not an i64");
+        let health = *mapped_values
+            .get(Self::KEY_MAX_HEALTH)
+            .unwrap()
+            .i64_ref()
+            .expect("maxHealth is not an i64");
+
+        let realm = mapped_values
+            .get(Self::KEY_REALM)
+            .unwrap()
+            .string_ref()
+            .expect("realm is not a string")
+            .inner()
+            .clone();
+
+        let db_id = mapped_values
+            .get(Self::KEY_ACCOUNT_DBID)
+            .unwrap()
+            .i64_ref()
+            .cloned()
+            .expect("accountDBID is not an i64");
+
+        let prebattle_id = mapped_values
+            .get(Self::KEY_PREBATTLE_ID)
+            .unwrap()
+            .i64_ref()
+            .cloned()
+            .expect("prebattleId is not an i64");
+
+        let _anti_abuse_enabled = mapped_values
+            .get(Self::KEY_ANTI_ABUSE_ENABLED)
+            .unwrap()
+            .bool_ref()
+            .cloned()
+            .expect("antiAbuseEnabled is not a bool");
+
+        let is_abuser = mapped_values
+            .get(Self::KEY_IS_ABUSER)
+            .unwrap()
+            .bool_ref()
+            .cloned()
+            .expect("isAbuser is not a bool");
+
+        let is_hidden = mapped_values
+            .get(Self::KEY_IS_HIDDEN)
+            .unwrap()
+            .bool_ref()
+            .cloned()
+            .expect("isHidden is not a bool");
+
+        let is_connected = mapped_values
+            .get(Self::KEY_IS_CONNECTED)
+            .unwrap()
+            .bool_ref()
+            .cloned()
+            .expect("isConnected is not a bool");
+
+        let is_client_loaded = mapped_values
+            .get(Self::KEY_IS_CLIENT_LOADED)
+            .unwrap()
+            .bool_ref()
+            .cloned()
+            .expect("isClientLoaded is not a bool");
+
+        let clan_color = mapped_values
+            .get(Self::KEY_CLAN_COLOR)
+            .unwrap()
+            .i64_ref()
+            .cloned()
+            .expect("clanColor is not an integer");
+
+        let mut raw = HashMap::new();
+        for (k, v) in raw_values.iter() {
+            raw.insert(*k, format!("{:?}", v));
+        }
+
+        PlayerStateData {
+            username,
+            clan,
+            clan_id,
+            clan_color,
+            realm,
+            db_id,
+            avatar_id: avatar,
+            meta_ship_id,
+            entity_id: shipid,
+            team_id: team,
+            max_health: health,
+            is_abuser,
+            is_hidden,
+            raw,
+            is_connected,
+            is_client_loaded,
+            raw_with_names: HashMap::from_iter(
+                mapped_values.drain().map(|(k, v)| (k, pickle_to_json(v))),
+            ),
+            prebattle_id,
+        }
+    }
+
+    /// Updates the PlayerStateData from a dictionary of values.
+    /// Only fields present in the dictionary will be updated.
+    pub fn update_from_dict(&mut self, values: &HashMap<&'static str, pickled::Value>) {
+        if let Some(v) = values.get(Self::KEY_AVATAR_ID) {
+            if let Some(id) = v.i64_ref() {
+                self.avatar_id = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_NAME) {
+            if let Some(s) = v.string_ref() {
+                self.username = s.inner().clone();
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_CLAN_TAG) {
+            if let Some(s) = v.string_ref() {
+                self.clan = s.inner().clone();
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_CLAN_ID) {
+            if let Some(id) = v.i64_ref() {
+                self.clan_id = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_CLAN_COLOR) {
+            if let Some(id) = v.i64_ref() {
+                self.clan_color = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_SHIP_ID) {
+            if let Some(id) = v.i64_ref() {
+                self.entity_id = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_ID) {
+            if let Some(id) = v.i64_ref() {
+                self.meta_ship_id = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_TEAM_ID) {
+            if let Some(id) = v.i64_ref() {
+                self.team_id = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_MAX_HEALTH) {
+            if let Some(id) = v.i64_ref() {
+                self.max_health = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_REALM) {
+            if let Some(s) = v.string_ref() {
+                self.realm = s.inner().clone();
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_ACCOUNT_DBID) {
+            if let Some(id) = v.i64_ref() {
+                self.db_id = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_PREBATTLE_ID) {
+            if let Some(id) = v.i64_ref() {
+                self.prebattle_id = *id;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_IS_ABUSER) {
+            if let Some(b) = v.bool_ref() {
+                self.is_abuser = *b;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_IS_HIDDEN) {
+            if let Some(b) = v.bool_ref() {
+                self.is_hidden = *b;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_IS_CONNECTED) {
+            if let Some(b) = v.bool_ref() {
+                self.is_connected = *b;
+            }
+        }
+        if let Some(v) = values.get(Self::KEY_IS_CLIENT_LOADED) {
+            if let Some(b) = v.bool_ref() {
+                self.is_client_loaded = *b;
+            }
+        }
+
+        // Update raw_with_names with any new values
+        for (k, v) in values.iter() {
+            self.raw_with_names.insert(k, pickle_to_json(v.clone()));
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn clan(&self) -> &str {
+        &self.clan
+    }
+
+    pub fn clan_id(&self) -> i64 {
+        self.clan_id
+    }
+
+    pub fn clan_color(&self) -> i64 {
+        self.clan_color
+    }
+
+    pub fn db_id(&self) -> i64 {
+        self.db_id
+    }
+
+    pub fn realm(&self) -> &str {
+        &self.realm
+    }
+
+    pub fn avatar_id(&self) -> i64 {
+        self.avatar_id
+    }
+
+    pub fn meta_ship_id(&self) -> i64 {
+        self.meta_ship_id
+    }
+
+    pub fn entity_id(&self) -> i64 {
+        self.entity_id
+    }
+
+    pub fn team_id(&self) -> i64 {
+        self.team_id
+    }
+
+    pub fn division_id(&self) -> i64 {
+        self.prebattle_id
+    }
+
+    pub fn max_health(&self) -> i64 {
+        self.max_health
+    }
+
+    pub fn is_abuser(&self) -> bool {
+        self.is_abuser
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.is_hidden
+    }
+
+    pub fn is_client_loaded(&self) -> bool {
+        self.is_client_loaded
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.is_connected
+    }
+
+    pub fn raw(&self) -> &HashMap<i64, String> {
+        &self.raw
+    }
+
+    pub fn raw_with_names(&self) -> &HashMap<&'static str, serde_json::Value> {
+        &self.raw_with_names
+    }
+}
+
+/// Converts a list of key-value pairs to a real dictionary
+fn convert_flat_dict_to_real_dict(value: &Value) -> HashMap<i64, Value> {
+    let mut raw_values = HashMap::new();
+    if let pickled::value::Value::List(elements) = value {
+        for elem in elements.inner().iter() {
+            if let pickled::value::Value::Tuple(kv) = elem {
+                let key = kv.inner()[0]
+                    .i64_ref()
+                    .expect("tuple first value was not an integer");
+
+                raw_values.insert(key.clone(), kv.inner()[1].clone());
+            }
+        }
+    }
+
+    raw_values
 }
 
 /// Indicates that the given attacker has dealt damage
@@ -337,13 +823,18 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     /// Contains all of the info required to setup the arena state and show the initial loading screen.
     OnArenaStateReceived {
         /// Unknown
-        arg0: i64,
+        arena_id: i64,
         /// Unknown
-        arg1: i8,
+        team_build_type_id: i8,
         /// Unknown
-        arg2: HashMap<i64, Vec<Option<HashMap<String, String>>>>,
+        pre_battles_info: HashMap<i64, Vec<Option<HashMap<String, String>>>>,
         /// A list of the players in this game
-        players: Vec<OnArenaStateReceivedPlayer>,
+        player_states: Vec<PlayerStateData>,
+    },
+    /// Contains info when the arena state changes
+    OnGameRoomStateChanged {
+        /// Updated player states
+        player_states: Vec<HashMap<&'static str, pickled::Value>>,
     },
     CheckPing(u64),
     /// Indicates that the given victim has received damage from one or more attackers.
@@ -479,6 +970,7 @@ fn try_convert_hashable_pickle_to_string(
     }
 }
 
+/// Helper function to recursively convert byte values to strings where possible.
 fn try_convert_pickle_to_string(value: pickled::value::Value) -> pickled::value::Value {
     match value {
         pickled::value::Value::Bytes(b) => {
@@ -916,6 +1408,27 @@ where
                 is_global,
                 message,
             }
+        } else if *method == "onGameRoomStateChanged" {
+            let player_states = pickled::de::value_from_slice(
+                &args[0].blob_ref().expect("player_states arg is not a blob"),
+                pickled::de::DeOptions::new(),
+            )
+            .expect("failed to deserialize player_states");
+
+            let player_states = try_convert_pickle_to_string(player_states);
+
+            let mut players_out = vec![];
+            if let pickled::value::Value::List(players) = &player_states {
+                for player in players.inner().iter() {
+                    let raw_values = convert_flat_dict_to_real_dict(player);
+
+                    let mapped_values = PlayerStateData::convert_raw_dict(&raw_values, version);
+                    players_out.push(mapped_values);
+                }
+            }
+            DecodedPacketPayload::OnGameRoomStateChanged {
+                player_states: players_out,
+            }
         } else if *method == "onArenaStateReceived" {
             let (arg0, arg1) = unpack_rpc_args!(args, i64, i8);
 
@@ -981,275 +1494,14 @@ where
             let mut players_out = vec![];
             if let pickled::value::Value::List(players) = &value {
                 for player in players.inner().iter() {
-                    let mut values = HashMap::new();
-                    if let pickled::value::Value::List(elements) = player {
-                        for elem in elements.inner().iter() {
-                            if let pickled::value::Value::Tuple(kv) = elem {
-                                let key = match &kv.inner()[0] {
-                                    pickled::value::Value::I64(key) => *key,
-                                    _ => panic!(),
-                                };
-                                values.insert(key, kv.inner()[1].clone());
-                            }
-                        }
-                    }
-
-                    let keys: HashMap<&'static str, i64> =
-                        if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
-                            let mut h = HashMap::new();
-                            h.insert("accountDBID", 0);
-                            h.insert("antiAbuseEnabled", 1);
-                            h.insert("avatarId", 2);
-                            h.insert("camouflageInfo", 3);
-                            h.insert("clanColor", 4);
-                            h.insert("clanID", 5);
-                            h.insert("clanTag", 6);
-                            h.insert("crewParams", 7);
-                            h.insert("dogTag", 8);
-                            h.insert("fragsCount", 9);
-                            h.insert("friendlyFireEnabled", 10);
-                            h.insert("id", 11);
-                            h.insert("invitationsEnabled", 12);
-                            h.insert("isAbuser", 13);
-                            h.insert("isAlive", 14);
-                            h.insert("isBot", 15);
-                            h.insert("isClientLoaded", 16);
-                            h.insert("isConnected", 17);
-                            h.insert("isHidden", 18);
-                            h.insert("isLeaver", 19);
-                            h.insert("isPreBattleOwner", 20);
-                            h.insert("isTShooter", 21);
-                            h.insert("keyTargetMarkers", 22);
-                            h.insert("killedBuildingsCount", 23);
-                            h.insert("maxHealth", 24);
-                            h.insert("name", 25);
-                            h.insert("playerMode", 26);
-                            h.insert("preBattleIdOnStart", 27);
-                            h.insert("preBattleSign", 28);
-                            h.insert("prebattleId", 29);
-                            h.insert("realm", 30);
-                            h.insert("shipComponents", 31);
-                            h.insert("shipConfigDump", 32);
-                            h.insert("shipId", 33);
-                            h.insert("shipParamsId", 34);
-                            h.insert("skinId", 35);
-                            h.insert("teamId", 36);
-                            h.insert("ttkStatus", 37);
-                            h
-                        } else if version.is_at_least(&Version::from_client_exe("0,10,9,0")) {
-                            // 0.10.9 inserted things at 0x1 and 0x1F
-                            let mut h = HashMap::new();
-                            h.insert("avatarId", 0x2);
-                            h.insert("clanTag", 0x6);
-                            h.insert("maxHealth", 0x17);
-                            h.insert("name", 0x18);
-                            h.insert("shipId", 0x20);
-                            h.insert("shipParamsId", 0x21);
-                            h.insert("skinId", 0x22);
-                            h.insert("teamId", 0x23);
-                            h
-                        } else if version.is_at_least(&Version::from_client_exe("0,10,7,0")) {
-                            // 0.10.7
-                            let mut h = HashMap::new();
-                            h.insert("avatarId", 0x1);
-                            h.insert("clanTag", 0x5);
-                            h.insert("maxHealth", 0x16);
-                            h.insert("name", 0x17);
-                            h.insert("shipId", 0x1e);
-                            h.insert("shipParamsId", 0x1f);
-                            h.insert("skinId", 0x20);
-                            h.insert("teamId", 0x21);
-                            h
-                        } else {
-                            // 0.10.6 and earlier
-                            let mut h = HashMap::new();
-                            h.insert("avatarId", 0x1);
-                            h.insert("clanTag", 0x5);
-                            h.insert("maxHealth", 0x15);
-                            h.insert("name", 0x16);
-                            h.insert("shipId", 0x1d);
-                            h.insert("shipParamsId", 0x1e);
-                            h.insert("skinId", 0x1f);
-                            h.insert("teamId", 0x20);
-                            h
-                        };
-
-                    /*
-                    1: Player ID
-                    5: Clan name
-                    16: Username
-                    1c: Equipped equipment (?)
-                    1d: Ship/hull ID? (1 more than player ID)
-                    1e: Player ship ID
-                    1f: Player ship ID (why does this appear twice?)
-                    */
-                    let avatar = *values
-                        .get(keys.get("avatarId").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("avatarId is not an i64");
-
-                    let username = values
-                        .get(keys.get("name").unwrap())
-                        .unwrap()
-                        .string_ref()
-                        .expect("name is not a string")
-                        .inner()
-                        .clone();
-
-                    let clan = values
-                        .get(keys.get("clanTag").unwrap())
-                        .unwrap()
-                        .string_ref()
-                        .expect("clanTag is not a string")
-                        .inner()
-                        .clone();
-
-                    let clan_id = *values
-                        .get(keys.get("clanID").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("clanID is not an i64");
-
-                    let shipid = *values
-                        .get(keys.get("shipId").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("shipId is not an i64");
-                    let meta_ship_id = *values
-                        .get(keys.get("id").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("shipId is not an i64");
-                    let _playerid = *values
-                        .get(keys.get("shipParamsId").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("shipParamsId is not an i64");
-                    let _playeravatarid = *values
-                        .get(keys.get("skinId").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("skinId is not an i64");
-                    let team = *values
-                        .get(keys.get("teamId").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("teamId is not an i64");
-                    let health = *values
-                        .get(keys.get("maxHealth").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .expect("maxHealth is not an i64");
-
-                    let realm = values
-                        .get(keys.get("realm").unwrap())
-                        .unwrap()
-                        .string_ref()
-                        .expect("realm is not a string")
-                        .inner()
-                        .clone();
-
-                    let db_id = values
-                        .get(keys.get("accountDBID").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .cloned()
-                        .expect("accountDBID is not an i64");
-
-                    let prebattle_id = values
-                        .get(keys.get("prebattleId").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .cloned()
-                        .expect("accountDBID is not an i64");
-
-                    let _anti_abuse_enabled = values
-                        .get(keys.get("antiAbuseEnabled").unwrap())
-                        .unwrap()
-                        .bool_ref()
-                        .cloned()
-                        .expect("antiAbuseEnabled is not a bool");
-
-                    let is_abuser = values
-                        .get(keys.get("isAbuser").unwrap())
-                        .unwrap()
-                        .bool_ref()
-                        .cloned()
-                        .expect("isAbuser is not a bool");
-
-                    let is_hidden = values
-                        .get(keys.get("isHidden").unwrap())
-                        .unwrap()
-                        .bool_ref()
-                        .cloned()
-                        .expect("isHidden is not a bool");
-
-                    let is_connected = values
-                        .get(keys.get("isConnected").unwrap())
-                        .unwrap()
-                        .bool_ref()
-                        .cloned()
-                        .expect("isConnected is not a bool");
-
-                    let is_client_loaded = values
-                        .get(keys.get("isClientLoaded").unwrap())
-                        .unwrap()
-                        .bool_ref()
-                        .cloned()
-                        .expect("isClientLoaded is not a bool");
-
-                    let clan_color = values
-                        .get(keys.get("clanColor").unwrap())
-                        .unwrap()
-                        .i64_ref()
-                        .cloned()
-                        .expect("clanColor is not an integer");
-
-                    let mut raw = HashMap::new();
-                    for (k, v) in values.iter() {
-                        raw.insert(*k, format!("{:?}", v));
-                    }
-
-                    let mut raw_with_names = HashMap::new();
-                    for (k, v) in values.iter() {
-                        for (name, idx) in &keys {
-                            if *k == *idx {
-                                raw_with_names.insert(
-                                    *name,
-                                    wowsunpack::game_params::convert::pickle_to_json(v.clone()),
-                                );
-                            }
-                        }
-                    }
-
-                    players_out.push(OnArenaStateReceivedPlayer {
-                        username,
-                        clan,
-                        clan_id,
-                        clan_color,
-                        realm,
-                        db_id,
-                        avatar_id: avatar,
-                        meta_ship_id,
-                        entity_id: shipid,
-                        team_id: team,
-                        max_health: health,
-                        is_abuser,
-                        is_hidden,
-                        raw,
-                        is_connected,
-                        is_client_loaded,
-                        raw_with_names,
-                        prebattle_id,
-                    });
+                    players_out.push(PlayerStateData::from_pickle(player, version));
                 }
             }
             DecodedPacketPayload::OnArenaStateReceived {
-                arg0,
-                arg1,
-                arg2,
-                players: players_out,
+                arena_id: arg0,
+                team_build_type_id: arg1,
+                pre_battles_info: arg2,
+                player_states: players_out,
             }
         } else if *method == "receiveDamageStat" {
             let value = pickled::de::value_from_slice(
@@ -1519,7 +1771,6 @@ where
     'rawpacket: 'argtype,
 {
     pub fn from(version: &Version, audit: bool, packet: &'rawpacket Packet<'_, '_>) -> Self {
-        
         Self {
             clock: packet.clock,
             packet_type: packet.packet_type,

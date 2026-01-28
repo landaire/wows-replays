@@ -1,9 +1,15 @@
-use std::{borrow::Borrow, cell::RefCell, collections::HashMap, str::FromStr, time::Duration};
+use std::{
+    borrow::Borrow,
+    cell::{Cell, Ref, RefCell, UnsafeCell},
+    collections::HashMap,
+    str::FromStr,
+    time::Duration,
+};
 
 use nom::{multi::count, number::complete::le_u32, sequence::pair};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tracing::{Level, debug, span, trace};
+use tracing::{Level, debug, span, trace, warn};
 use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
@@ -17,7 +23,7 @@ use crate::{
     IResult, Rc, ReplayMeta,
     analyzer::{
         analyzer::AnalyzerMut,
-        decoder::{ChatMessageExtra, DeathCause, DecodedPacket, OnArenaStateReceivedPlayer},
+        decoder::{ChatMessageExtra, DeathCause, DecodedPacket, PlayerStateData},
     },
     packet2::{EntityCreatePacket, Packet, PacketProcessorMut, PacketType},
 };
@@ -105,35 +111,169 @@ impl ShipLoadout {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
+pub enum ConnectionChangeKind {
+    Connected,
+    Disconnected,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConnectionChangeInfo {
+    /// Duration from start of arena when the connection change
+    /// event occurred
+    at_game_duration: Duration,
+    event_kind: ConnectionChangeKind,
+    /// Whether or not this player had a death event when this connection change
+    /// occurred
+    had_death_event: bool,
+}
+
+impl ConnectionChangeInfo {
+    pub fn at_game_duration(&self) -> Duration {
+        self.at_game_duration
+    }
+
+    pub fn event_kind(&self) -> ConnectionChangeKind {
+        self.event_kind
+    }
+
+    pub fn had_death_event(&self) -> bool {
+        self.had_death_event
+    }
+}
+
+/// Represents the relation of a player to the recording player.
+/// - 0 = self (the player who recorded the replay)
+/// - 1 = teammate (ally)
+/// - 2+ = enemy
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Relation(u32);
+
+impl Relation {
+    /// Creates a new Relation from a raw value.
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns true if this is the recording player (relation == 0).
+    pub fn is_self(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// Returns true if this player is a teammate (relation == 1).
+    pub fn is_ally(&self) -> bool {
+        self.0 == 1
+    }
+
+    /// Returns true if this player is an enemy (relation >= 2).
+    pub fn is_enemy(&self) -> bool {
+        self.0 >= 2
+    }
+
+    /// Returns the raw relation value.
+    pub fn value(&self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for Relation {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
 /// Players that were received from parsing the replay packets
 pub struct Player {
-    name: String,
-    clan: String,
-    clan_id: i64,
-    clan_color: i64,
-    realm: String,
-    db_id: i64,
-    relation: u32,
-    avatar_id: u32,
-    ship_id: u32,
-    entity_id: u32,
-    division_id: u32,
-    team_id: u32,
-    max_health: u32,
-    is_abuser: bool,
-    is_hidden: bool,
-    is_client_loaded: bool,
-    did_disconnect: bool,
-    is_connected: bool,
+    initial_state: PlayerStateData,
+    end_state: UnsafeCell<PlayerStateData>,
+    connection_change_info: UnsafeCell<Vec<ConnectionChangeInfo>>,
     vehicle: Rc<Param>,
-    raw_props: HashMap<i64, String>,
-    raw_props_with_name: HashMap<String, serde_json::Value>,
+    vehicle_entity: Option<VehicleEntity>,
+    /// The relation of this player to the recording player
+    relation: Relation,
+}
+
+/// SAFETY: `UnsafeCell` fields are never mutated after BattleController
+/// builds.
+#[cfg(feature = "arc")]
+unsafe impl Sync for Player {}
+
+impl std::fmt::Debug for Player {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Player")
+            .field("initial_state", &self.initial_state)
+            .field("end_state", self.end_state())
+            .field("connection_change_info", unsafe {
+                &*self.connection_change_info.get()
+            })
+            .field("vehicle", &self.vehicle)
+            .field("vehicle_entity", &self.vehicle_entity)
+            .field("relation", &self.relation)
+            .finish()
+    }
+}
+
+impl Clone for Player {
+    fn clone(&self) -> Self {
+        Self {
+            initial_state: self.initial_state.clone(),
+            end_state: UnsafeCell::new(unsafe { (*self.end_state.get()).clone() }),
+            connection_change_info: UnsafeCell::new(unsafe {
+                (*self.connection_change_info.get()).clone()
+            }),
+            vehicle: self.vehicle.clone(),
+            vehicle_entity: self.vehicle_entity.clone(),
+            relation: self.relation,
+        }
+    }
+}
+
+impl Serialize for Player {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Player", 5)?;
+        state.serialize_field("initial_state", &self.initial_state)?;
+        state.serialize_field("end_state", self.end_state())?;
+        state.serialize_field("connection_change_info", self.connection_change_info())?;
+        state.serialize_field("vehicle", &self.vehicle)?;
+        state.serialize_field("relation", &self.relation)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Player {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PlayerHelper {
+            initial_state: PlayerStateData,
+            end_state: PlayerStateData,
+            connection_change_info: Vec<ConnectionChangeInfo>,
+            vehicle: Rc<Param>,
+            relation: Relation,
+        }
+
+        let helper = PlayerHelper::deserialize(deserializer)?;
+        Ok(Player {
+            initial_state: helper.initial_state,
+            end_state: UnsafeCell::new(helper.end_state),
+            connection_change_info: UnsafeCell::new(helper.connection_change_info),
+            vehicle: helper.vehicle,
+            vehicle_entity: None,
+            relation: helper.relation,
+        })
+    }
 }
 
 impl std::cmp::PartialEq for Player {
     fn eq(&self, other: &Self) -> bool {
-        self.db_id == other.db_id && self.realm == other.realm
+        self.initial_state.db_id == other.initial_state.db_id
+            && self.initial_state.realm == other.initial_state.realm
     }
 }
 
@@ -141,147 +281,65 @@ impl std::cmp::Eq for Player {}
 
 impl std::hash::Hash for Player {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.db_id.hash(state);
-        self.realm.hash(state);
+        self.initial_state.db_id.hash(state);
+        self.initial_state.realm.hash(state);
     }
 }
 
 impl Player {
     fn from_arena_player<G: ResourceLoader>(
-        player: &OnArenaStateReceivedPlayer,
+        player: &PlayerStateData,
         metadata_player: &MetadataPlayer,
         resources: &G,
     ) -> Player {
-        let OnArenaStateReceivedPlayer {
-            username,
-            clan,
-            realm,
-            db_id,
-            avatar_id: avatarid,
-            meta_ship_id: shipid,
-            entity_id,
-            prebattle_id,
-            team_id: teamid,
-            max_health: health,
-            raw,
-            raw_with_names,
-            is_abuser,
-            is_hidden,
-            is_client_loaded,
-            is_connected,
-            clan_id,
-            clan_color,
-        } = player;
-
         Player {
-            name: username.clone(),
-            clan: clan.clone(),
-            clan_id: *clan_id,
-            clan_color: *clan_color,
-            realm: realm.clone(),
-            db_id: *db_id,
-            avatar_id: *avatarid as u32,
-            ship_id: *shipid as u32,
-            entity_id: *entity_id as u32,
-            team_id: *teamid as u32,
-            division_id: *prebattle_id as u32,
-            max_health: *health as u32,
+            initial_state: player.clone(),
+            end_state: UnsafeCell::new(player.clone()),
+            vehicle_entity: None,
+            connection_change_info: UnsafeCell::new(Vec::new()),
             vehicle: resources
-                .game_param_by_id(metadata_player.vehicle.id())
-                .expect("could not find vehicle"),
-            relation: metadata_player.relation,
-            is_abuser: *is_abuser,
-            is_hidden: *is_hidden,
-            is_client_loaded: *is_client_loaded,
-            is_connected: *is_connected,
-            did_disconnect: false,
-            raw_props: raw.clone(),
-            raw_props_with_name: raw_with_names
-                .iter()
-                .map(|(key, value)| (key.to_string(), value.clone()))
-                .collect(),
+                .game_param_by_id(metadata_player.vehicle().id())
+                .expect("could not find player vehicle"),
+            relation: metadata_player.relation(),
         }
     }
 
-    pub fn name(&self) -> &str {
-        self.name.as_ref()
+    /// A list of events for when this player connected or disconnected
+    /// from the match.
+    pub fn connection_change_info(&self) -> &[ConnectionChangeInfo] {
+        unsafe { (&*self.connection_change_info.get()).as_slice() }
     }
 
-    pub fn clan(&self) -> &str {
-        self.clan.as_ref()
+    fn connection_change_info_mut(&self) -> &mut Vec<ConnectionChangeInfo> {
+        unsafe { &mut *self.connection_change_info.get() }
     }
 
-    pub fn relation(&self) -> u32 {
+    pub fn end_state(&self) -> &PlayerStateData {
+        // SAFETY: `end_state` is never mutated after the battle
+        // controller is constructed
+        unsafe { &*self.end_state.get() }
+    }
+
+    fn end_state_mut(&self) -> &mut PlayerStateData {
+        // SAFETY: `end_state` is never mutated after the battle
+        // controller is constructed
+        unsafe { &mut *self.end_state.get() }
+    }
+
+    pub fn initial_state(&self) -> &PlayerStateData {
+        &self.initial_state
+    }
+
+    pub fn relation(&self) -> Relation {
         self.relation
     }
 
-    pub fn avatar_id(&self) -> u32 {
-        self.avatar_id
-    }
-
-    pub fn ship_id(&self) -> u32 {
-        self.ship_id
-    }
-
-    pub fn entity_id(&self) -> u32 {
-        self.entity_id
-    }
-
-    pub fn team_id(&self) -> u32 {
-        self.team_id
-    }
-
-    pub fn max_health(&self) -> u32 {
-        self.max_health
+    pub fn vehicle_entity(&self) -> Option<&VehicleEntity> {
+        self.vehicle_entity.as_ref()
     }
 
     pub fn vehicle(&self) -> &Param {
-        self.vehicle.as_ref()
-    }
-
-    pub fn realm(&self) -> &str {
-        self.realm.as_ref()
-    }
-
-    pub fn db_id(&self) -> i64 {
-        self.db_id
-    }
-
-    pub fn is_abuser(&self) -> bool {
-        self.is_abuser
-    }
-
-    pub fn is_hidden(&self) -> bool {
-        self.is_hidden
-    }
-
-    pub fn is_client_loaded(&self) -> bool {
-        self.is_client_loaded
-    }
-
-    pub fn did_disconnect(&self) -> bool {
-        self.did_disconnect
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.is_connected
-    }
-
-    pub fn division_id(&self) -> u32 {
-        self.division_id
-    }
-
-    pub fn clan_id(&self) -> i64 {
-        self.clan_id
-    }
-
-    /// Player's clan tag color
-    pub fn clan_color(&self) -> i64 {
-        self.clan_color
-    }
-
-    pub fn raw_props_with_name(&self) -> &HashMap<String, serde_json::Value> {
-        &self.raw_props_with_name
+        &self.vehicle
     }
 }
 
@@ -290,7 +348,7 @@ impl Player {
 pub struct MetadataPlayer {
     id: u32,
     name: String,
-    relation: u32,
+    relation: Relation,
     vehicle: Rc<Param>,
 }
 
@@ -299,7 +357,7 @@ impl MetadataPlayer {
         self.name.as_ref()
     }
 
-    pub fn relation(&self) -> u32 {
+    pub fn relation(&self) -> Relation {
         self.relation
     }
 
@@ -349,27 +407,22 @@ pub enum BattleResult {
 #[derive(Serialize)]
 pub struct BattleReport {
     arena_id: i64,
-    self_entity: Rc<VehicleEntity>,
+    self_player: Rc<Player>,
     version: Version,
     map_name: String,
     game_mode: String,
     game_type: String,
     match_group: String,
-    player_entities: Vec<Rc<VehicleEntity>>,
+    players: Vec<Rc<Player>>,
     game_chat: Vec<GameMessage>,
     battle_results: Option<String>,
-    players: Vec<Rc<Player>>,
     frags: HashMap<Rc<Player>, Vec<DeathInfo>>,
     match_result: Option<BattleResult>,
 }
 
 impl BattleReport {
-    pub fn self_entity(&self) -> Rc<VehicleEntity> {
-        self.self_entity.clone()
-    }
-
-    pub fn player_entities(&self) -> &[Rc<VehicleEntity>] {
-        self.player_entities.as_ref()
+    pub fn self_player(&self) -> &Rc<Player> {
+        &self.self_player
     }
 
     pub fn game_chat(&self) -> &[GameMessage] {
@@ -408,11 +461,7 @@ impl BattleReport {
         self.arena_id
     }
 
-    /// Returns a map of players and their frags. This intentionally
-    /// returns a map keyed of fof players rather than vehicle entities,
-    /// since eventually we will have to do massive refactoring to inverse this heirarchy
-    /// of Vehicle -> Player to Player -> Vehicle. Might as well not make it any more
-    /// painful than it has to be.
+    /// Returns a map of players and their frags.
     pub fn frags(&self) -> &HashMap<Rc<Player>, Vec<DeathInfo>> {
         &self.frags
     }
@@ -461,7 +510,7 @@ where
                 Rc::new(MetadataPlayer {
                     id: vehicle.id as u32,
                     name: vehicle.name.clone(),
-                    relation: vehicle.relation,
+                    relation: Relation::new(vehicle.relation),
                     vehicle: game_resources
                         .game_param_by_id(vehicle.shipId as u32)
                         .expect("could not find vehicle"),
@@ -558,11 +607,11 @@ where
         for meta_vehicle in &self.game_meta.vehicles {
             if meta_vehicle.id == (sender_id as i64) {
                 sender_name = meta_vehicle.name.clone();
-                sender_team = Some(meta_vehicle.relation);
+                sender_team = Some(Relation::new(meta_vehicle.relation));
                 player = self
                     .player_entities
                     .values()
-                    .find(|player| player.ship_id == sender_id)
+                    .find(|player| player.initial_state.meta_ship_id() == sender_id as i64)
                     .cloned();
             }
         }
@@ -607,8 +656,6 @@ where
                 let mut props = VehicleProps::default();
                 props.update_from_args(&packet.props, self.version);
 
-                let player = self.player_entities.get(&packet.entity_id);
-
                 let captain_id = props.crew_modifiers_compact_params.params_id;
                 let captain = if captain_id != 0 {
                     Some(
@@ -622,7 +669,6 @@ where
 
                 let vehicle = Rc::new(RefCell::new(VehicleEntity {
                     id: packet.entity_id,
-                    player: player.cloned(),
                     props,
                     visibility_changed_at: 0.0,
                     captain,
@@ -648,9 +694,10 @@ where
     }
 
     pub fn build_report(mut self) -> BattleReport {
+        // Update vehicle damage from damage events
         for (aggressor, damage_events) in &self.damage_dealt {
-            if let Some(aggressor_player) = self.entities_by_id.get_mut(aggressor) {
-                let vehicle = aggressor_player
+            if let Some(aggressor_entity) = self.entities_by_id.get_mut(aggressor) {
+                let vehicle = aggressor_entity
                     .vehicle_ref()
                     .expect("aggressor has no vehicle?");
 
@@ -659,11 +706,10 @@ where
                     accum += event.amount;
                     accum
                 });
-            } else {
-                // panic!("unknown aggressor {:?}?", *aggressor);
             }
         }
 
+        // Update vehicle death info
         self.entities_by_id.values().for_each(|entity| {
             if let Some(vehicle) = entity.vehicle_ref() {
                 let mut vehicle = vehicle.borrow_mut();
@@ -683,58 +729,63 @@ where
             .as_ref()
             .and_then(|results| serde_json::Value::from_str(results.as_str()).ok());
 
-        let player_entity_ids: Vec<_> = self.player_entities.keys().cloned().collect();
-        let player_entities: Vec<Rc<VehicleEntity>> = self
-            .entities_by_id
-            .iter()
-            .filter_map(|(entity_id, entity)| {
-                if player_entity_ids.contains(entity_id) {
-                    let mut vehicle: VehicleEntity = RefCell::borrow(entity.vehicle_ref()?).clone();
-                    if let Some(battle_results) = parsed_battle_results
-                        .as_ref()
-                        .and_then(|results| results.as_object())
-                    {
-                        vehicle.results_info =
-                            battle_results.get("playersPublicInfo").and_then(|infos| {
-                                infos.as_object().and_then(|infos| {
-                                    if let Some(player_info) = vehicle.player.as_ref() {
-                                        infos.get(player_info.db_id.to_string().as_str()).cloned()
-                                    } else {
-                                        None
-                                    }
-                                })
-                            });
+        // Build final Player objects with owned VehicleEntity
+        let players: Vec<Rc<Player>> = self
+            .player_entities
+            .values()
+            .filter_map(|player| {
+                let entity = self
+                    .entities_by_id
+                    .get(&(player.initial_state.entity_id as u32))?;
+                let vehicle_rc = entity.vehicle_ref()?;
+                let mut vehicle: VehicleEntity = RefCell::borrow(vehicle_rc).clone();
 
-                        if let Some(player) = vehicle.player().as_ref()
-                            && let Some(frags) = self.frags.get(&player.entity_id)
-                        {
-                            vehicle.frags = frags.iter().map(DeathInfo::from).collect();
-                        }
+                // Add battle results info to vehicle
+                if let Some(battle_results) = parsed_battle_results
+                    .as_ref()
+                    .and_then(|results| results.as_object())
+                {
+                    vehicle.results_info =
+                        battle_results.get("playersPublicInfo").and_then(|infos| {
+                            infos.as_object().and_then(|infos| {
+                                infos
+                                    .get(player.initial_state.db_id.to_string().as_str())
+                                    .cloned()
+                            })
+                        });
+
+                    if let Some(frags) = self.frags.get(&(player.initial_state.entity_id as u32)) {
+                        vehicle.frags = frags.iter().map(DeathInfo::from).collect();
                     }
-                    Some(Rc::new(vehicle))
-                } else {
-                    None
                 }
+
+                // Clone player and attach the finalized vehicle entity
+                let mut final_player = player.as_ref().clone();
+                final_player.vehicle_entity = Some(vehicle);
+                Some(Rc::new(final_player))
             })
             .collect();
 
         let frags: HashMap<Rc<Player>, Vec<DeathInfo>> =
             HashMap::from_iter(self.frags.drain().filter_map(|(entity_id, kills)| {
-                let player = self.player_entities.get(&entity_id)?;
+                let player = players
+                    .iter()
+                    .find(|p| p.initial_state.entity_id as u32 == entity_id)?;
                 let kills: Vec<DeathInfo> = kills.iter().map(DeathInfo::from).collect();
                 Some((Rc::clone(player), kills))
             }));
 
-        let self_entity = player_entities
+        let self_player = players
             .iter()
-            .find(|entity| entity.player.as_ref().unwrap().relation == 0)
+            .find(|player| player.relation.is_self())
             .cloned()
             .expect("could not find self_player");
+
         BattleReport {
             arena_id: self.arena_id,
             match_result: if self.match_finished {
                 self.winning_team.map(|team| {
-                    if team == self_entity.player.as_ref().unwrap().team_id as i8 {
+                    if team == self_player.initial_state.team_id as i8 {
                         BattleResult::Win(team)
                     } else if team >= 0 {
                         BattleResult::Loss(1)
@@ -745,16 +796,15 @@ where
             } else {
                 None
             },
-            self_entity,
+            self_player,
             version: Version::from_client_exe(self.game_version()),
             match_group: self.match_group().to_owned(),
             map_name: self.map_name(),
             game_mode: self.game_mode(),
             game_type: self.game_type(),
-            player_entities,
+            players,
             game_chat: self.game_chat,
             battle_results: self.battle_results,
-            players: self.player_entities.values().cloned().collect(),
             frags,
         }
     }
@@ -822,7 +872,7 @@ fn parse_ship_config(blob: &[u8], version: Version) -> IResult<&[u8], ShipConfig
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GameMessage {
-    pub sender_relation: Option<u32>,
+    pub sender_relation: Option<Relation>,
     pub sender_name: String,
     pub channel: ChatChannel,
     pub message: String,
@@ -1293,6 +1343,7 @@ impl UpdateFromReplayArgs for VehicleProps {
         dict.insert(name, value.clone());
         self.update_from_args(&dict, version);
     }
+
     fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version) {
         const IGNORE_MAP_BORDERS_KEY: &str = "ignoreMapBorders";
         const AIR_DEFENSE_DISPERSION_RADIUS_KEY: &str = "airDefenseDispRadius";
@@ -1562,7 +1613,6 @@ impl From<&Death> for DeathInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct VehicleEntity {
     id: u32,
-    player: Option<Rc<Player>>,
     visibility_changed_at: f32,
     props: VehicleProps,
     captain: Option<Rc<Param>>,
@@ -1577,10 +1627,6 @@ impl VehicleEntity {
         self.id
     }
 
-    pub fn player(&self) -> Option<&Rc<Player>> {
-        self.player.as_ref()
-    }
-
     pub fn props(&self) -> &VehicleProps {
         &self.props
     }
@@ -1589,15 +1635,7 @@ impl VehicleEntity {
         self.props.crew_modifiers_compact_params.params_id
     }
 
-    pub fn commander_skills(&self) -> Option<Vec<&CrewSkill>> {
-        let vehicle_species = self
-            .player
-            .as_ref()
-            .expect("player has not yet loaded")
-            .vehicle
-            .species()
-            .expect("vehicle species not set");
-
+    pub fn commander_skills(&self, vehicle_species: Species) -> Option<Vec<&CrewSkill>> {
         let skills = &self.props.crew_modifiers_compact_params.learned_skills;
         let skills_for_species = match vehicle_species {
             Species::AirCarrier => skills.aircraft_carrier.as_slice(),
@@ -1628,15 +1666,7 @@ impl VehicleEntity {
         Some(skills)
     }
 
-    pub fn commander_skills_raw(&self) -> &[u8] {
-        let vehicle_species = self
-            .player
-            .as_ref()
-            .expect("player has not yet loaded")
-            .vehicle
-            .species()
-            .expect("vehicle species not set");
-
+    pub fn commander_skills_raw(&self, vehicle_species: Species) -> &[u8] {
         let skills = &self.props.crew_modifiers_compact_params.learned_skills;
         match vehicle_species {
             Species::AirCarrier => skills.aircraft_carrier.as_slice(),
@@ -1676,16 +1706,6 @@ pub enum Entity {
     Vehicle(Rc<RefCell<VehicleEntity>>),
 }
 
-impl Entity {
-    fn update_arena_player(&self, arena_player: Rc<Player>) {
-        match self {
-            Entity::Vehicle(vehicle) => {
-                RefCell::borrow_mut(vehicle).player = Some(arena_player);
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 struct Death {
     timestamp: Duration,
@@ -1701,6 +1721,9 @@ where
     fn process_mut(&mut self, packet: &Packet<'_, '_>) {
         let span = span!(Level::TRACE, "packet processing");
         let _enter = span.enter();
+
+        // trace!("packet: {packet:#?}");
+        //
 
         let decoded = DecodedPacket::from(&self.version, false, packet);
         let payload_kind = decoded.payload.kind();
@@ -1749,13 +1772,20 @@ where
                 debug!("ENTITY METHOD, {:#?}", method)
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityProperty(prop) => {
+                if prop.entity_id == 446467 {
+                    // println!("{prop:?}\n\n");
+                }
                 if let Some(entity) = self.entities_by_id.get(&prop.entity_id)
                     && let Some(vehicle) = entity.vehicle_ref()
                 {
-                    let mut vehicle = RefCell::borrow_mut(vehicle);
-                    vehicle
-                        .props
-                        .update_by_name(prop.property, &prop.value, self.version);
+                    if let Some(vehicle) = entity.vehicle_ref() {
+                        let mut vehicle = RefCell::borrow_mut(vehicle);
+                        vehicle
+                            .props
+                            .update_by_name(prop.property, &prop.value, self.version);
+                    } else if let Some(player) = self.player_entities.get(&prop.entity_id) {
+                        // player.update_by_name(prop.property, &prop.value, self.version);
+                    }
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::BasePlayerCreate(base) => {
@@ -1787,10 +1817,10 @@ where
                 self.handle_entity_create(entity_create);
             }
             crate::analyzer::decoder::DecodedPacketPayload::OnArenaStateReceived {
-                arg0,
-                arg1,
-                arg2,
-                players,
+                arena_id: arg0,
+                team_build_type_id: arg1,
+                pre_battles_info: arg2,
+                player_states: players,
             } => {
                 debug!("OnArenaStateReceived");
                 self.arena_id = arg0;
@@ -1801,28 +1831,41 @@ where
                         .find(|meta_player| meta_player.id == player.meta_ship_id as u32)
                         .expect("could not map arena player to metadata player");
 
-                    let mut battle_player = Player::from_arena_player(
+                    let battle_player = Player::from_arena_player(
                         player,
                         metadata_player.as_ref(),
                         self.game_resources,
                     );
 
-                    if let Some(previous_state) = self.player_entities.get(&battle_player.entity_id)
-                        && previous_state.is_connected
-                        && !self.match_finished
-                    {
-                        battle_player.did_disconnect =
-                            !battle_player.is_connected || previous_state.did_disconnect;
+                    let player_has_died = self
+                        .entities_by_id
+                        .get(&(player.entity_id() as Id))
+                        .map(|vehicle| {
+                            let Some(vehicle) = vehicle.vehicle_ref() else {
+                                return false;
+                            };
+                            let vehicle = RefCell::borrow(vehicle);
+
+                            self.frags.values().any(|deaths| {
+                                deaths.iter().any(|death| death.victim == vehicle.id())
+                            })
+                        })
+                        .unwrap_or_default();
+
+                    if player.is_connected {
+                        battle_player
+                            .connection_change_info_mut()
+                            .push(ConnectionChangeInfo {
+                                at_game_duration: Duration::from_secs_f32(packet.clock),
+                                event_kind: ConnectionChangeKind::Connected,
+                                had_death_event: player_has_died,
+                            });
                     }
 
                     let battle_player = Rc::new(battle_player);
 
                     self.player_entities
-                        .insert(battle_player.entity_id, battle_player.clone());
-
-                    if let Some(entity) = self.entities_by_id.get(&battle_player.entity_id) {
-                        entity.update_arena_player(battle_player);
-                    }
+                        .insert(battle_player.initial_state.entity_id as u32, battle_player);
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::CheckPing(_) => trace!("CHECK PING"),
@@ -1879,6 +1922,68 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::Audit(_) => trace!("AUDIT"),
             crate::analyzer::decoder::DecodedPacketPayload::BattleResults(json) => {
                 self.battle_results = Some(json.to_owned());
+            }
+            crate::analyzer::decoder::DecodedPacketPayload::OnGameRoomStateChanged {
+                player_states,
+            } => {
+                for player_state in &player_states {
+                    let Some(meta_ship_id) = player_state.get(PlayerStateData::KEY_ID) else {
+                        continue;
+                    };
+
+                    let meta_ship_id = *meta_ship_id.i64_ref().expect("player_id is not an i64");
+
+                    let Some(player) = self
+                        .player_entities
+                        .values()
+                        .find(|player| player.initial_state().meta_ship_id() == meta_ship_id)
+                    else {
+                        warn!("Failed to find player with meta ship ID {meta_ship_id:?}");
+                        continue;
+                    };
+
+                    {
+                        player.end_state_mut().update_from_dict(&player_state);
+                    }
+
+                    let player_has_died = self
+                        .entities_by_id
+                        .get(&(player.initial_state().entity_id() as Id))
+                        .map(|vehicle| {
+                            let Some(vehicle) = vehicle.vehicle_ref() else {
+                                return false;
+                            };
+                            let vehicle = RefCell::borrow(vehicle);
+
+                            self.frags.values().any(|deaths| {
+                                deaths.iter().any(|death| death.victim == vehicle.id())
+                            })
+                        })
+                        .unwrap_or_default();
+
+                    let connection_event_kind = if player.end_state().is_connected {
+                        ConnectionChangeKind::Connected
+                    } else {
+                        ConnectionChangeKind::Disconnected
+                    };
+
+                    if (player.connection_change_info().is_empty()
+                        && connection_event_kind != ConnectionChangeKind::Disconnected)
+                        || player
+                            .connection_change_info()
+                            .last()
+                            .map(|info| info.event_kind != connection_event_kind)
+                            .unwrap_or_default()
+                    {
+                        player
+                            .connection_change_info_mut()
+                            .push(ConnectionChangeInfo {
+                                at_game_duration: Duration::from_secs_f32(packet.clock),
+                                event_kind: connection_event_kind,
+                                had_death_event: player_has_died,
+                            });
+                    }
+                }
             }
         }
     }

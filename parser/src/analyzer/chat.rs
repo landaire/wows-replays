@@ -72,7 +72,10 @@ impl AnalyzerMut for ChatLogger {
                     message
                 );
             }
-            DecodedPacketPayload::OnArenaStateReceived { players, .. } => {
+            DecodedPacketPayload::OnArenaStateReceived {
+                player_states: players,
+                ..
+            } => {
                 for player in players.iter() {
                     self.usernames.insert(
                         player.meta_ship_id.try_into().unwrap(),
