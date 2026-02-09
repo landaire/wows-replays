@@ -1,5 +1,5 @@
 use ab_glyph::{FontRef, PxScale};
-use image::{Rgb, RgbImage};
+use image::{Rgb, RgbImage, RgbaImage};
 use imageproc::drawing::{
     draw_filled_circle_mut, draw_filled_rect_mut, draw_line_segment_mut, draw_text_mut,
 };
@@ -13,6 +13,7 @@ pub const COLOR_ENEMY: Rgb<u8> = Rgb([255, 60, 60]);
 pub const COLOR_DEAD: Rgb<u8> = Rgb([128, 128, 128]);
 
 pub const COLOR_TORPEDO: Rgb<u8> = Rgb([255, 80, 80]);
+pub const COLOR_TORPEDO_FRIENDLY: Rgb<u8> = Rgb([0, 200, 100]);
 pub const COLOR_SHOT: Rgb<u8> = Rgb([255, 200, 50]);
 pub const COLOR_PLANE: Rgb<u8> = Rgb([100, 180, 255]);
 
@@ -26,6 +27,17 @@ const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSans-Bold.ttf");
 
 pub fn load_font() -> FontRef<'static> {
     FontRef::try_from_slice(FONT_DATA).expect("failed to load embedded font")
+}
+
+/// How a ship should be rendered based on its visibility state.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ShipVisibility {
+    /// Ship is directly visible (Position packets). Solid fill.
+    Visible,
+    /// Ship is detected on minimap but not directly rendered. Outline only.
+    MinimapOnly,
+    /// Ship has gone undetected. Gray, semi-transparent at last known position.
+    Undetected,
 }
 
 /// Draw a ship as a filled circle with a heading line.
@@ -42,6 +54,77 @@ pub fn draw_ship(image: &mut RgbImage, x: i32, y: i32, yaw: f32, color: Rgb<u8>,
     let end_x = x as f32 + yaw.cos() * line_len;
     let end_y = y as f32 - yaw.sin() * line_len;
     draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), color);
+}
+
+/// Draw a ship circle as outline only (ring + heading line).
+pub fn draw_ship_outline(
+    image: &mut RgbImage,
+    x: i32,
+    y: i32,
+    yaw: f32,
+    color: Rgb<u8>,
+    radius: i32,
+) {
+    let w = image.width() as i32;
+    let h = image.height() as i32;
+    if x < -radius || x >= w + radius || y < -radius || y >= h + radius {
+        return;
+    }
+
+    let r2_outer = (radius * radius) as f32;
+    let r2_inner = ((radius - 1).max(0) * (radius - 1).max(0)) as f32;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let d2 = (dx * dx + dy * dy) as f32;
+            if d2 <= r2_outer && d2 >= r2_inner {
+                let px = x + dx;
+                let py = y + dy;
+                if px >= 0 && px < w && py >= 0 && py < h {
+                    image.put_pixel(px as u32, py as u32, color);
+                }
+            }
+        }
+    }
+
+    let line_len = (radius + 4) as f32;
+    let end_x = x as f32 + yaw.cos() * line_len;
+    let end_y = y as f32 - yaw.sin() * line_len;
+    draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), color);
+}
+
+/// Draw a ship as a gray, semi-transparent circle (for undetected ships, no icon fallback).
+pub fn draw_ship_undetected(image: &mut RgbImage, x: i32, y: i32, yaw: f32, radius: i32) {
+    let w = image.width() as i32;
+    let h = image.height() as i32;
+    if x < -radius || x >= w + radius || y < -radius || y >= h + radius {
+        return;
+    }
+
+    let opacity = 0.4f32;
+    let r2 = (radius * radius) as f32;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if (dx * dx + dy * dy) as f32 > r2 {
+                continue;
+            }
+            let px = x + dx;
+            let py = y + dy;
+            if px >= 0 && px < w && py >= 0 && py < h {
+                let bg = image.get_pixel(px as u32, py as u32);
+                let blended = Rgb([
+                    (COLOR_DEAD[0] as f32 * opacity + bg[0] as f32 * (1.0 - opacity)) as u8,
+                    (COLOR_DEAD[1] as f32 * opacity + bg[1] as f32 * (1.0 - opacity)) as u8,
+                    (COLOR_DEAD[2] as f32 * opacity + bg[2] as f32 * (1.0 - opacity)) as u8,
+                ]);
+                image.put_pixel(px as u32, py as u32, blended);
+            }
+        }
+    }
+
+    let line_len = (radius + 4) as f32;
+    let end_x = x as f32 + yaw.cos() * line_len;
+    let end_y = y as f32 - yaw.sin() * line_len;
+    draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), COLOR_DEAD);
 }
 
 /// Draw a dead ship marker (X shape).
@@ -67,13 +150,13 @@ pub fn draw_shot_line(image: &mut RgbImage, x1: f32, y1: f32, x2: f32, y2: f32) 
 }
 
 /// Draw a torpedo dot.
-pub fn draw_torpedo(image: &mut RgbImage, x: i32, y: i32) {
+pub fn draw_torpedo(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
     let w = image.width() as i32;
     let h = image.height() as i32;
     if x < 0 || x >= w || y < 0 || y >= h {
         return;
     }
-    draw_filled_circle_mut(image, (x, y), 2, COLOR_TORPEDO);
+    draw_filled_circle_mut(image, (x, y), 2, color);
 }
 
 /// Draw a plane dot.
@@ -165,5 +248,102 @@ pub fn ship_color(relation: Relation) -> Rgb<u8> {
         COLOR_ALLY
     } else {
         COLOR_ENEMY
+    }
+}
+
+/// Draw a ship icon (pre-rasterized SVG) rotated by yaw and tinted with the given color.
+///
+/// The icon is expected to be a white/alpha mask -- non-transparent pixels are tinted to `color`.
+/// The icon is rotated about its center by `yaw` radians (game convention: 0=east, CCW positive).
+/// The `visibility` parameter controls the rendering style.
+pub fn draw_ship_icon(
+    image: &mut RgbImage,
+    icon: &RgbaImage,
+    x: i32,
+    y: i32,
+    yaw: f32,
+    color: Rgb<u8>,
+    visibility: ShipVisibility,
+) {
+    let iw = icon.width() as i32;
+    let ih = icon.height() as i32;
+    let cx = iw as f32 / 2.0;
+    let cy = ih as f32 / 2.0;
+    let img_w = image.width() as i32;
+    let img_h = image.height() as i32;
+
+    let (draw_color, opacity) = match visibility {
+        ShipVisibility::Visible => (color, 1.0f32),
+        ShipVisibility::MinimapOnly => (color, 1.0),
+        ShipVisibility::Undetected => (COLOR_DEAD, 0.4),
+    };
+
+    // The SVG icons point upward (north = -Y in screen coords). In game coordinates,
+    // yaw=0 means east (+X) and increases counter-clockwise. The screen-space rotation
+    // angle R that maps icon-north (0,-1) to heading (cos(yaw), -sin(yaw)) is R = PI/2 - yaw.
+    // For inverse sampling we use cos(R) and sin(R) directly:
+    let cos_r = yaw.sin(); // cos(PI/2 - yaw) = sin(yaw)
+    let sin_r = yaw.cos(); // sin(PI/2 - yaw) = cos(yaw)
+
+    for dy in -ih / 2..=ih / 2 {
+        for dx in -iw / 2..=iw / 2 {
+            let dest_x = x + dx;
+            let dest_y = y + dy;
+            if dest_x < 0 || dest_x >= img_w || dest_y < 0 || dest_y >= img_h {
+                continue;
+            }
+
+            // Inverse-rotate to find source pixel in the icon
+            let fdx = dx as f32;
+            let fdy = dy as f32;
+            let src_x = fdx * cos_r + fdy * sin_r + cx;
+            let src_y = -fdx * sin_r + fdy * cos_r + cy;
+
+            let sx = src_x.round() as i32;
+            let sy = src_y.round() as i32;
+            if sx < 0 || sx >= iw || sy < 0 || sy >= ih {
+                continue;
+            }
+
+            let pixel = icon.get_pixel(sx as u32, sy as u32);
+            let alpha = pixel[3] as f32 / 255.0 * opacity;
+            if alpha < 0.05 {
+                continue;
+            }
+
+            // Tint: use the icon's luminance as intensity, apply team color
+            let luminance =
+                (pixel[0] as f32 * 0.299 + pixel[1] as f32 * 0.587 + pixel[2] as f32 * 0.114)
+                    / 255.0;
+
+            // For outline mode, only draw edge pixels (high alpha neighbors indicate interior)
+            if visibility == ShipVisibility::MinimapOnly {
+                let is_edge = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(ox, oy)| {
+                    let nx = sx + ox;
+                    let ny = sy + oy;
+                    if nx < 0 || nx >= iw || ny < 0 || ny >= ih {
+                        return true;
+                    }
+                    icon.get_pixel(nx as u32, ny as u32)[3] < 128
+                });
+                if !is_edge {
+                    continue;
+                }
+            }
+
+            let tinted = Rgb([
+                (draw_color[0] as f32 * luminance) as u8,
+                (draw_color[1] as f32 * luminance) as u8,
+                (draw_color[2] as f32 * luminance) as u8,
+            ]);
+
+            let bg = image.get_pixel(dest_x as u32, dest_y as u32);
+            let blended = Rgb([
+                (tinted[0] as f32 * alpha + bg[0] as f32 * (1.0 - alpha)) as u8,
+                (tinted[1] as f32 * alpha + bg[1] as f32 * (1.0 - alpha)) as u8,
+                (tinted[2] as f32 * alpha + bg[2] as f32 * (1.0 - alpha)) as u8,
+            ]);
+            image.put_pixel(dest_x as u32, dest_y as u32, blended);
+        }
     }
 }

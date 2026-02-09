@@ -1,14 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufWriter;
 
 use anyhow::{anyhow, Context};
 use bytes::Bytes;
-use image::{Rgb, RgbImage};
+use image::{Rgb, RgbImage, RgbaImage};
 use openh264::encoder::{Encoder, EncoderConfig, FrameRate};
 use openh264::formats::{RgbSliceU8, YUVBuffer};
 use openh264::OpenH264API;
 use wowsunpack::data::Version;
+use wowsunpack::game_params::provider::GameMetadataProvider;
+use wowsunpack::game_params::types::GameParamProvider;
 
 use wows_replays::analyzer::battle_controller::Relation;
 use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
@@ -38,21 +40,22 @@ const SHOT_DURATION: f32 = 3.0;
 const TORPEDO_MAX_DURATION: f32 = 180.0; // safety fallback; torpedoes primarily removed by hit events
 const KILL_FEED_DURATION: f32 = 10.0;
 
-use crate::map_data::{GameClock, MinimapPos, NormalizedPos, WorldPos};
+use crate::map_data::{EntityId, GameClock, MinimapPos, NormalizedPos, WorldPos};
 
 struct ShipSnapshot {
     pos: WorldPos,
-    yaw: f32,
 }
 
 struct ShotTrail {
-    origin: MinimapPos,
-    target: MinimapPos,
+    origin: WorldPos,
+    target: WorldPos,
+    flight_duration: f32,
     clock: GameClock,
 }
 
 struct TorpedoSnapshot {
     composite_id: u64,
+    owner_id: EntityId,
     origin: WorldPos,
     velocity: WorldPos,
     clock: GameClock,
@@ -60,23 +63,28 @@ struct TorpedoSnapshot {
 
 struct KillEvent {
     clock: GameClock,
-    killer_entity: i32,
-    victim_entity: i32,
+    killer_entity: EntityId,
+    victim_entity: EntityId,
 }
 
 struct MinimapShipUpdate {
-    entity_id: i32,
+    entity_id: EntityId,
     pos: NormalizedPos,
     heading: f32,
     disappearing: bool,
     clock: GameClock,
 }
 
+/// Pre-rasterized ship icon (RGBA, white/alpha mask to be tinted at draw time).
+pub type ShipIcon = RgbaImage;
+
 pub struct MinimapBuilder {
     output_path: String,
     map_image: Option<RgbImage>,
     map_info: Option<map_data::MapInfo>,
     dump_mode: Option<DumpMode>,
+    ship_icons: HashMap<String, ShipIcon>,
+    game_params: GameMetadataProvider,
 }
 
 impl MinimapBuilder {
@@ -85,12 +93,16 @@ impl MinimapBuilder {
         map_image: Option<RgbImage>,
         map_info: Option<map_data::MapInfo>,
         dump_mode: Option<DumpMode>,
+        ship_icons: HashMap<String, ShipIcon>,
+        game_params: GameMetadataProvider,
     ) -> Self {
         Self {
             output_path: output_path.to_string(),
             map_image,
             map_info,
             dump_mode,
+            ship_icons,
+            game_params,
         }
     }
 }
@@ -106,6 +118,16 @@ impl AnalyzerMutBuilder for MinimapBuilder {
             relations.insert(v.name.clone(), Relation::new(v.relation));
         }
 
+        // Resolve species by player name (meta.vehicles has shipId = shipParamsId)
+        let mut species_by_name: HashMap<String, String> = HashMap::new();
+        for v in &meta.vehicles {
+            if let Some(param) = self.game_params.game_param_by_id(v.shipId.raw()) {
+                if let Some(species) = param.species() {
+                    species_by_name.insert(v.name.clone(), format!("{:?}", species));
+                }
+            }
+        }
+
         Box::new(MinimapRenderer {
             version,
             map_name,
@@ -114,7 +136,11 @@ impl AnalyzerMutBuilder for MinimapBuilder {
             map_image: self.map_image.clone(),
             map_info: self.map_info.clone(),
             relations_by_name: relations,
+            species_by_name,
+            ship_icons: self.ship_icons.clone(),
+            player_species: HashMap::new(),
             positions: HashMap::new(),
+            yaw_timeline: HashMap::new(),
             minimap_updates: Vec::new(),
             shots: Vec::new(),
             torpedoes: Vec::new(),
@@ -140,9 +166,15 @@ struct MinimapRenderer {
 
     // From replay meta
     relations_by_name: HashMap<String, Relation>,
+    species_by_name: HashMap<String, String>,
+
+    // Ship icons + per-entity species (resolved during OnArenaStateReceived)
+    ship_icons: HashMap<String, ShipIcon>,
+    player_species: HashMap<EntityId, String>,
 
     // Collected data
-    positions: HashMap<u32, Vec<(GameClock, ShipSnapshot)>>,
+    positions: HashMap<EntityId, Vec<(GameClock, ShipSnapshot)>>,
+    yaw_timeline: HashMap<EntityId, Vec<(GameClock, f32)>>,
     minimap_updates: Vec<MinimapShipUpdate>,
     shots: Vec<ShotTrail>,
     torpedoes: Vec<TorpedoSnapshot>,
@@ -150,25 +182,23 @@ struct MinimapRenderer {
     planes: HashMap<u64, Vec<(GameClock, NormalizedPos)>>,
     kills: Vec<KillEvent>,
     scores: Vec<(GameClock, i32, i32)>,
-    player_names: HashMap<i32, String>,
-    player_relations: HashMap<i32, Relation>,
-    dead_ships: HashMap<i32, (GameClock, MinimapPos)>,
+    player_names: HashMap<EntityId, String>,
+    player_relations: HashMap<EntityId, Relation>,
+    dead_ships: HashMap<EntityId, (GameClock, MinimapPos)>,
     last_clock: GameClock,
 }
 
 impl MinimapRenderer {
-    /// Maximum age (in seconds) before a position sample is considered stale.
-    const POSITION_MAX_AGE: f32 = 5.0;
-
+    /// Interpolate between position samples, or return the nearest sample.
+    /// Returns None only if there are no samples at all or game_time is before the first sample.
     fn interpolate_position(
         positions: &[(GameClock, ShipSnapshot)],
         game_time: GameClock,
-    ) -> Option<(WorldPos, f32)> {
+    ) -> Option<WorldPos> {
         if positions.is_empty() {
             return None;
         }
 
-        // Find the first sample after game_time
         let idx = positions.partition_point(|(t, _)| *t <= game_time);
 
         let before = idx.checked_sub(1).map(|i| &positions[i]);
@@ -182,15 +212,47 @@ impl MinimapRenderer {
                 } else {
                     0.0
                 };
-                Some((s0.pos.lerp(s1.pos, frac), s0.yaw + (s1.yaw - s0.yaw) * frac))
+                Some(s0.pos.lerp(s1.pos, frac))
             }
-            (Some((t, snap)), None) if (game_time - *t).abs() < Self::POSITION_MAX_AGE => {
-                Some((snap.pos, snap.yaw))
-            }
-            (None, Some((t, snap))) if (game_time - *t).abs() < Self::POSITION_MAX_AGE => {
-                Some((snap.pos, snap.yaw))
-            }
+            (Some((_t, snap)), None) => Some(snap.pos),
+            (None, Some((_t, snap))) => Some(snap.pos),
             _ => None,
+        }
+    }
+
+    fn interpolate_yaw(yaw_samples: &[(GameClock, f32)], game_time: GameClock) -> f32 {
+        use std::f32::consts::PI;
+
+        if yaw_samples.is_empty() {
+            return 0.0;
+        }
+
+        let idx = yaw_samples.partition_point(|(t, _)| *t <= game_time);
+
+        let before = idx.checked_sub(1).map(|i| &yaw_samples[i]);
+        let after = yaw_samples.get(idx);
+
+        match (before, after) {
+            (Some((t0, y0)), Some((t1, y1))) => {
+                let span = *t1 - *t0;
+                let frac = if span.abs() > 0.001 {
+                    (game_time - *t0) / span
+                } else {
+                    0.0
+                };
+                // Shortest-arc interpolation: wrap the delta to [-PI, PI]
+                let mut delta = y1 - y0;
+                while delta > PI {
+                    delta -= 2.0 * PI;
+                }
+                while delta < -PI {
+                    delta += 2.0 * PI;
+                }
+                y0 + delta * frac
+            }
+            (Some((_, y)), None) => *y,
+            (None, Some((_, y))) => *y,
+            _ => 0.0,
         }
     }
 
@@ -241,17 +303,25 @@ impl MinimapRenderer {
         let (score0, score1) = self.get_scores_at(game_time);
         drawing::draw_score_bar(frame, score0, score1, font);
 
-        // 2. Artillery shots
+        // 2. Artillery shot tracers (short segments moving from origin to target)
+        const TRACER_LEN: f32 = 0.12; // fraction of total path length
         for shot in &self.shots {
-            if game_time >= shot.clock && game_time <= shot.clock + SHOT_DURATION {
-                drawing::draw_shot_line(
-                    frame,
-                    shot.origin.x as f32,
-                    shot.origin.y as f32 + y_off as f32,
-                    shot.target.x as f32,
-                    shot.target.y as f32 + y_off as f32,
-                );
+            let elapsed = game_time - shot.clock;
+            if elapsed < 0.0 || elapsed > shot.flight_duration {
+                continue;
             }
+            let frac = elapsed / shot.flight_duration;
+            let head = shot.origin.lerp(shot.target, frac);
+            let tail = shot.origin.lerp(shot.target, (frac - TRACER_LEN).max(0.0));
+            let head_px = map_info.world_to_minimap(head, MINIMAP_SIZE);
+            let tail_px = map_info.world_to_minimap(tail, MINIMAP_SIZE);
+            drawing::draw_shot_line(
+                frame,
+                tail_px.x as f32,
+                tail_px.y as f32 + y_off as f32,
+                head_px.x as f32,
+                head_px.y as f32 + y_off as f32,
+            );
         }
 
         // 3. Torpedoes
@@ -275,69 +345,147 @@ impl MinimapRenderer {
                 continue;
             }
             let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
-            drawing::draw_torpedo(frame, px.x, px.y + y_off);
+            let relation = self
+                .player_relations
+                .get(&torp.owner_id)
+                .copied()
+                .unwrap_or(Relation::new(2));
+            let color = if relation.is_self() || relation.is_ally() {
+                drawing::COLOR_TORPEDO_FRIENDLY
+            } else {
+                drawing::COLOR_TORPEDO
+            };
+            drawing::draw_torpedo(frame, px.x, px.y + y_off, color);
         }
 
-        // 4. Ships from Position packets (world coords)
-        for (&entity_id, positions) in &self.positions {
-            let entity_id_i32 = entity_id as i32;
-            if let Some((death_time, _)) = self.dead_ships.get(&entity_id_i32) {
-                if game_time >= *death_time {
-                    continue;
-                }
-            }
-
-            if let Some((world, yaw)) = Self::interpolate_position(positions, game_time) {
-                let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
-                let relation = self
-                    .player_relations
-                    .get(&entity_id_i32)
-                    .copied()
-                    .unwrap_or(Relation::new(2));
-                let color = drawing::ship_color(relation);
-                drawing::draw_ship(frame, px.x, px.y + y_off, yaw, color, 5);
-            }
-        }
-
-        // 5. Ships from minimap updates (entities without world positions)
-        // Precompute per-entity minimap update lists
-        let mut minimap_by_entity: HashMap<i32, Vec<usize>> = HashMap::new();
+        // 4. Ships — unified pass using both world positions and minimap updates
+        //
+        // Precompute per-entity minimap update index (sorted by time already)
+        let mut minimap_by_entity: HashMap<EntityId, Vec<usize>> = HashMap::new();
         for (i, u) in self.minimap_updates.iter().enumerate() {
             minimap_by_entity.entry(u.entity_id).or_default().push(i);
         }
 
-        for (&entity_id, indices) in &minimap_by_entity {
-            if self.positions.contains_key(&(entity_id as u32)) {
-                continue;
-            }
-            if let Some((death_time, _)) = self.dead_ships.get(&entity_id) {
+        // Collect all known entity IDs from both sources
+        let all_entity_ids: HashSet<EntityId> = self
+            .positions
+            .keys()
+            .chain(minimap_by_entity.keys())
+            .copied()
+            .collect();
+
+        for entity_id in &all_entity_ids {
+            // Skip dead ships
+            if let Some((death_time, _)) = self.dead_ships.get(entity_id) {
                 if game_time >= *death_time {
                     continue;
                 }
             }
 
-            let best = indices.iter().rev().find_map(|&i| {
-                let u = &self.minimap_updates[i];
-                if u.clock <= game_time {
-                    Some(u)
-                } else {
-                    None
-                }
+            // Find the most recent minimap update at or before current game time.
+            // This is the authoritative source for whether a ship is detected.
+            let latest_minimap = minimap_by_entity.get(entity_id).and_then(|indices| {
+                indices.iter().rev().find_map(|&i| {
+                    let u = &self.minimap_updates[i];
+                    if u.clock <= game_time {
+                        Some(u)
+                    } else {
+                        None
+                    }
+                })
             });
 
-            if let Some(update) = best {
-                if update.disappearing || (game_time - update.clock).abs() > 10.0 {
-                    continue;
+            // Visibility is determined by the minimap data:
+            // - disappearing=false means detected (Visible or MinimapOnly depending on position data)
+            // - disappearing=true means undetected (show last known position)
+            // - no minimap data yet means the ship hasn't appeared
+            let detected = latest_minimap.map(|u| !u.disappearing).unwrap_or(false);
+
+            // Best world position (interpolated or last sample)
+            let world_pos = self
+                .positions
+                .get(entity_id)
+                .and_then(|p| Self::interpolate_position(p, game_time));
+
+            let relation = self
+                .player_relations
+                .get(entity_id)
+                .copied()
+                .unwrap_or(Relation::new(2));
+            let color = drawing::ship_color(relation);
+
+            if detected {
+                if let Some(world) = world_pos {
+                    // Detected + world position → Visible (solid icon at precise position)
+                    let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
+                    let yaw = self
+                        .yaw_timeline
+                        .get(entity_id)
+                        .map(|ys| Self::interpolate_yaw(ys, game_time))
+                        .unwrap_or(0.0);
+                    self.draw_ship_or_icon(
+                        frame,
+                        *entity_id,
+                        px.x,
+                        px.y + y_off,
+                        yaw,
+                        color,
+                        drawing::ShipVisibility::Visible,
+                    );
+                } else if let Some(update) = latest_minimap {
+                    // Detected but no world position → MinimapOnly (outline at minimap coords)
+                    let px = update.pos.to_minimap(MINIMAP_SIZE);
+                    self.draw_ship_or_icon(
+                        frame,
+                        *entity_id,
+                        px.x,
+                        px.y + y_off,
+                        update.heading,
+                        color,
+                        drawing::ShipVisibility::MinimapOnly,
+                    );
                 }
-                let px = update.pos.to_minimap(MINIMAP_SIZE);
-                let relation = self
-                    .player_relations
-                    .get(&entity_id)
-                    .copied()
-                    .unwrap_or(Relation::new(2));
-                let color = drawing::ship_color(relation);
-                drawing::draw_ship(frame, px.x, px.y + y_off, update.heading, color, 5);
+            } else if let Some(disappear_update) = latest_minimap {
+                // Undetected — show frozen at the position when the ship went dark.
+                // Use the disappearing event's timestamp to look up where the ship was.
+                let vanish_time = disappear_update.clock;
+
+                let frozen_world = self
+                    .positions
+                    .get(entity_id)
+                    .and_then(|p| Self::interpolate_position(p, vanish_time));
+
+                if let Some(world) = frozen_world {
+                    let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
+                    let yaw = self
+                        .yaw_timeline
+                        .get(entity_id)
+                        .map(|ys| Self::interpolate_yaw(ys, vanish_time))
+                        .unwrap_or(0.0);
+                    self.draw_ship_or_icon(
+                        frame,
+                        *entity_id,
+                        px.x,
+                        px.y + y_off,
+                        yaw,
+                        color,
+                        drawing::ShipVisibility::Undetected,
+                    );
+                } else {
+                    // No world position — use the minimap position from the disappearing event
+                    let px = disappear_update.pos.to_minimap(MINIMAP_SIZE);
+                    self.draw_ship_or_icon(
+                        frame,
+                        *entity_id,
+                        px.x,
+                        px.y + y_off,
+                        disappear_update.heading,
+                        color,
+                        drawing::ShipVisibility::Undetected,
+                    );
+                }
             }
+            // If no minimap data exists yet, skip — ship hasn't appeared in the replay
         }
 
         // 6. Dead ship markers
@@ -554,29 +702,29 @@ impl AnalyzerMut for MinimapRenderer {
 
         match decoded.payload {
             DecodedPacketPayload::Position(pos) => {
-                self.positions.entry(pos.pid).or_default().push((
+                let eid = EntityId::from(pos.pid);
+                self.positions.entry(eid).or_default().push((
                     decoded.clock,
                     ShipSnapshot {
                         pos: WorldPos {
                             x: pos.position.x,
                             z: pos.position.z,
                         },
-                        yaw: pos.rotation.yaw,
                     },
                 ));
             }
 
             DecodedPacketPayload::PlayerOrientation(ref orient) => {
                 // When parent_id is 0, this is the ship's absolute world position
-                if orient.parent_id == 0 {
-                    self.positions.entry(orient.pid).or_default().push((
+                if orient.parent_id == EntityId::from(0u32) {
+                    let eid = EntityId::from(orient.pid);
+                    self.positions.entry(eid).or_default().push((
                         decoded.clock,
                         ShipSnapshot {
                             pos: WorldPos {
                                 x: orient.position.x,
                                 z: orient.position.z,
                             },
-                            yaw: orient.rotation.yaw,
                         },
                     ));
                 }
@@ -584,25 +732,41 @@ impl AnalyzerMut for MinimapRenderer {
 
             DecodedPacketPayload::OnArenaStateReceived { player_states, .. } => {
                 for player in &player_states {
-                    let entity_id = player.entity_id() as i32;
+                    let entity_id = EntityId::from(player.entity_id());
                     let name = player.username().to_string();
                     self.player_names.insert(entity_id, name.clone());
 
                     if let Some(relation) = self.relations_by_name.get(&name) {
                         self.player_relations.insert(entity_id, *relation);
                     }
+                    if let Some(species) = self.species_by_name.get(&name) {
+                        self.player_species.insert(entity_id, species.clone());
+                    }
                 }
             }
 
             DecodedPacketPayload::MinimapUpdate { ref updates, .. } => {
                 for u in updates {
+                    let eid = EntityId::from(u.entity_id);
+                    // Minimap heading: 0=north, 90=east (degrees, CW).
+                    // Convert to math convention: 0=east, PI/2=north (radians, CCW).
+                    let yaw = std::f32::consts::FRAC_PI_2 - u.heading.to_radians();
                     self.minimap_updates.push(MinimapShipUpdate {
-                        entity_id: u.entity_id,
-                        pos: NormalizedPos { x: u.x, y: u.y },
-                        heading: u.heading.to_radians(),
+                        entity_id: eid,
+                        pos: NormalizedPos {
+                            x: u.position.x,
+                            y: u.position.y,
+                        },
+                        heading: yaw,
                         disappearing: u.disappearing,
                         clock: decoded.clock,
                     });
+                    if !u.disappearing {
+                        self.yaw_timeline
+                            .entry(eid)
+                            .or_default()
+                            .push((decoded.clock, yaw));
+                    }
                 }
             }
 
@@ -610,29 +774,30 @@ impl AnalyzerMut for MinimapRenderer {
                 entity_id: _,
                 ref salvos,
             } => {
-                if let Some(ref info) = self.map_info {
-                    for salvo in salvos {
-                        for shot in &salvo.shots {
-                            let origin = info.world_to_minimap(
-                                WorldPos {
-                                    x: shot.origin.0,
-                                    z: shot.origin.2,
-                                },
-                                MINIMAP_SIZE,
-                            );
-                            let target = info.world_to_minimap(
-                                WorldPos {
-                                    x: shot.target.0,
-                                    z: shot.target.2,
-                                },
-                                MINIMAP_SIZE,
-                            );
-                            self.shots.push(ShotTrail {
-                                origin,
-                                target,
-                                clock: decoded.clock,
-                            });
-                        }
+                for salvo in salvos {
+                    for shot in &salvo.shots {
+                        let origin = WorldPos {
+                            x: shot.origin.0,
+                            z: shot.origin.2,
+                        };
+                        let target = WorldPos {
+                            x: shot.target.0,
+                            z: shot.target.2,
+                        };
+                        let dx = target.x - origin.x;
+                        let dz = target.z - origin.z;
+                        let distance = (dx * dx + dz * dz).sqrt();
+                        let flight_duration = if shot.speed > 0.0 {
+                            distance / shot.speed
+                        } else {
+                            SHOT_DURATION
+                        };
+                        self.shots.push(ShotTrail {
+                            origin,
+                            target,
+                            flight_duration,
+                            clock: decoded.clock,
+                        });
                     }
                 }
             }
@@ -647,6 +812,7 @@ impl AnalyzerMut for MinimapRenderer {
                         .unwrap_or(0);
                     self.torpedoes.push(TorpedoSnapshot {
                         composite_id,
+                        owner_id: EntityId::from(torp.owner_id),
                         origin: WorldPos {
                             x: torp.origin.0,
                             z: torp.origin.2,
@@ -684,23 +850,25 @@ impl AnalyzerMut for MinimapRenderer {
             }
 
             DecodedPacketPayload::ShipDestroyed { killer, victim, .. } => {
+                let killer_id = EntityId::from(killer);
+                let victim_id = EntityId::from(victim);
                 self.kills.push(KillEvent {
                     clock: decoded.clock,
-                    killer_entity: killer,
-                    victim_entity: victim,
+                    killer_entity: killer_id,
+                    victim_entity: victim_id,
                 });
 
                 if let Some(ref info) = self.map_info {
-                    if let Some(positions) = self.positions.get(&(victim as u32)) {
+                    if let Some(positions) = self.positions.get(&victim_id) {
                         if let Some(last) = positions.last() {
                             let pos = info.world_to_minimap(last.1.pos, MINIMAP_SIZE);
-                            self.dead_ships.insert(victim, (decoded.clock, pos));
+                            self.dead_ships.insert(victim_id, (decoded.clock, pos));
                         }
                     } else {
                         for u in self.minimap_updates.iter().rev() {
-                            if u.entity_id == victim && !u.disappearing {
+                            if u.entity_id == victim_id && !u.disappearing {
                                 let pos = u.pos.to_minimap(MINIMAP_SIZE);
-                                self.dead_ships.insert(victim, (decoded.clock, pos));
+                                self.dead_ships.insert(victim_id, (decoded.clock, pos));
                                 break;
                             }
                         }
@@ -772,6 +940,37 @@ impl AnalyzerMut for MinimapRenderer {
 }
 
 impl MinimapRenderer {
+    /// Draw a ship using its species icon if available, otherwise fall back to a circle.
+    fn draw_ship_or_icon(
+        &self,
+        frame: &mut RgbImage,
+        entity_id: EntityId,
+        x: i32,
+        y: i32,
+        yaw: f32,
+        color: Rgb<u8>,
+        visibility: drawing::ShipVisibility,
+    ) {
+        if let Some(species) = self.player_species.get(&entity_id) {
+            if let Some(icon) = self.ship_icons.get(species) {
+                drawing::draw_ship_icon(frame, icon, x, y, yaw, color, visibility);
+                return;
+            }
+        }
+        // Fallback: circle-based rendering
+        match visibility {
+            drawing::ShipVisibility::Visible => {
+                drawing::draw_ship(frame, x, y, yaw, color, 5);
+            }
+            drawing::ShipVisibility::MinimapOnly => {
+                drawing::draw_ship_outline(frame, x, y, yaw, color, 5);
+            }
+            drawing::ShipVisibility::Undetected => {
+                drawing::draw_ship_undetected(frame, x, y, yaw, 5);
+            }
+        }
+    }
+
     fn handle_property_update(
         &mut self,
         prop_update: &wows_replays::packet2::PropertyUpdatePacket<'_>,

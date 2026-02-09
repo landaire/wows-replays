@@ -1,4 +1,4 @@
-pub use wows_replays::packet2::GameClock;
+pub use wows_replays::types::{EntityId, GameClock};
 
 /// Map metadata for coordinate conversion.
 #[derive(Debug, Clone)]

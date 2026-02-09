@@ -5,15 +5,17 @@ mod renderer;
 use anyhow::{anyhow, Context};
 use clap::{App, Arg};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::read_dir;
 use std::io::Cursor;
 use std::path::Path;
 use wowsunpack::data::idx::{self, FileNode};
 use wowsunpack::data::pkg::PkgFileLoader;
 use wowsunpack::data::DataFileWithCallback;
+use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::rpc::entitydefs::{parse_scripts, EntitySpec};
 
-use image::RgbImage;
+use image::{RgbImage, RgbaImage};
 use wows_replays::analyzer::{AnalyzerAdapter, AnalyzerMutBuilder};
 use wows_replays::ReplayFile;
 
@@ -181,6 +183,69 @@ fn load_map_info(
     Some(map_data::MapInfo { space_size })
 }
 
+/// Icon size in pixels for rasterized ship icons.
+const ICON_SIZE: u32 = 24;
+
+/// Load and rasterize ship SVG icons from game files.
+/// Returns a map from species name to RGBA image.
+fn load_ship_icons(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> HashMap<String, RgbaImage> {
+    let species_names = [
+        "Destroyer",
+        "Cruiser",
+        "Battleship",
+        "AirCarrier",
+        "Submarine",
+        "Auxiliary",
+    ];
+    let mut icons = HashMap::new();
+    for name in &species_names {
+        let path = format!(
+            "gui/fla/minimap/ship_icons/minimap_{}.svg",
+            name.to_ascii_lowercase()
+        );
+        let file_path = Path::new(&path);
+        let mut buf = Vec::new();
+        if file_tree
+            .read_file_at_path(file_path, pkg_loader, &mut buf)
+            .is_ok()
+            && !buf.is_empty()
+        {
+            if let Some(img) = rasterize_svg(&buf, ICON_SIZE) {
+                println!("Loaded ship icon: {}", name);
+                icons.insert(name.to_string(), img);
+            }
+        }
+    }
+    if icons.is_empty() {
+        println!("Warning: No ship icons loaded, using fallback circles");
+    }
+    icons
+}
+
+/// Rasterize an SVG byte buffer to an RGBA image at the given size.
+fn rasterize_svg(svg_data: &[u8], size: u32) -> Option<RgbaImage> {
+    let opt = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(svg_data, &opt).ok()?;
+
+    let tree_size = tree.size();
+    let sx = size as f32 / tree_size.width();
+    let sy = size as f32 / tree_size.height();
+    let scale = sx.min(sy);
+
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
+
+    // Center the icon in the output
+    let offset_x = (size as f32 - tree_size.width() * scale) / 2.0;
+    let offset_y = (size as f32 - tree_size.height() * scale) / 2.0;
+    let transform =
+        tiny_skia::Transform::from_translate(offset_x, offset_y).post_scale(scale, scale);
+
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    let data = pixmap.data().to_vec();
+    RgbaImage::from_raw(size, size, data)
+}
+
 fn load_game_resources(
     game_dir: &str,
 ) -> anyhow::Result<(Vec<EntitySpec>, FileNode, PkgFileLoader)> {
@@ -294,6 +359,13 @@ fn main() -> anyhow::Result<()> {
     println!("Loading game data...");
     let (specs, file_tree, pkg_loader) = load_game_resources(game_dir)?;
 
+    println!("Loading game params...");
+    let game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
+        .map_err(|e| anyhow!("Failed to load GameParams: {:?}", e))?;
+
+    println!("Loading ship icons...");
+    let ship_icons = load_ship_icons(&file_tree, &pkg_loader);
+
     println!("Parsing replay...");
     let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(replay_path))?;
 
@@ -302,7 +374,14 @@ fn main() -> anyhow::Result<()> {
     let map_image = load_map_image(map_name, &file_tree, &pkg_loader);
     let map_info = load_map_info(map_name, &file_tree, &pkg_loader);
 
-    let builder = MinimapBuilder::new(output, map_image, map_info, dump_mode);
+    let builder = MinimapBuilder::new(
+        output,
+        map_image,
+        map_info,
+        dump_mode,
+        ship_icons,
+        game_params,
+    );
     let processor = builder.build(&replay_file.meta);
 
     let mut p = wows_replays::packet2::Parser::new(&specs);
