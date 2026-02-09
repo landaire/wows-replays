@@ -1,12 +1,12 @@
 use image::GenericImageView;
 use image::Pixel;
-use image::{ImageFormat, RgbImage, imageops::FilterType};
+use image::{imageops::FilterType, ImageFormat, RgbImage};
 use plotters::prelude::*;
 use std::collections::HashMap;
-use wows_replays::ReplayMeta;
 use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
 use wows_replays::analyzer::*;
 use wows_replays::packet2::{EntityMethodPacket, Packet, PacketType};
+use wows_replays::ReplayMeta;
 use wowsunpack::data::Version;
 use wowsunpack::rpc;
 
@@ -224,9 +224,9 @@ impl AnalyzerMut for DamageMonitor {
     }
 
     fn process_mut(&mut self, packet: &Packet<'_, '_>) {
-        let time = packet.clock;
-        let minutes = (time / 60.0).floor() as i32;
-        let seconds = (time - minutes as f32 * 60.0).floor() as i32;
+        let secs = packet.clock.seconds();
+        let minutes = (secs / 60.0).floor() as i32;
+        let seconds = (secs - minutes as f32 * 60.0).floor() as i32;
         let time = format!("{:02}:{:02}", minutes, seconds);
 
         let decoded = DecodedPacket::from(&self.version, false, packet);
@@ -362,7 +362,7 @@ impl AnalyzerMut for DamageMonitor {
                                     self.artillery_shots.entry(owner_id).or_default();
                                     self.artillery_shots.get_mut(&owner_id).unwrap().push(
                                         ArtilleryShot {
-                                            start_time: packet.clock,
+                                            start_time: packet.clock.seconds(),
                                             start_pos: match shot.get("pos").unwrap() {
                                                 wowsunpack::rpc::typedefs::ArgValue::Vector3(v) => {
                                                     *v

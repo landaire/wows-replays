@@ -1,5 +1,3 @@
-
-
 pub trait AnalyzerBuilder {
     fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer>;
 }

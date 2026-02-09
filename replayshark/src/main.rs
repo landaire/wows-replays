@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use clap::{App, Arg, SubCommand};
 use std::borrow::Cow;
 use std::fs::read_dir;
@@ -13,11 +13,11 @@ use wowsunpack::{
 };
 
 use wows_replays::{
-    ErrorKind, ReplayFile,
     analyzer::{
-        AnalyzerAdapter, AnalyzerBuilder, AnalyzerMutBuilder, chat::ChatLoggerBuilder,
-        summary::SummaryBuilder,
+        chat::ChatLoggerBuilder, summary::SummaryBuilder, AnalyzerAdapter, AnalyzerBuilder,
+        AnalyzerMutBuilder,
     },
+    ErrorKind, ReplayFile,
 };
 
 struct InvestigativePrinter {
@@ -82,7 +82,7 @@ impl wows_replays::analyzer::AnalyzerMut for InvestigativePrinter {
             }
         }
         if let Some(t) = self.timestamp {
-            let clock = (decoded.clock + t) as u32;
+            let clock = (decoded.clock.seconds() + t) as u32;
             let s = clock % 60;
             let clock = (clock - s) / 60;
             let m = clock % 60;

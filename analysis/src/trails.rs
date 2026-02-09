@@ -149,8 +149,12 @@ impl AnalyzerMut for TrailRenderer {
         // 700 for Fault Line (42x42km)
         let scale = map_widths
             .get(&self.meta.as_ref().unwrap().mapName)
-            .unwrap_or_else(|| panic!("Could not find size of map {}!",
-                self.meta.as_ref().unwrap().mapName))
+            .unwrap_or_else(|| {
+                panic!(
+                    "Could not find size of map {}!",
+                    self.meta.as_ref().unwrap().mapName
+                )
+            })
             * 50
             / 3;
         let scale = scale as f64;

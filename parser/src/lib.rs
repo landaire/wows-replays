@@ -1,6 +1,6 @@
 pub mod analyzer;
 mod error;
-mod nested_property_path;
+pub mod nested_property_path;
 pub mod packet2;
 mod wowsreplay;
 

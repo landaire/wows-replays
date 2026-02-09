@@ -691,6 +691,42 @@ pub struct MinimapUpdate {
     pub unknown: bool,
 }
 
+/// A single shell in an artillery salvo
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtilleryShotData {
+    pub origin: (f32, f32, f32),
+    pub target: (f32, f32, f32),
+    pub shot_id: u32,
+    pub speed: f32,
+}
+
+/// A salvo of artillery shells from one ship
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtillerySalvo {
+    pub owner_id: i32,
+    pub params_id: u32,
+    pub salvo_id: u32,
+    pub shots: Vec<ArtilleryShotData>,
+}
+
+/// A single torpedo launch
+#[derive(Debug, Clone, Serialize)]
+pub struct TorpedoData {
+    pub owner_id: i32,
+    pub params_id: u32,
+    pub salvo_id: u32,
+    pub shot_id: u32,
+    pub origin: (f32, f32, f32),
+    pub direction: (f32, f32, f32),
+}
+
+/// A single projectile hit (from receiveShotKills)
+#[derive(Debug, Clone, Serialize)]
+pub struct ShotHit {
+    pub owner_id: i32,
+    pub shot_id: u32,
+}
+
 /// Enumerates usable consumables in-game
 #[derive(Debug, Clone, Copy, Serialize)]
 pub enum Consumable {
@@ -925,6 +961,28 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     CameraMode(CameraMode),
     /// If true, indicates that the player has enabled the "free look" camera (by holding right click)
     CameraFreeLook(bool),
+    /// Artillery shells fired
+    ArtilleryShots {
+        entity_id: u32,
+        salvos: Vec<ArtillerySalvo>,
+    },
+    /// Torpedoes launched
+    TorpedoesReceived {
+        entity_id: u32,
+        torpedoes: Vec<TorpedoData>,
+    },
+    /// Projectile hits (shells or torpedoes hitting targets)
+    ShotKills {
+        entity_id: u32,
+        hits: Vec<ShotHit>,
+    },
+    /// Plane/squadron position update on the minimap
+    PlanePosition {
+        entity_id: u32,
+        squadron_id: u64,
+        x: f32,
+        y: f32,
+    },
     /// This is a packet of unknown type
     Unknown(&'replay [u8]),
     /// This is a packet of known type, but which we were unable to parse
@@ -1233,6 +1291,19 @@ where
             }
             PacketType::Invalid(u) => DecodedPacketPayload::Invalid(u),
             PacketType::BattleResults(results) => DecodedPacketPayload::BattleResults(results),
+        }
+    }
+
+    fn extract_vec3(val: Option<&ArgValue>) -> (f32, f32, f32) {
+        match val {
+            Some(ArgValue::Vector3((x, y, z))) => (*x, *y, *z),
+            Some(ArgValue::Array(a)) if a.len() >= 3 => {
+                let x: f32 = (&a[0]).try_into().unwrap_or(0.0);
+                let y: f32 = (&a[1]).try_into().unwrap_or(0.0);
+                let z: f32 = (&a[2]).try_into().unwrap_or(0.0);
+                (x, y, z)
+            }
+            _ => (0.0, 0.0, 0.0),
         }
     }
 
@@ -1752,6 +1823,179 @@ where
                 consumable,
                 duration,
             }
+        } else if *method == "receiveArtilleryShots" {
+            let salvos_array = match &args[0] {
+                ArgValue::Array(a) => a,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let mut salvos = Vec::new();
+            for salvo_val in salvos_array.iter() {
+                let salvo_dict = match salvo_val {
+                    ArgValue::FixedDict(m) => m,
+                    _ => continue,
+                };
+                let owner_id: i32 = salvo_dict
+                    .get("ownerID")
+                    .and_then(|v| v.try_into().ok())
+                    .unwrap_or(0);
+                let params_id: u32 = salvo_dict
+                    .get("paramsID")
+                    .and_then(|v| v.try_into().ok())
+                    .unwrap_or(0);
+                let salvo_id: u32 = salvo_dict
+                    .get("salvoID")
+                    .and_then(|v| v.try_into().ok())
+                    .unwrap_or(0);
+                let shots_array = match salvo_dict.get("shots") {
+                    Some(ArgValue::Array(a)) => a,
+                    _ => continue,
+                };
+                let mut shots = Vec::new();
+                for shot_val in shots_array.iter() {
+                    let shot_dict = match shot_val {
+                        ArgValue::FixedDict(m) => m,
+                        _ => continue,
+                    };
+                    let pos = Self::extract_vec3(shot_dict.get("pos"));
+                    let tar_pos = Self::extract_vec3(shot_dict.get("tarPos"));
+                    let shot_id: u32 = shot_dict
+                        .get("shotID")
+                        .and_then(|v| v.try_into().ok())
+                        .unwrap_or(0);
+                    let speed: f32 = shot_dict
+                        .get("speed")
+                        .and_then(|v| v.try_into().ok())
+                        .unwrap_or(0.0);
+                    shots.push(ArtilleryShotData {
+                        origin: pos,
+                        target: tar_pos,
+                        shot_id,
+                        speed,
+                    });
+                }
+                salvos.push(ArtillerySalvo {
+                    owner_id,
+                    params_id,
+                    salvo_id,
+                    shots,
+                });
+            }
+            DecodedPacketPayload::ArtilleryShots {
+                entity_id: *entity_id,
+                salvos,
+            }
+        } else if *method == "receiveTorpedoes" {
+            let salvos_array = match &args[0] {
+                ArgValue::Array(a) => a,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let mut torpedoes = Vec::new();
+            for salvo_val in salvos_array.iter() {
+                let salvo_dict = match salvo_val {
+                    ArgValue::FixedDict(m) => m,
+                    _ => continue,
+                };
+                let owner_id: i32 = salvo_dict
+                    .get("ownerID")
+                    .and_then(|v| v.try_into().ok())
+                    .unwrap_or(0);
+                let params_id: u32 = salvo_dict
+                    .get("paramsID")
+                    .and_then(|v| v.try_into().ok())
+                    .unwrap_or(0);
+                let salvo_id: u32 = salvo_dict
+                    .get("salvoID")
+                    .and_then(|v| v.try_into().ok())
+                    .unwrap_or(0);
+                let torps_array = match salvo_dict.get("torpedoes") {
+                    Some(ArgValue::Array(a)) => a,
+                    _ => continue,
+                };
+                for torp_val in torps_array.iter() {
+                    let torp_dict = match torp_val {
+                        ArgValue::FixedDict(m) => m,
+                        _ => continue,
+                    };
+                    let pos = Self::extract_vec3(torp_dict.get("pos"));
+                    let dir = Self::extract_vec3(torp_dict.get("dir"));
+                    let shot_id: u32 = torp_dict
+                        .get("shotID")
+                        .and_then(|v| v.try_into().ok())
+                        .unwrap_or(0);
+                    torpedoes.push(TorpedoData {
+                        owner_id,
+                        params_id,
+                        salvo_id,
+                        shot_id,
+                        origin: pos,
+                        direction: dir,
+                    });
+                }
+            }
+            DecodedPacketPayload::TorpedoesReceived {
+                entity_id: *entity_id,
+                torpedoes,
+            }
+        } else if *method == "receiveShotKills" {
+            // SHOTKILLS_PACK: Array of { ownerID: PLAYER_ID, hitType: UINT8, kills: Array<SHOTKILL> }
+            // SHOTKILL: { pos: VECTOR3, shotID: SHOT_ID }
+            let packs = match &args[0] {
+                ArgValue::Array(a) => a,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let mut hits = Vec::new();
+            for pack in packs {
+                let pack_dict = match pack {
+                    ArgValue::FixedDict(d) => d,
+                    _ => continue,
+                };
+                let owner_id: i32 = pack_dict
+                    .get("ownerID")
+                    .and_then(|v| v.try_into().ok())
+                    .unwrap_or(0);
+                let kills_array = match pack_dict.get("kills") {
+                    Some(ArgValue::Array(a)) => a,
+                    _ => continue,
+                };
+                for kill in kills_array {
+                    let kill_dict = match kill {
+                        ArgValue::FixedDict(d) => d,
+                        _ => continue,
+                    };
+                    let shot_id: u32 = kill_dict
+                        .get("shotID")
+                        .and_then(|v| v.try_into().ok())
+                        .unwrap_or(0);
+                    hits.push(ShotHit { owner_id, shot_id });
+                }
+            }
+            DecodedPacketPayload::ShotKills {
+                entity_id: *entity_id,
+                hits,
+            }
+        } else if *method == "receive_updateMinimapSquadron" {
+            let squadron_id: u64 = match &args[0] {
+                ArgValue::Uint64(v) => *v,
+                ArgValue::Int64(v) => *v as u64,
+                ArgValue::Uint32(v) => *v as u64,
+                ArgValue::Int32(v) => *v as u64,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let position = match &args[1] {
+                ArgValue::Array(a) if a.len() >= 2 => {
+                    let x: f32 = (&a[0]).try_into().unwrap_or(0.0);
+                    let y: f32 = (&a[1]).try_into().unwrap_or(0.0);
+                    (x, y)
+                }
+                ArgValue::Vector2((x, y)) => (*x, *y),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            DecodedPacketPayload::PlanePosition {
+                entity_id: *entity_id,
+                squadron_id,
+                x: position.0,
+                y: position.1,
+            }
         } else {
             DecodedPacketPayload::EntityMethod(packet)
         }
@@ -1761,7 +2005,7 @@ where
 #[derive(Debug, Serialize)]
 pub struct DecodedPacket<'replay, 'argtype, 'rawpacket> {
     pub packet_type: u32,
-    pub clock: f32,
+    pub clock: crate::packet2::GameClock,
     pub payload: DecodedPacketPayload<'replay, 'argtype, 'rawpacket>,
 }
 
