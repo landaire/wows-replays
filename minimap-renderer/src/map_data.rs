@@ -14,6 +14,42 @@ pub struct WorldPos {
     pub z: f32,
 }
 
+impl WorldPos {
+    pub fn lerp(self, other: WorldPos, t: f32) -> WorldPos {
+        self + (other - self) * t
+    }
+}
+
+impl std::ops::Add for WorldPos {
+    type Output = WorldPos;
+    fn add(self, rhs: WorldPos) -> WorldPos {
+        WorldPos {
+            x: self.x + rhs.x,
+            z: self.z + rhs.z,
+        }
+    }
+}
+
+impl std::ops::Sub for WorldPos {
+    type Output = WorldPos;
+    fn sub(self, rhs: WorldPos) -> WorldPos {
+        WorldPos {
+            x: self.x - rhs.x,
+            z: self.z - rhs.z,
+        }
+    }
+}
+
+impl std::ops::Mul<f32> for WorldPos {
+    type Output = WorldPos;
+    fn mul(self, rhs: f32) -> WorldPos {
+        WorldPos {
+            x: self.x * rhs,
+            z: self.z * rhs,
+        }
+    }
+}
+
 /// Pixel position on the minimap image.
 /// (0,0) is top-left, positive X = right, positive Y = down.
 /// Does NOT include HUD offset — that's applied at draw time.

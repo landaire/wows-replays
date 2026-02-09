@@ -54,7 +54,7 @@ struct ShotTrail {
 struct TorpedoSnapshot {
     composite_id: u64,
     origin: WorldPos,
-    direction: (f32, f32),
+    velocity: WorldPos,
     clock: GameClock,
 }
 
@@ -195,10 +195,7 @@ impl MinimapRenderer {
         let span = *t1 - *t0;
         let frac = if span.abs() > 0.001 { dt0 / span } else { 0.0 };
 
-        let pos = WorldPos {
-            x: s0.pos.x + (s1.pos.x - s0.pos.x) * frac,
-            z: s0.pos.z + (s1.pos.z - s0.pos.z) * frac,
-        };
+        let pos = s0.pos.lerp(s1.pos, frac);
         let yaw = s0.yaw + (s1.yaw - s0.yaw) * frac;
         Some((pos, yaw))
     }
@@ -278,10 +275,7 @@ impl MinimapRenderer {
                 }
             }
             let elapsed = game_time - torp.clock;
-            let world = WorldPos {
-                x: torp.origin.x + torp.direction.0 * elapsed,
-                z: torp.origin.z + torp.direction.1 * elapsed,
-            };
+            let world = torp.origin + torp.velocity * elapsed;
             // Skip torpedoes that have left the map
             if world.x.abs() > half_space || world.z.abs() > half_space {
                 continue;
@@ -663,7 +657,10 @@ impl AnalyzerMut for MinimapRenderer {
                             x: torp.origin.0,
                             z: torp.origin.2,
                         },
-                        direction: (torp.direction.0, torp.direction.2),
+                        velocity: WorldPos {
+                            x: torp.direction.0,
+                            z: torp.direction.2,
+                        },
                         clock: decoded.clock,
                     });
                 }
