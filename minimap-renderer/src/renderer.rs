@@ -157,6 +157,9 @@ struct MinimapRenderer {
 }
 
 impl MinimapRenderer {
+    /// Maximum age (in seconds) before a position sample is considered stale.
+    const POSITION_MAX_AGE: f32 = 5.0;
+
     fn interpolate_position(
         positions: &[(GameClock, ShipSnapshot)],
         game_time: GameClock,
@@ -165,39 +168,30 @@ impl MinimapRenderer {
             return None;
         }
 
+        // Find the first sample after game_time
         let idx = positions.partition_point(|(t, _)| *t <= game_time);
 
-        if idx == 0 {
-            let (t, snap) = &positions[0];
-            if (game_time - *t).abs() < 5.0 {
-                return Some((snap.pos, snap.yaw));
+        let before = idx.checked_sub(1).map(|i| &positions[i]);
+        let after = positions.get(idx);
+
+        match (before, after) {
+            (Some((t0, s0)), Some((t1, s1))) => {
+                let span = *t1 - *t0;
+                let frac = if span.abs() > 0.001 {
+                    (game_time - *t0) / span
+                } else {
+                    0.0
+                };
+                Some((s0.pos.lerp(s1.pos, frac), s0.yaw + (s1.yaw - s0.yaw) * frac))
             }
-            return None;
-        }
-
-        if idx >= positions.len() {
-            let (t, snap) = &positions[positions.len() - 1];
-            if (game_time - *t).abs() < 5.0 {
-                return Some((snap.pos, snap.yaw));
+            (Some((t, snap)), None) if (game_time - *t).abs() < Self::POSITION_MAX_AGE => {
+                Some((snap.pos, snap.yaw))
             }
-            return None;
+            (None, Some((t, snap))) if (game_time - *t).abs() < Self::POSITION_MAX_AGE => {
+                Some((snap.pos, snap.yaw))
+            }
+            _ => None,
         }
-
-        let (t0, s0) = &positions[idx - 1];
-        let (t1, s1) = &positions[idx];
-
-        let dt0 = game_time - *t0;
-        let dt1 = game_time - *t1;
-        if dt0.abs() > 5.0 && dt1.abs() > 5.0 {
-            return None;
-        }
-
-        let span = *t1 - *t0;
-        let frac = if span.abs() > 0.001 { dt0 / span } else { 0.0 };
-
-        let pos = s0.pos.lerp(s1.pos, frac);
-        let yaw = s0.yaw + (s1.yaw - s0.yaw) * frac;
-        Some((pos, yaw))
     }
 
     /// Build a full canvas (MINIMAP_SIZE x CANVAS_HEIGHT) with the map placed below the HUD area.
