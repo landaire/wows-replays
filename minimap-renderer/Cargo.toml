@@ -1,0 +1,18 @@
+[package]
+name = "minimap-renderer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+wows_replays = { path = "../parser" }
+wowsunpack = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc = "0.25"
+ab_glyph = "0.2"
+openh264 = { version = "0.9", features = ["source"] }
+mp4 = "0.14"
+bytes = "1"
+clap = "2.33.1"
+anyhow = "1.0"
+roxmltree = "0.19"

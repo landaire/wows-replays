@@ -3,6 +3,7 @@
 members = [
     "analysis",
     # "idxpkg",
+    "minimap-renderer",
     "parser",
     "replayshark",
     # "replayserver",
@@ -15,3 +16,4 @@ pickled = "2.0.0-alpha3"
 [patch.crates-io]
 #wowsunpack = { path = "../wowsunpack" }
 #pickled = { path = "../pickled" }
+# muxide = { path = "../muxide" }
