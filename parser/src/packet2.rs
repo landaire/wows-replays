@@ -12,6 +12,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::error::*;
+use crate::types::{AccountId, EntityId, GameClock, GameParamId};
 use wowsunpack::rpc::entitydefs::*;
 use wowsunpack::rpc::typedefs::ArgValue;
 
@@ -47,63 +48,9 @@ impl Rot3 {
     }
 }
 
-/// A game clock value in seconds since the replay started recording.
-/// Note: there is typically a ~30s pre-game countdown, so game_time = clock - 30.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct GameClock(pub f32);
-
-impl GameClock {
-    pub fn seconds(self) -> f32 {
-        self.0
-    }
-
-    pub fn to_duration(self) -> Duration {
-        Duration::from_secs_f32(self.0)
-    }
-
-    /// Returns the game time (after countdown), clamped to 0.
-    pub fn game_time(self) -> f32 {
-        (self.0 - 30.0).max(0.0)
-    }
-}
-
-impl fmt::Display for GameClock {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:.1}s", self.0)
-    }
-}
-
-impl std::ops::Add<f32> for GameClock {
-    type Output = GameClock;
-    fn add(self, rhs: f32) -> GameClock {
-        GameClock(self.0 + rhs)
-    }
-}
-
-impl std::ops::Add<Duration> for GameClock {
-    type Output = GameClock;
-    fn add(self, rhs: Duration) -> GameClock {
-        GameClock(self.0 + rhs.as_secs_f32())
-    }
-}
-
-impl std::ops::Sub for GameClock {
-    type Output = f32;
-    fn sub(self, rhs: GameClock) -> f32 {
-        self.0 - rhs.0
-    }
-}
-
-impl std::ops::Sub<Duration> for GameClock {
-    type Output = GameClock;
-    fn sub(self, rhs: Duration) -> GameClock {
-        GameClock(self.0 - rhs.as_secs_f32())
-    }
-}
-
 #[derive(Debug, Serialize, Clone)]
 pub struct PositionPacket {
-    pub pid: u32,
+    pub pid: EntityId,
     pub position: Vec3,
     pub position_error: Vec3,
     pub rotation: Rot3,
@@ -113,32 +60,32 @@ pub struct PositionPacket {
 #[derive(Debug, Serialize)]
 pub struct EntityPacket<'replay> {
     pub supertype: u32,
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub subtype: u32,
     pub payload: &'replay [u8],
 }
 
 #[derive(Debug, Serialize)]
 pub struct EntityPropertyPacket<'argtype> {
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub property: &'argtype str,
     pub value: ArgValue<'argtype>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct EntityMethodPacket<'argtype> {
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub method: &'argtype str,
     pub args: Vec<ArgValue<'argtype>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct EntityCreatePacket<'argtype> {
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub spec_idx: usize,
     pub entity_type: &'argtype str,
     pub space_id: u32,
-    pub vehicle_id: u32,
+    pub vehicle_id: GameParamId,
     pub position: Vec3,
     pub rotation: Rot3,
     pub state_length: u32,
@@ -151,8 +98,8 @@ pub struct EntityCreatePacket<'argtype> {
 /// that object will be given in the parent_id field.
 #[derive(Debug, Serialize, Clone)]
 pub struct PlayerOrientationPacket {
-    pub pid: u32,
-    pub parent_id: u32,
+    pub pid: EntityId,
+    pub parent_id: EntityId,
     pub position: Vec3,
     pub rotation: Rot3,
 }
@@ -165,18 +112,18 @@ pub struct InvalidPacket<'a> {
 
 #[derive(Debug, Serialize)]
 pub struct BasePlayerCreatePacket<'argtype> {
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub entity_type: &'argtype str,
     pub props: HashMap<&'argtype str, ArgValue<'argtype>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CellPlayerCreatePacket<'argtype> {
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub entity_type: &'argtype str,
     pub space_id: u32,
     pub unknown: u16,
-    pub vehicle_id: u32,
+    pub vehicle_id: GameParamId,
     pub position: Vec3,
     pub rotation: Rot3,
     pub props: HashMap<&'argtype str, ArgValue<'argtype>>,
@@ -184,20 +131,20 @@ pub struct CellPlayerCreatePacket<'argtype> {
 
 #[derive(Debug, Serialize)]
 pub struct EntityLeavePacket {
-    pub entity_id: u32,
+    pub entity_id: EntityId,
 }
 
 #[derive(Debug, Serialize)]
 pub struct EntityEnterPacket {
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub space_id: u32,
-    pub vehicle_id: u32,
+    pub vehicle_id: GameParamId,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PropertyUpdatePacket<'argtype> {
     /// Indicates the entity to update the property on
-    pub entity_id: i32,
+    pub entity_id: EntityId,
     /// Indicates the property to update. Note that some properties have many
     /// sub-properties.
     pub property: &'argtype str,
@@ -305,7 +252,7 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::EntityProperty(EntityPropertyPacket {
-                entity_id,
+                entity_id: entity_id.into(),
                 property: &spec.name,
                 value: pval,
             }),
@@ -348,7 +295,7 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::EntityMethod(EntityMethodPacket {
-                entity_id,
+                entity_id: entity_id.into(),
                 method: &spec.name,
                 args,
             }),
@@ -426,7 +373,7 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::PropertyUpdate(PropertyUpdatePacket {
-                entity_id: entity_id as i32,
+                entity_id: entity_id.into(),
                 update_cmd,
                 property: &spec.properties[prop_idx as usize].name,
             }),
@@ -478,7 +425,7 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::Position(PositionPacket {
-                pid,
+                pid: pid.into(),
                 position,
                 position_error,
                 rotation,
@@ -499,8 +446,8 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::PlayerOrientation(PlayerOrientationPacket {
-                pid,
-                parent_id,
+                pid: pid.into(),
+                parent_id: parent_id.into(),
                 position,
                 rotation,
             }),
@@ -580,7 +527,7 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::BasePlayerCreate(BasePlayerCreatePacket {
-                entity_id,
+                entity_id: entity_id.into(),
                 entity_type: &spec.name,
                 props,
             }),
@@ -638,11 +585,11 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::EntityCreate(EntityCreatePacket {
-                entity_id,
+                entity_id: entity_id.into(),
                 spec_idx: entity_type as usize,
                 entity_type: &self.specs[entity_type as usize - 1].name,
                 space_id,
-                vehicle_id,
+                vehicle_id: vehicle_id.into(),
                 position,
                 rotation,
                 state_length,
@@ -715,9 +662,9 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::CellPlayerCreate(CellPlayerCreatePacket {
-                entity_id,
+                entity_id: entity_id.into(),
                 entity_type: &spec.name,
-                vehicle_id,
+                vehicle_id: vehicle_id.into(),
                 space_id,
                 position,
                 rotation,
@@ -729,7 +676,12 @@ impl<'argtype> Parser<'argtype> {
 
     fn parse_entity_leave<'a, 'b>(&'b self, i: &'a [u8]) -> IResult<&'a [u8], PacketType<'a, 'b>> {
         let (i, entity_id) = le_u32(i)?;
-        Ok((i, PacketType::EntityLeave(EntityLeavePacket { entity_id })))
+        Ok((
+            i,
+            PacketType::EntityLeave(EntityLeavePacket {
+                entity_id: entity_id.into(),
+            }),
+        ))
     }
 
     fn parse_entity_enter<'a, 'b>(
@@ -742,9 +694,9 @@ impl<'argtype> Parser<'argtype> {
         Ok((
             i,
             PacketType::EntityEnter(EntityEnterPacket {
-                entity_id,
+                entity_id: entity_id.into(),
                 space_id,
-                vehicle_id,
+                vehicle_id: vehicle_id.into(),
             }),
         ))
     }

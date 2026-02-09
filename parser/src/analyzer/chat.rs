@@ -2,8 +2,8 @@ use wowsunpack::data::Version;
 
 use crate::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
 use crate::packet2::Packet;
+use crate::types::AccountId;
 use std::collections::HashMap;
-use std::convert::TryInto;
 
 use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
 
@@ -32,7 +32,7 @@ impl AnalyzerMutBuilder for ChatLoggerBuilder {
 }
 
 pub struct ChatLogger {
-    usernames: HashMap<i32, String>,
+    usernames: HashMap<AccountId, String>,
     version: Version,
 }
 
@@ -77,10 +77,8 @@ impl AnalyzerMut for ChatLogger {
                 ..
             } => {
                 for player in players.iter() {
-                    self.usernames.insert(
-                        player.meta_ship_id.try_into().unwrap(),
-                        player.username.clone(),
-                    );
+                    self.usernames
+                        .insert(player.meta_ship_id, player.username.clone());
                 }
             }
             _ => {}

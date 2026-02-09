@@ -1,5 +1,6 @@
 use crate::IResult;
 use crate::packet2::{EntityMethodPacket, Packet, PacketType};
+use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, WorldPos};
 use kinded::Kinded;
 use modular_bitfield::prelude::*;
 use nom::number::complete::{le_f32, le_u8, le_u16, le_u64};
@@ -145,15 +146,15 @@ pub struct PlayerStateData {
     /// The color of the player's clan tag as an RGB integer
     pub(crate) clan_color: i64,
     /// The player's DB ID (unique player ID)
-    pub(crate) db_id: i64,
+    pub(crate) db_id: AccountId,
     /// The realm this player belongs to
     pub(crate) realm: String,
     /// Their avatar ID in the game
-    pub(crate) avatar_id: i64,
-    /// Their ship ID in the game
-    pub(crate) meta_ship_id: i64,
+    pub(crate) avatar_id: AccountId,
+    /// Their meta ID in the game (account-level identifier)
+    pub(crate) meta_ship_id: AccountId,
     /// This player's entity created by a CreateEntity packet
-    pub(crate) entity_id: i64,
+    pub(crate) entity_id: EntityId,
     //playeravatarid: i64,
     /// Which team they're on.
     pub(crate) team_id: i64,
@@ -462,10 +463,10 @@ impl PlayerStateData {
             clan_id,
             clan_color,
             realm,
-            db_id,
-            avatar_id: avatar,
-            meta_ship_id,
-            entity_id: shipid,
+            db_id: AccountId::from(db_id),
+            avatar_id: AccountId::from(avatar),
+            meta_ship_id: AccountId::from(meta_ship_id),
+            entity_id: EntityId::from(shipid),
             team_id: team,
             max_health: health,
             is_abuser,
@@ -485,7 +486,7 @@ impl PlayerStateData {
     pub fn update_from_dict(&mut self, values: &HashMap<&'static str, pickled::Value>) {
         if let Some(v) = values.get(Self::KEY_AVATAR_ID) {
             if let Some(id) = v.i64_ref() {
-                self.avatar_id = *id;
+                self.avatar_id = AccountId::from(*id);
             }
         }
         if let Some(v) = values.get(Self::KEY_NAME) {
@@ -510,12 +511,12 @@ impl PlayerStateData {
         }
         if let Some(v) = values.get(Self::KEY_SHIP_ID) {
             if let Some(id) = v.i64_ref() {
-                self.entity_id = *id;
+                self.entity_id = EntityId::from(*id);
             }
         }
         if let Some(v) = values.get(Self::KEY_ID) {
             if let Some(id) = v.i64_ref() {
-                self.meta_ship_id = *id;
+                self.meta_ship_id = AccountId::from(*id);
             }
         }
         if let Some(v) = values.get(Self::KEY_TEAM_ID) {
@@ -535,7 +536,7 @@ impl PlayerStateData {
         }
         if let Some(v) = values.get(Self::KEY_ACCOUNT_DBID) {
             if let Some(id) = v.i64_ref() {
-                self.db_id = *id;
+                self.db_id = AccountId::from(*id);
             }
         }
         if let Some(v) = values.get(Self::KEY_PREBATTLE_ID) {
@@ -586,7 +587,7 @@ impl PlayerStateData {
         self.clan_color
     }
 
-    pub fn db_id(&self) -> i64 {
+    pub fn db_id(&self) -> AccountId {
         self.db_id
     }
 
@@ -594,15 +595,15 @@ impl PlayerStateData {
         &self.realm
     }
 
-    pub fn avatar_id(&self) -> i64 {
+    pub fn avatar_id(&self) -> AccountId {
         self.avatar_id
     }
 
-    pub fn meta_ship_id(&self) -> i64 {
+    pub fn meta_ship_id(&self) -> AccountId {
         self.meta_ship_id
     }
 
-    pub fn entity_id(&self) -> i64 {
+    pub fn entity_id(&self) -> EntityId {
         self.entity_id
     }
 
@@ -665,7 +666,7 @@ fn convert_flat_dict_to_real_dict(value: &Value) -> HashMap<i64, Value> {
 #[derive(Debug, Clone, Serialize)]
 pub struct DamageReceived {
     /// Ship ID of the aggressor
-    pub aggressor: i32,
+    pub aggressor: EntityId,
     /// Amount of damage dealt
     pub damage: f32,
 }
@@ -674,19 +675,14 @@ pub struct DamageReceived {
 #[derive(Debug, Clone, Serialize)]
 pub struct MinimapUpdate {
     /// The ship ID of the ship to update
-    pub entity_id: i32,
+    pub entity_id: EntityId,
     /// Set to true if the ship should disappear from the minimap (false otherwise)
     pub disappearing: bool,
     /// The heading of the ship. Unit is degrees, 0 is up, positive is clockwise
     /// (so 90.0 is East)
     pub heading: f32,
-
-    /// Zero is the left edge of the map, 1.0 is the right edge
-    pub x: f32,
-
-    /// Zero is the bottom edge of the map, 1.0 is the top edge
-    pub y: f32,
-
+    /// Normalized position on the minimap
+    pub position: NormalizedPos,
     /// Unknown, but this appears to be something related to the big hunt
     pub unknown: bool,
 }
@@ -703,8 +699,8 @@ pub struct ArtilleryShotData {
 /// A salvo of artillery shells from one ship
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtillerySalvo {
-    pub owner_id: i32,
-    pub params_id: u32,
+    pub owner_id: EntityId,
+    pub params_id: GameParamId,
     pub salvo_id: u32,
     pub shots: Vec<ArtilleryShotData>,
 }
@@ -712,8 +708,8 @@ pub struct ArtillerySalvo {
 /// A single torpedo launch
 #[derive(Debug, Clone, Serialize)]
 pub struct TorpedoData {
-    pub owner_id: i32,
-    pub params_id: u32,
+    pub owner_id: EntityId,
+    pub params_id: GameParamId,
     pub salvo_id: u32,
     pub shot_id: u32,
     pub origin: (f32, f32, f32),
@@ -723,7 +719,7 @@ pub struct TorpedoData {
 /// A single projectile hit (from receiveShotKills)
 #[derive(Debug, Clone, Serialize)]
 pub struct ShotHit {
-    pub owner_id: i32,
+    pub owner_id: EntityId,
     pub shot_id: u32,
 }
 
@@ -795,7 +791,7 @@ pub struct ChatMessageExtra {
     pre_battle_id: i64,
     player_clan_tag: String,
     typ: i64,
-    player_avatar_id: i64,
+    player_avatar_id: AccountId,
     player_name: String,
 }
 
@@ -805,9 +801,9 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     /// Represents a chat message. Note that this only includes text chats, voicelines
     /// are represented by the VoiceLine variant.
     Chat {
-        entity_id: u32, // TODO: Is entity ID different than sender ID?
+        entity_id: EntityId,
         /// Avatar ID of the sender
-        sender_id: i32,
+        sender_id: AccountId,
         /// Represents the audience for the chat: Division, team, or all.
         audience: &'replay str,
         /// The actual chat message.
@@ -818,7 +814,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     /// Sent when a voice line is played (for example, "Wilco!")
     VoiceLine {
         /// Avatar ID of the player sending the voiceline
-        sender_id: i32,
+        sender_id: AccountId,
         /// True if the voiceline is visible in all chat, false if only in team chat
         is_global: bool,
         /// Which voiceline it is.
@@ -843,9 +839,9 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     /// Sent when a ship is destroyed.
     ShipDestroyed {
         /// The ship ID (note: Not the avatar ID) of the killer
-        killer: i32,
+        killer: EntityId,
         /// The ship ID (note: Not the avatar ID) of the victim
-        victim: i32,
+        victim: EntityId,
         /// Cause of death
         cause: DeathCause,
     },
@@ -876,7 +872,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     /// Indicates that the given victim has received damage from one or more attackers.
     DamageReceived {
         /// Ship ID of the ship being damaged
-        victim: u32,
+        victim: EntityId,
         /// List of damages happening to this ship
         aggressors: Vec<DamageReceived>,
     },
@@ -939,7 +935,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     /// Sent when a consumable is activated
     Consumable {
         /// The ship ID of the ship using the consumable
-        entity: u32,
+        entity: EntityId,
         /// The consumable
         consumable: Consumable,
         /// How long the consumable will be active for
@@ -963,22 +959,22 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     CameraFreeLook(bool),
     /// Artillery shells fired
     ArtilleryShots {
-        entity_id: u32,
+        entity_id: EntityId,
         salvos: Vec<ArtillerySalvo>,
     },
     /// Torpedoes launched
     TorpedoesReceived {
-        entity_id: u32,
+        entity_id: EntityId,
         torpedoes: Vec<TorpedoData>,
     },
     /// Projectile hits (shells or torpedoes hitting targets)
     ShotKills {
-        entity_id: u32,
+        entity_id: EntityId,
         hits: Vec<ShotHit>,
     },
     /// Plane/squadron position update on the minimap
     PlanePosition {
-        entity_id: u32,
+        entity_id: EntityId,
         squadron_id: u64,
         x: f32,
         y: f32,
@@ -1391,11 +1387,13 @@ where
                         .unwrap()
                         .i64()
                         .expect("type is not an i64"),
-                    player_avatar_id: extra_dict
-                        .remove("playerAvatarId")
-                        .unwrap()
-                        .i64()
-                        .expect("playerAvatarId is not an i64"),
+                    player_avatar_id: AccountId::from(
+                        extra_dict
+                            .remove("playerAvatarId")
+                            .unwrap()
+                            .i64()
+                            .expect("playerAvatarId is not an i64"),
+                    ),
                     player_name: extra_dict
                         .remove("playerName")
                         .unwrap()
@@ -1411,7 +1409,7 @@ where
             }
             DecodedPacketPayload::Chat {
                 entity_id: *entity_id,
-                sender_id: *sender_id,
+                sender_id: AccountId::from(*sender_id),
                 audience: std::str::from_utf8(target).unwrap(),
                 message: std::str::from_utf8(message).unwrap(),
                 extra_data,
@@ -1475,7 +1473,7 @@ where
             // let (audience, sender_id, line, a, b) = unpack_rpc_args!(args, u8, i32, u8, u32, u64);
 
             DecodedPacketPayload::VoiceLine {
-                sender_id,
+                sender_id: AccountId::from(sender_id),
                 is_global,
                 message,
             }
@@ -1663,8 +1661,8 @@ where
                 }
             };
             DecodedPacketPayload::ShipDestroyed {
-                victim,
-                killer,
+                victim: EntityId::from(victim),
+                killer: EntityId::from(killer),
                 cause,
             }
         } else if *method == "onRibbon" {
@@ -1719,8 +1717,9 @@ where
                     ArgValue::FixedDict(m) => m,
                     _ => panic!(),
                 };
+                let aggressor_raw: i32 = map.get("vehicleID").unwrap().try_into().unwrap();
                 v.push(DamageReceived {
-                    aggressor: map.get("vehicleID").unwrap().try_into().unwrap(),
+                    aggressor: EntityId::from(aggressor_raw),
                     damage: map.get("damage").unwrap().try_into().unwrap(),
                 });
             }
@@ -1757,11 +1756,10 @@ where
 
                 updates.push(MinimapUpdate {
                     entity_id: match vehicle_id {
-                        ArgValue::Uint32(u) => *u as i32,
+                        ArgValue::Uint32(u) => EntityId::from(*u),
                         _ => panic!(),
                     },
-                    x,
-                    y,
+                    position: NormalizedPos { x, y },
                     heading,
                     disappearing: update.is_disappearing(),
                     unknown: update.unknown(),
@@ -1874,8 +1872,8 @@ where
                     });
                 }
                 salvos.push(ArtillerySalvo {
-                    owner_id,
-                    params_id,
+                    owner_id: EntityId::from(owner_id),
+                    params_id: GameParamId::from(params_id),
                     salvo_id,
                     shots,
                 });
@@ -1923,8 +1921,8 @@ where
                         .and_then(|v| v.try_into().ok())
                         .unwrap_or(0);
                     torpedoes.push(TorpedoData {
-                        owner_id,
-                        params_id,
+                        owner_id: EntityId::from(owner_id),
+                        params_id: GameParamId::from(params_id),
                         salvo_id,
                         shot_id,
                         origin: pos,
@@ -1966,7 +1964,10 @@ where
                         .get("shotID")
                         .and_then(|v| v.try_into().ok())
                         .unwrap_or(0);
-                    hits.push(ShotHit { owner_id, shot_id });
+                    hits.push(ShotHit {
+                        owner_id: EntityId::from(owner_id),
+                        shot_id,
+                    });
                 }
             }
             DecodedPacketPayload::ShotKills {
@@ -2005,7 +2006,7 @@ where
 #[derive(Debug, Serialize)]
 pub struct DecodedPacket<'replay, 'argtype, 'rawpacket> {
     pub packet_type: u32,
-    pub clock: crate::packet2::GameClock,
+    pub clock: crate::types::GameClock,
     pub payload: DecodedPacketPayload<'replay, 'argtype, 'rawpacket>,
 }
 

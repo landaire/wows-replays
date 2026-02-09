@@ -26,7 +26,8 @@ use crate::{
         decoder::{ChatMessageExtra, DeathCause, DecodedPacket, PlayerStateData},
     },
     nested_property_path::{PropertyNestLevel, UpdateAction},
-    packet2::{EntityCreatePacket, GameClock, Packet, PacketProcessorMut, PacketType},
+    packet2::{EntityCreatePacket, Packet, PacketProcessorMut, PacketType},
+    types::{AccountId, EntityId, GameClock, GameParamId, NormalizedPos, WorldPos},
 };
 
 use super::state::{
@@ -353,7 +354,7 @@ impl Player {
 #[derive(Debug)]
 /// Players that were parsed from just the replay metadata
 pub struct MetadataPlayer {
-    id: u32,
+    id: AccountId,
     name: String,
     relation: Relation,
     vehicle: Rc<Param>,
@@ -372,7 +373,7 @@ impl MetadataPlayer {
         self.vehicle.as_ref()
     }
 
-    pub fn id(&self) -> u32 {
+    pub fn id(&self) -> AccountId {
         self.id
     }
 }
@@ -382,7 +383,7 @@ type MethodName = String;
 
 pub trait EventHandler {
     fn on_chat_message(&self, message: GameMessage) {}
-    fn on_aren_state_received(&self, entity_id: u32) {}
+    fn on_aren_state_received(&self, entity_id: EntityId) {}
 }
 
 pub enum xEntityType {
@@ -499,23 +500,21 @@ impl BattleReport {
     }
 }
 
-type Id = u32;
-
 struct DamageEvent {
     amount: f32,
-    victim: Id,
+    victim: EntityId,
 }
 
 pub struct BattleController<'res, 'replay, G> {
     game_meta: &'replay ReplayMeta,
     game_resources: &'res G,
     metadata_players: Vec<SharedPlayer>,
-    player_entities: HashMap<Id, Rc<Player>>,
-    entities_by_id: HashMap<Id, Entity>,
+    player_entities: HashMap<EntityId, Rc<Player>>,
+    entities_by_id: HashMap<EntityId, Entity>,
     method_callbacks: HashMap<(ParamType, String), fn(&PacketType<'_, '_>)>,
     property_callbacks: HashMap<(ParamType, String), fn(&ArgValue<'_>)>,
-    damage_dealt: HashMap<u32, Vec<DamageEvent>>,
-    frags: HashMap<u32, Vec<Death>>,
+    damage_dealt: HashMap<EntityId, Vec<DamageEvent>>,
+    frags: HashMap<EntityId, Vec<Death>>,
     event_handler: Option<Rc<dyn EventHandler>>,
     game_chat: Vec<GameMessage>,
     version: Version,
@@ -526,11 +525,11 @@ pub struct BattleController<'res, 'replay, G> {
 
     // Timeline and minimap state
     timeline: GameTimeline,
-    ship_positions: HashMap<u32, ShipPosition>,
-    minimap_positions: HashMap<u32, MinimapPosition>,
+    ship_positions: HashMap<EntityId, ShipPosition>,
+    minimap_positions: HashMap<EntityId, MinimapPosition>,
     capture_points: Vec<CapturePointState>,
     team_scores: Vec<TeamScore>,
-    active_consumables: HashMap<u32, Vec<ActiveConsumable>>,
+    active_consumables: HashMap<EntityId, Vec<ActiveConsumable>>,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
@@ -543,11 +542,11 @@ where
             .iter()
             .map(|vehicle| {
                 Rc::new(MetadataPlayer {
-                    id: vehicle.id as u32,
+                    id: vehicle.id,
                     name: vehicle.name.clone(),
                     relation: Relation::new(vehicle.relation),
                     vehicle: game_resources
-                        .game_param_by_id(vehicle.shipId as u32)
+                        .game_param_by_id(vehicle.shipId.raw())
                         .expect("could not find vehicle"),
                 })
             })
@@ -622,19 +621,17 @@ where
 
     fn handle_chat_message<'packet>(
         &mut self,
-        entity_id: u32,
-        sender_id: i32,
+        entity_id: EntityId,
+        sender_id: AccountId,
         audience: &str,
         message: &str,
         extra_data: Option<ChatMessageExtra>,
         clock: GameClock,
     ) {
         // System messages
-        if sender_id == 0 {
+        if sender_id.raw() == 0 {
             return;
         }
-
-        let sender_id = sender_id as u32;
 
         let channel = match audience {
             "battle_common" => ChatChannel::Global,
@@ -647,13 +644,13 @@ where
         let mut sender_name = "Unknown".to_owned();
         let mut player = None;
         for meta_vehicle in &self.game_meta.vehicles {
-            if meta_vehicle.id == (sender_id as i64) {
+            if meta_vehicle.id == sender_id {
                 sender_name = meta_vehicle.name.clone();
                 sender_team = Some(Relation::new(meta_vehicle.relation));
                 player = self
                     .player_entities
                     .values()
-                    .find(|player| player.initial_state.meta_ship_id() == sender_id as i64)
+                    .find(|player| player.initial_state.meta_ship_id() == sender_id)
                     .cloned();
             }
         }
@@ -745,9 +742,7 @@ where
             .player_entities
             .values()
             .filter_map(|player| {
-                let entity = self
-                    .entities_by_id
-                    .get(&(player.initial_state.entity_id as u32))?;
+                let entity = self.entities_by_id.get(&player.initial_state.entity_id())?;
                 let vehicle_rc = entity.vehicle_ref()?;
                 let mut vehicle: VehicleEntity = RefCell::borrow(vehicle_rc).clone();
 
@@ -765,7 +760,7 @@ where
                             })
                         });
 
-                    if let Some(frags) = self.frags.get(&(player.initial_state.entity_id as u32)) {
+                    if let Some(frags) = self.frags.get(&player.initial_state.entity_id()) {
                         vehicle.frags = frags.iter().map(DeathInfo::from).collect();
                     }
                 }
@@ -781,7 +776,7 @@ where
             HashMap::from_iter(self.frags.drain().filter_map(|(entity_id, kills)| {
                 let player = players
                     .iter()
-                    .find(|p| p.initial_state.entity_id as u32 == entity_id)?;
+                    .find(|p| p.initial_state.entity_id() == entity_id)?;
                 let kills: Vec<DeathInfo> = kills.iter().map(DeathInfo::from).collect();
                 Some((Rc::clone(player), kills))
             }));
@@ -839,11 +834,11 @@ where
         &self.timeline
     }
 
-    pub fn ship_positions(&self) -> &HashMap<u32, ShipPosition> {
+    pub fn ship_positions(&self) -> &HashMap<EntityId, ShipPosition> {
         &self.ship_positions
     }
 
-    pub fn minimap_positions(&self) -> &HashMap<u32, MinimapPosition> {
+    pub fn minimap_positions(&self) -> &HashMap<EntityId, MinimapPosition> {
         &self.minimap_positions
     }
 
@@ -1047,7 +1042,7 @@ where
                     is_hidden,
                     is_suppressed,
                     team_id,
-                    params_id,
+                    params_id: GameParamId::from(params_id),
                 };
 
                 self.entities_by_id.insert(
@@ -1159,7 +1154,7 @@ pub struct GameMessage {
     pub sender_name: String,
     pub channel: ChatChannel,
     pub message: String,
-    pub entity_id: u32,
+    pub entity_id: EntityId,
     pub player: Option<Rc<Player>>,
 }
 
@@ -1858,7 +1853,7 @@ pub struct DeathInfo {
     /// Time lived in the game. This may not be accurate if a game rejoin occurs
     /// as there's no known way to detect this event.
     time_lived: Duration,
-    killer: u32,
+    killer: EntityId,
     cause: DeathCause,
 }
 
@@ -1867,7 +1862,7 @@ impl DeathInfo {
         self.time_lived
     }
 
-    pub fn killer(&self) -> u32 {
+    pub fn killer(&self) -> EntityId {
         self.killer
     }
 
@@ -1895,7 +1890,7 @@ impl From<&Death> for DeathInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VehicleEntity {
-    id: u32,
+    id: EntityId,
     visibility_changed_at: f32,
     props: VehicleProps,
     captain: Option<Rc<Param>>,
@@ -1906,7 +1901,7 @@ pub struct VehicleEntity {
 }
 
 impl VehicleEntity {
-    pub fn id(&self) -> u32 {
+    pub fn id(&self) -> EntityId {
         self.id
     }
 
@@ -1914,7 +1909,7 @@ impl VehicleEntity {
         &self.props
     }
 
-    pub fn commander_id(&self) -> Id {
+    pub fn commander_id(&self) -> u32 {
         self.props.crew_modifiers_compact_params.params_id
     }
 
@@ -1994,8 +1989,8 @@ pub enum Entity {
 #[derive(Debug)]
 struct Death {
     timestamp: Duration,
-    killer: u32,
-    victim: u32,
+    killer: EntityId,
+    victim: EntityId,
     cause: DeathCause,
 }
 
@@ -2041,24 +2036,24 @@ where
                     .push(packet.clock, TimelineEvent::Ribbon(ribbon));
             }
             crate::analyzer::decoder::DecodedPacketPayload::Position(pos) => {
-                let position = ShipPosition {
-                    entity_id: pos.pid,
+                let world_pos = WorldPos {
                     x: pos.position.x,
-                    y: pos.position.y,
                     z: pos.position.z,
+                };
+                let ship_pos = ShipPosition {
+                    entity_id: pos.pid,
+                    position: world_pos,
                     yaw: pos.rotation.yaw,
                     pitch: pos.rotation.pitch,
                     roll: pos.rotation.roll,
                     last_updated: packet.clock,
                 };
-                self.ship_positions.insert(pos.pid, position);
+                self.ship_positions.insert(pos.pid, ship_pos);
                 self.timeline.push(
                     packet.clock,
                     TimelineEvent::ShipPosition {
                         entity_id: pos.pid,
-                        x: pos.position.x,
-                        y: pos.position.y,
-                        z: pos.position.z,
+                        position: world_pos,
                         yaw: pos.rotation.yaw,
                         pitch: pos.rotation.pitch,
                         roll: pos.rotation.roll,
@@ -2076,17 +2071,17 @@ where
                 victim,
                 cause,
             } => {
-                self.frags.entry(killer as u32).or_default().push(Death {
+                self.frags.entry(killer).or_default().push(Death {
                     timestamp: packet.clock.to_duration(),
-                    killer: killer as u32,
-                    victim: victim as u32,
+                    killer,
+                    victim,
                     cause,
                 });
                 self.timeline.push(
                     packet.clock,
                     TimelineEvent::ShipDestroyed {
-                        killer: killer as u32,
-                        victim: victim as u32,
+                        killer,
+                        victim,
                         cause,
                     },
                 );
@@ -2144,7 +2139,7 @@ where
                     let metadata_player = self
                         .metadata_players
                         .iter()
-                        .find(|meta_player| meta_player.id == player.meta_ship_id as u32)
+                        .find(|meta_player| meta_player.id == player.meta_ship_id())
                         .expect("could not map arena player to metadata player");
 
                     let battle_player = Player::from_arena_player(
@@ -2155,7 +2150,7 @@ where
 
                     let player_has_died = self
                         .entities_by_id
-                        .get(&(player.entity_id() as Id))
+                        .get(&player.entity_id())
                         .map(|vehicle| {
                             let Some(vehicle) = vehicle.vehicle_ref() else {
                                 return false;
@@ -2181,7 +2176,7 @@ where
                     let battle_player = Rc::new(battle_player);
 
                     self.player_entities
-                        .insert(battle_player.initial_state.entity_id as u32, battle_player);
+                        .insert(battle_player.initial_state.entity_id(), battle_player);
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::CheckPing(_) => trace!("CHECK PING"),
@@ -2191,7 +2186,7 @@ where
             } => {
                 for damage in &aggressors {
                     self.damage_dealt
-                        .entry(damage.aggressor as u32)
+                        .entry(damage.aggressor)
                         .or_default()
                         .push(DamageEvent {
                             amount: damage.damage,
@@ -2200,7 +2195,7 @@ where
                     self.timeline.push(
                         packet.clock,
                         TimelineEvent::DamageDealt {
-                            aggressor_id: damage.aggressor as u32,
+                            aggressor_id: damage.aggressor,
                             victim_id: victim,
                             damage: damage.damage,
                         },
@@ -2211,11 +2206,10 @@ where
                 for update in &updates {
                     let visible = !update.disappearing;
                     self.minimap_positions.insert(
-                        update.entity_id as u32,
+                        update.entity_id,
                         MinimapPosition {
-                            entity_id: update.entity_id as u32,
-                            x: update.x,
-                            y: update.y,
+                            entity_id: update.entity_id,
+                            position: update.position,
                             heading: update.heading,
                             visible,
                             last_updated: packet.clock,
@@ -2224,9 +2218,8 @@ where
                     self.timeline.push(
                         packet.clock,
                         TimelineEvent::MinimapVisionUpdate {
-                            entity_id: update.entity_id as u32,
-                            x: update.x,
-                            y: update.y,
+                            entity_id: update.entity_id,
+                            position: update.position,
                             heading: update.heading,
                             disappearing: update.disappearing,
                         },
@@ -2234,7 +2227,7 @@ where
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::PropertyUpdate(update) => {
-                if let Some(entity) = self.entities_by_id.get(&(update.entity_id as u32)) {
+                if let Some(entity) = self.entities_by_id.get(&update.entity_id) {
                     debug!("PROPERTY UPDATE: {:#?}", update);
                 }
                 self.handle_property_update(packet.clock, update);
@@ -2336,11 +2329,9 @@ where
 
                     let meta_ship_id = *meta_ship_id.i64_ref().expect("player_id is not an i64");
 
-                    let Some(player) = self
-                        .player_entities
-                        .values()
-                        .find(|player| player.initial_state().meta_ship_id() == meta_ship_id)
-                    else {
+                    let Some(player) = self.player_entities.values().find(|player| {
+                        player.initial_state().meta_ship_id() == AccountId::from(meta_ship_id)
+                    }) else {
                         warn!("Failed to find player with meta ship ID {meta_ship_id:?}");
                         continue;
                     };
@@ -2351,7 +2342,7 @@ where
 
                     let player_has_died = self
                         .entities_by_id
-                        .get(&(player.initial_state().entity_id() as Id))
+                        .get(&player.initial_state().entity_id())
                         .map(|vehicle| {
                             let Some(vehicle) = vehicle.vehicle_ref() else {
                                 return false;

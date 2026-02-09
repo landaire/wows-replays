@@ -5,6 +5,7 @@ use plotters::prelude::*;
 use std::collections::HashMap;
 use wows_replays::analyzer::*;
 use wows_replays::packet2::{Packet, PacketType};
+use wows_replays::types::EntityId;
 use wows_replays::ReplayMeta;
 
 pub struct TrailsBuilder {
@@ -31,7 +32,7 @@ impl AnalyzerMutBuilder for TrailsBuilder {
 }
 
 struct TrailRenderer {
-    trails: HashMap<u32, Vec<(f32, f32)>>,
+    trails: HashMap<EntityId, Vec<(f32, f32)>>,
     player_trail: Vec<(f32, f32)>,
     output: String,
     meta: Option<ReplayMeta>,

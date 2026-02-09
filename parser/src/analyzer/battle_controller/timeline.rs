@@ -2,8 +2,7 @@ use serde::Serialize;
 
 use super::controller::ChatChannel;
 use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, Ribbon, TorpedoData};
-
-pub use crate::packet2::GameClock;
+use crate::types::{EntityId, GameClock, NormalizedPos, WorldPos};
 
 /// A timestamped event in the battle timeline.
 #[derive(Debug, Clone, Serialize)]
@@ -18,10 +17,8 @@ pub struct TimestampedEvent {
 pub enum TimelineEvent {
     /// Ship position from a Position packet (world coordinates)
     ShipPosition {
-        entity_id: u32,
-        x: f32,
-        y: f32,
-        z: f32,
+        entity_id: EntityId,
+        position: WorldPos,
         yaw: f32,
         pitch: f32,
         roll: f32,
@@ -29,11 +26,9 @@ pub enum TimelineEvent {
 
     /// Minimap vision update (normalized map coordinates)
     MinimapVisionUpdate {
-        entity_id: u32,
-        /// 0..1 range, left to right
-        x: f32,
-        /// 0..1 range, bottom to top
-        y: f32,
+        entity_id: EntityId,
+        /// Normalized minimap position
+        position: NormalizedPos,
         /// Heading in degrees, 0 = up, positive = clockwise
         heading: f32,
         /// True if the entity is disappearing from the minimap
@@ -42,21 +37,21 @@ pub enum TimelineEvent {
 
     /// A ship was destroyed
     ShipDestroyed {
-        killer: u32,
-        victim: u32,
+        killer: EntityId,
+        victim: EntityId,
         cause: DeathCause,
     },
 
     /// Damage was dealt from one entity to another
     DamageDealt {
-        aggressor_id: u32,
-        victim_id: u32,
+        aggressor_id: EntityId,
+        victim_id: EntityId,
         damage: f32,
     },
 
     /// A consumable was activated
     ConsumableActivated {
-        entity_id: u32,
+        entity_id: EntityId,
         consumable: Consumable,
         duration: f32,
     },
@@ -75,14 +70,14 @@ pub enum TimelineEvent {
     TeamScoreUpdate { team_index: usize, score: i64 },
 
     /// A smoke screen was created
-    SmokeScreenCreated { entity_id: u32, radius: f32 },
+    SmokeScreenCreated { entity_id: EntityId, radius: f32 },
 
     /// A smoke screen was destroyed
-    SmokeScreenDestroyed { entity_id: u32 },
+    SmokeScreenDestroyed { entity_id: EntityId },
 
     /// A building's state changed
     BuildingStateChanged {
-        entity_id: u32,
+        entity_id: EntityId,
         is_alive: bool,
         is_suppressed: bool,
         team_id: i8,
@@ -93,7 +88,7 @@ pub enum TimelineEvent {
 
     /// A chat message was sent
     ChatMessage {
-        entity_id: u32,
+        entity_id: EntityId,
         sender_name: String,
         channel: ChatChannel,
         message: String,
@@ -104,19 +99,19 @@ pub enum TimelineEvent {
 
     /// Artillery shells were fired
     ArtilleryShots {
-        entity_id: u32,
+        entity_id: EntityId,
         salvos: Vec<ArtillerySalvo>,
     },
 
     /// Torpedoes were launched
     TorpedoesLaunched {
-        entity_id: u32,
+        entity_id: EntityId,
         torpedoes: Vec<TorpedoData>,
     },
 
     /// A plane/squadron position was updated on the minimap
     PlanePosition {
-        entity_id: u32,
+        entity_id: EntityId,
         squadron_id: u64,
         x: f32,
         y: f32,

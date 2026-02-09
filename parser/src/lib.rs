@@ -2,6 +2,7 @@ pub mod analyzer;
 mod error;
 pub mod nested_property_path;
 pub mod packet2;
+pub mod types;
 mod wowsreplay;
 
 pub use error::*;

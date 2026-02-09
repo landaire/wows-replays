@@ -17,6 +17,7 @@ use wows_replays::{
         chat::ChatLoggerBuilder, summary::SummaryBuilder, AnalyzerAdapter, AnalyzerBuilder,
         AnalyzerMutBuilder,
     },
+    types::EntityId,
     ErrorKind, ReplayFile,
 };
 
@@ -24,7 +25,7 @@ struct InvestigativePrinter {
     filter_packet: Option<u32>,
     filter_method: Option<String>,
     timestamp: Option<f32>,
-    entity_id: Option<u32>,
+    entity_id: Option<EntityId>,
     meta: bool,
     version: Version,
 }
@@ -48,8 +49,8 @@ impl wows_replays::analyzer::AnalyzerMut for InvestigativePrinter {
                             player.username(),
                             player.meta_ship_id(),
                             player.avatar_id(),
-                            (player.meta_ship_id() as u32).to_le_bytes(),
-                            (player.avatar_id() as u32).to_le_bytes()
+                            (player.meta_ship_id().raw() as u32).to_le_bytes(),
+                            (player.avatar_id().raw() as u32).to_le_bytes()
                         );
                     }
                 }
@@ -151,7 +152,7 @@ impl AnalyzerMutBuilder for InvestigativeBuilder {
             entity_id: self
                 .entity_id
                 .as_ref()
-                .map(|s| parse_int::parse(s).unwrap()),
+                .map(|s| EntityId::from(parse_int::parse::<u32>(s).unwrap())),
             meta: !self.no_meta,
         };
         if !self.no_meta {

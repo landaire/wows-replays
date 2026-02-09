@@ -7,13 +7,14 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use crate::error::*;
+use crate::types::{AccountId, GameParamId};
 
 #[allow(non_snake_case)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VehicleInfoMeta {
-    pub shipId: u64,
+    pub shipId: GameParamId,
     pub relation: u32,
-    pub id: i64, // Account ID?
+    pub id: AccountId,
     pub name: String,
 }
 
@@ -34,7 +35,7 @@ pub struct ReplayMeta {
     pub gameLogic: Option<String>,
     pub name: String,
     pub scenario: String,
-    pub playerID: u32,
+    pub playerID: AccountId,
     pub vehicles: Vec<VehicleInfoMeta>,
     pub playersPerTeam: u32,
     pub dateTime: String,

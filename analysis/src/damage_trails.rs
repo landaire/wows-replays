@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
 use wows_replays::analyzer::*;
 use wows_replays::packet2::{EntityMethodPacket, Packet, PacketType};
+use wows_replays::types::EntityId;
 use wows_replays::ReplayMeta;
 use wowsunpack::data::Version;
 use wowsunpack::rpc;
@@ -54,8 +55,8 @@ struct DamageVector {
 struct DamageMonitor {
     version: Version,
     username: String,
-    avatarid: Option<u32>,
-    shipid: Option<u32>,
+    avatarid: Option<EntityId>,
+    shipid: Option<EntityId>,
     artillery_shots: HashMap<i32, Vec<ArtilleryShot>>,
     position: (f32, f32, f32),
     trail: Vec<(f32, f32)>,
@@ -237,8 +238,8 @@ impl AnalyzerMut for DamageMonitor {
         {
             for player in players.iter() {
                 if player.username() == self.username {
-                    self.shipid = Some(player.meta_ship_id() as u32);
-                    self.avatarid = Some(player.avatar_id() as u32);
+                    self.shipid = Some(player.entity_id());
+                    self.avatarid = Some(player.entity_id());
                     break;
                 }
             }
@@ -246,13 +247,13 @@ impl AnalyzerMut for DamageMonitor {
 
         match &packet.payload {
             PacketType::Position(pos) => {
-                if pos.pid == self.shipid.unwrap_or(0) {
+                if Some(pos.pid) == self.shipid {
                     self.position = (pos.position.x, pos.position.y, pos.position.z);
                     self.trail.push((pos.position.x, pos.position.z));
                 }
             }
             PacketType::PlayerOrientation(pos) => {
-                if pos.pid == self.shipid.unwrap_or(0) {
+                if Some(pos.pid) == self.shipid {
                     self.position = (pos.position.x, pos.position.y, pos.position.z);
                     self.trail.push((pos.position.x, pos.position.z));
                 }
@@ -287,7 +288,7 @@ impl AnalyzerMut for DamageMonitor {
                     );
                 } else if *method == "receiveDamagesOnShip" {
                     println!("{}: receiveDamagesOnShip({}, {:?})", time, entity_id, args);
-                    if *entity_id != self.shipid.unwrap_or(0) {
+                    if Some(*entity_id) != self.shipid {
                         return;
                     }
                     match &args[0] {
