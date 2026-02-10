@@ -46,7 +46,7 @@ impl SurveyBuilder {
 }
 
 impl AnalyzerMutBuilder for SurveyBuilder {
-    fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         {
             let mut stats: RefMut<_> = self.stats.borrow_mut();

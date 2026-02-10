@@ -20,7 +20,7 @@ impl SummaryBuilder {
 }
 
 impl AnalyzerMutBuilder for SummaryBuilder {
-    fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
         println!("Username: {}", meta.playerName);
         println!("Date/time: {}", meta.dateTime);
         println!("Map: {}", meta.mapDisplayName);

@@ -21,7 +21,7 @@ impl TrailsBuilder {
 }
 
 impl AnalyzerMutBuilder for TrailsBuilder {
-    fn build(&self, meta: &wows_replays::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    fn build(self, meta: &wows_replays::ReplayMeta) -> Box<dyn AnalyzerMut> {
         Box::new(TrailRenderer {
             trails: HashMap::new(),
             player_trail: vec![],

@@ -24,7 +24,7 @@ impl DamageTrailsBuilder {
 }
 
 impl AnalyzerMutBuilder for DamageTrailsBuilder {
-    fn build(&self, meta: &ReplayMeta) -> Box<dyn AnalyzerMut> {
+    fn build(self, meta: &ReplayMeta) -> Box<dyn AnalyzerMut> {
         Box::new(DamageMonitor {
             version: Version::from_client_exe(&meta.clientVersionFromExe),
             username: meta.playerName.clone(),

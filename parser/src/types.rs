@@ -4,7 +4,9 @@ use std::time::Duration;
 
 /// Per-replay-session entity identifier for game objects (ships, buildings, smoke screens).
 /// The wire format is u32 but some packet types use i32 or i64.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(transparent)]
 pub struct EntityId(pub u32);
 
@@ -108,19 +110,128 @@ impl From<i64> for GameParamId {
     }
 }
 
-/// World-space position (2D projection of BigWorld coordinates).
-/// X = east/west, Z = north/south. Origin at map center.
+/// Represents the relation of a player/entity to the recording player.
+/// - 0 = self (the player who recorded the replay)
+/// - 1 = teammate (ally)
+/// - 2+ = enemy
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Relation(u32);
+
+impl Relation {
+    /// Creates a new Relation from a raw value.
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// Returns true if this is the recording player (relation == 0).
+    pub fn is_self(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// Returns true if this player is a teammate (relation == 1).
+    pub fn is_ally(&self) -> bool {
+        self.0 == 1
+    }
+
+    /// Returns true if this player is an enemy (relation >= 2).
+    pub fn is_enemy(&self) -> bool {
+        self.0 >= 2
+    }
+
+    /// Returns the raw relation value.
+    pub fn value(&self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for Relation {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+/// Packed minimap squadron identifier.
+/// Encodes `(avatar_id: u32, index: u3, purpose: u3, departures: u1)` in the low 39 bits.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct PlaneId(pub u64);
+
+impl PlaneId {
+    /// Extracts the owner's entity ID (avatar_id) from the low 32 bits.
+    pub fn owner_id(self) -> EntityId {
+        EntityId((self.0 & 0xFFFF_FFFF) as u32)
+    }
+
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for PlaneId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u64> for PlaneId {
+    fn from(v: u64) -> Self {
+        PlaneId(v)
+    }
+}
+
+impl From<i64> for PlaneId {
+    fn from(v: i64) -> Self {
+        PlaneId(v as u64)
+    }
+}
+
+/// World-space position in BigWorld coordinates.
+/// X = east/west, Y = up/down (altitude), Z = north/south. Origin at map center.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct WorldPos {
     pub x: f32,
+    pub y: f32,
     pub z: f32,
 }
 
 impl WorldPos {
     pub fn lerp(self, other: WorldPos, t: f32) -> WorldPos {
+        self + (other - self) * t
+    }
+}
+
+impl std::ops::Add for WorldPos {
+    type Output = WorldPos;
+    fn add(self, rhs: WorldPos) -> WorldPos {
         WorldPos {
-            x: self.x + (other.x - self.x) * t,
-            z: self.z + (other.z - self.z) * t,
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z,
+        }
+    }
+}
+
+impl std::ops::Sub for WorldPos {
+    type Output = WorldPos;
+    fn sub(self, rhs: WorldPos) -> WorldPos {
+        WorldPos {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+            z: self.z - rhs.z,
+        }
+    }
+}
+
+impl std::ops::Mul<f32> for WorldPos {
+    type Output = WorldPos;
+    fn mul(self, rhs: f32) -> WorldPos {
+        WorldPos {
+            x: self.x * rhs,
+            y: self.y * rhs,
+            z: self.z * rhs,
         }
     }
 }

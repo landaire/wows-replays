@@ -1,9 +1,9 @@
 pub trait AnalyzerBuilder {
-    fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer>;
+    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer>;
 }
 
 pub trait AnalyzerMutBuilder {
-    fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut>;
+    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut>;
 }
 
 pub trait Analyzer {

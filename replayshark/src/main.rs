@@ -125,7 +125,7 @@ pub struct InvestigativeBuilder {
 
 impl AnalyzerMutBuilder for InvestigativeBuilder {
     fn build(
-        &self,
+        self,
         meta: &wows_replays::ReplayMeta,
     ) -> Box<dyn wows_replays::analyzer::AnalyzerMut> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);

@@ -1,6 +1,6 @@
 use crate::IResult;
 use crate::packet2::{EntityMethodPacket, Packet, PacketType};
-use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, WorldPos};
+use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, PlaneId, WorldPos};
 use kinded::Kinded;
 use modular_bitfield::prelude::*;
 use nom::number::complete::{le_f32, le_u8, le_u16, le_u64};
@@ -33,7 +33,7 @@ impl DecoderBuilder {
 }
 
 impl AnalyzerMutBuilder for DecoderBuilder {
-    fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         let mut decoder = Decoder {
             silent: self.silent,
@@ -972,10 +972,25 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         entity_id: EntityId,
         hits: Vec<ShotHit>,
     },
+    /// A new squadron appears on the minimap
+    PlaneAdded {
+        entity_id: EntityId,
+        plane_id: PlaneId,
+        /// Team index: 0 = recording player's team, 1 = enemy team
+        team_id: u32,
+        params_id: GameParamId,
+        x: f32,
+        y: f32,
+    },
+    /// A squadron is removed from the minimap
+    PlaneRemoved {
+        entity_id: EntityId,
+        plane_id: PlaneId,
+    },
     /// Plane/squadron position update on the minimap
     PlanePosition {
         entity_id: EntityId,
-        squadron_id: u64,
+        plane_id: PlaneId,
         x: f32,
         y: f32,
     },
@@ -1974,12 +1989,66 @@ where
                 entity_id: *entity_id,
                 hits,
             }
-        } else if *method == "receive_updateMinimapSquadron" {
-            let squadron_id: u64 = match &args[0] {
+        } else if *method == "receive_addMinimapSquadron" {
+            // args: [plane_id, team_id, params_id, position, unknown]
+            let plane_id: PlaneId = match &args[0] {
+                ArgValue::Uint64(v) => PlaneId::from(*v),
+                ArgValue::Int64(v) => PlaneId::from(*v),
+                ArgValue::Uint32(v) => PlaneId::from(*v as u64),
+                ArgValue::Int32(v) => PlaneId::from(*v as i64),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let team_id: u32 = match &args[1] {
+                ArgValue::Uint32(v) => *v,
+                ArgValue::Int32(v) => *v as u32,
+                ArgValue::Uint64(v) => *v as u32,
+                ArgValue::Int64(v) => *v as u32,
+                ArgValue::Uint8(v) => *v as u32,
+                ArgValue::Int8(v) => *v as u32,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let params_id: u64 = match &args[2] {
                 ArgValue::Uint64(v) => *v,
                 ArgValue::Int64(v) => *v as u64,
                 ArgValue::Uint32(v) => *v as u64,
                 ArgValue::Int32(v) => *v as u64,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let position = match &args[3] {
+                ArgValue::Array(a) if a.len() >= 2 => {
+                    let x: f32 = (&a[0]).try_into().unwrap_or(0.0);
+                    let y: f32 = (&a[1]).try_into().unwrap_or(0.0);
+                    (x, y)
+                }
+                ArgValue::Vector2((x, y)) => (*x, *y),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            DecodedPacketPayload::PlaneAdded {
+                entity_id: *entity_id,
+                plane_id,
+                team_id,
+                params_id: GameParamId::from(params_id),
+                x: position.0,
+                y: position.1,
+            }
+        } else if *method == "receive_removeMinimapSquadron" {
+            let plane_id: PlaneId = match &args[0] {
+                ArgValue::Uint64(v) => PlaneId::from(*v),
+                ArgValue::Int64(v) => PlaneId::from(*v),
+                ArgValue::Uint32(v) => PlaneId::from(*v as u64),
+                ArgValue::Int32(v) => PlaneId::from(*v as i64),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            DecodedPacketPayload::PlaneRemoved {
+                entity_id: *entity_id,
+                plane_id,
+            }
+        } else if *method == "receive_updateMinimapSquadron" {
+            let plane_id: PlaneId = match &args[0] {
+                ArgValue::Uint64(v) => PlaneId::from(*v),
+                ArgValue::Int64(v) => PlaneId::from(*v),
+                ArgValue::Uint32(v) => PlaneId::from(*v as u64),
+                ArgValue::Int32(v) => PlaneId::from(*v as i64),
                 _ => return DecodedPacketPayload::EntityMethod(packet),
             };
             let position = match &args[1] {
@@ -1993,7 +2062,7 @@ where
             };
             DecodedPacketPayload::PlanePosition {
                 entity_id: *entity_id,
-                squadron_id,
+                plane_id,
                 x: position.0,
                 y: position.1,
             }

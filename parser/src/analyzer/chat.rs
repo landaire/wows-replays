@@ -22,7 +22,7 @@ impl ChatLoggerBuilder {
 }
 
 impl AnalyzerMutBuilder for ChatLoggerBuilder {
-    fn build(&self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         Box::new(ChatLogger {
             usernames: HashMap::new(),

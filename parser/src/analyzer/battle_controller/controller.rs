@@ -27,7 +27,7 @@ use crate::{
     },
     nested_property_path::{PropertyNestLevel, UpdateAction},
     packet2::{EntityCreatePacket, Packet, PacketProcessorMut, PacketType},
-    types::{AccountId, EntityId, GameClock, GameParamId, NormalizedPos, WorldPos},
+    types::{AccountId, EntityId, GameClock, GameParamId, NormalizedPos, Relation, WorldPos},
 };
 
 use super::state::{
@@ -147,46 +147,6 @@ impl ConnectionChangeInfo {
 
     pub fn had_death_event(&self) -> bool {
         self.had_death_event
-    }
-}
-
-/// Represents the relation of a player to the recording player.
-/// - 0 = self (the player who recorded the replay)
-/// - 1 = teammate (ally)
-/// - 2+ = enemy
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Relation(u32);
-
-impl Relation {
-    /// Creates a new Relation from a raw value.
-    pub fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    /// Returns true if this is the recording player (relation == 0).
-    pub fn is_self(&self) -> bool {
-        self.0 == 0
-    }
-
-    /// Returns true if this player is a teammate (relation == 1).
-    pub fn is_ally(&self) -> bool {
-        self.0 == 1
-    }
-
-    /// Returns true if this player is an enemy (relation >= 2).
-    pub fn is_enemy(&self) -> bool {
-        self.0 >= 2
-    }
-
-    /// Returns the raw relation value.
-    pub fn value(&self) -> u32 {
-        self.0
-    }
-}
-
-impl From<u32> for Relation {
-    fn from(value: u32) -> Self {
-        Self(value)
     }
 }
 
@@ -1080,6 +1040,11 @@ where
                     clock,
                     TimelineEvent::SmokeScreenCreated {
                         entity_id: packet.entity_id,
+                        position: WorldPos {
+                            x: packet.position.x,
+                            y: packet.position.y,
+                            z: packet.position.z,
+                        },
                         radius,
                     },
                 );
@@ -2038,6 +2003,7 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::Position(pos) => {
                 let world_pos = WorldPos {
                     x: pos.position.x,
+                    y: pos.position.y,
                     z: pos.position.z,
                 };
                 let ship_pos = ShipPosition {
@@ -2286,7 +2252,7 @@ where
             }
             crate::analyzer::decoder::DecodedPacketPayload::PlanePosition {
                 entity_id,
-                squadron_id,
+                plane_id,
                 x,
                 y,
             } => {
@@ -2294,12 +2260,14 @@ where
                     packet.clock,
                     TimelineEvent::PlanePosition {
                         entity_id,
-                        squadron_id,
+                        plane_id,
                         x,
                         y,
                     },
                 );
             }
+            crate::analyzer::decoder::DecodedPacketPayload::PlaneAdded { .. } => {}
+            crate::analyzer::decoder::DecodedPacketPayload::PlaneRemoved { .. } => {}
             crate::analyzer::decoder::DecodedPacketPayload::CruiseState { state, value } => {
                 trace!("CRUISE STATE")
             }

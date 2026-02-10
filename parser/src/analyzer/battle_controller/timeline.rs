@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use super::controller::ChatChannel;
 use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, Ribbon, TorpedoData};
-use crate::types::{EntityId, GameClock, NormalizedPos, WorldPos};
+use crate::types::{EntityId, GameClock, NormalizedPos, PlaneId, WorldPos};
 
 /// A timestamped event in the battle timeline.
 #[derive(Debug, Clone, Serialize)]
@@ -70,7 +70,11 @@ pub enum TimelineEvent {
     TeamScoreUpdate { team_index: usize, score: i64 },
 
     /// A smoke screen was created
-    SmokeScreenCreated { entity_id: EntityId, radius: f32 },
+    SmokeScreenCreated {
+        entity_id: EntityId,
+        position: WorldPos,
+        radius: f32,
+    },
 
     /// A smoke screen was destroyed
     SmokeScreenDestroyed { entity_id: EntityId },
@@ -112,7 +116,7 @@ pub enum TimelineEvent {
     /// A plane/squadron position was updated on the minimap
     PlanePosition {
         entity_id: EntityId,
-        squadron_id: u64,
+        plane_id: PlaneId,
         x: f32,
         y: f32,
     },

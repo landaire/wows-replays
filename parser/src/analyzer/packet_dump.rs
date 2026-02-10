@@ -18,7 +18,7 @@ impl PacketDumpBuilder {
 }
 
 impl AnalyzerBuilder for PacketDumpBuilder {
-    fn build(&self, _: &crate::ReplayMeta) -> Box<dyn Analyzer> {
+    fn build(self, _: &crate::ReplayMeta) -> Box<dyn Analyzer> {
         Box::new(PacketDump {})
     }
 }
