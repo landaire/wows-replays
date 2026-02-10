@@ -1430,6 +1430,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "clap",
+ "convert_case 0.6.0",
  "image 0.25.9",
  "imageproc",
  "mp4",
@@ -3058,8 +3059,6 @@ dependencies = [
 [[package]]
 name = "wowsunpack"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b0755774ef011a52cbba7dfa07bc098e1b8e6ef1bc43a294fd13c364c8451b0"
 dependencies = [
  "binrw",
  "byteorder",

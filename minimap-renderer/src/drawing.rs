@@ -4,21 +4,20 @@ use imageproc::drawing::{
     draw_filled_circle_mut, draw_filled_rect_mut, draw_line_segment_mut, draw_text_mut,
 };
 use imageproc::rect::Rect;
-use wows_replays::analyzer::battle_controller::Relation;
+use wows_replays::types::Relation;
 
-// Ship colors by relation
+// Ship colors by relation (matches in-game minimap: #ffffff, #4ce8aa, #fe4d2a)
 pub const COLOR_SELF: Rgb<u8> = Rgb([255, 255, 255]);
-pub const COLOR_ALLY: Rgb<u8> = Rgb([0, 200, 0]);
-pub const COLOR_ENEMY: Rgb<u8> = Rgb([255, 60, 60]);
+pub const COLOR_ALLY: Rgb<u8> = Rgb([76, 232, 170]);
+pub const COLOR_ENEMY: Rgb<u8> = Rgb([254, 77, 42]);
 pub const COLOR_DEAD: Rgb<u8> = Rgb([128, 128, 128]);
 
-pub const COLOR_TORPEDO: Rgb<u8> = Rgb([255, 80, 80]);
-pub const COLOR_TORPEDO_FRIENDLY: Rgb<u8> = Rgb([0, 200, 100]);
+pub const COLOR_TORPEDO: Rgb<u8> = Rgb([254, 77, 42]);
+pub const COLOR_TORPEDO_FRIENDLY: Rgb<u8> = Rgb([76, 232, 170]);
 pub const COLOR_SHOT: Rgb<u8> = Rgb([255, 200, 50]);
-pub const COLOR_PLANE: Rgb<u8> = Rgb([100, 180, 255]);
 
-pub const COLOR_TEAM_GREEN: Rgb<u8> = Rgb([0, 180, 0]);
-pub const COLOR_TEAM_RED: Rgb<u8> = Rgb([200, 0, 0]);
+pub const COLOR_TEAM_GREEN: Rgb<u8> = Rgb([76, 232, 170]);
+pub const COLOR_TEAM_RED: Rgb<u8> = Rgb([254, 77, 42]);
 
 pub const COLOR_TEXT: Rgb<u8> = Rgb([255, 255, 255]);
 pub const COLOR_TEXT_SHADOW: Rgb<u8> = Rgb([0, 0, 0]);
@@ -159,14 +158,72 @@ pub fn draw_torpedo(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
     draw_filled_circle_mut(image, (x, y), 2, color);
 }
 
-/// Draw a plane dot.
-pub fn draw_plane(image: &mut RgbImage, x: i32, y: i32) {
+/// Draw a smoke screen as a semi-transparent filled circle.
+pub fn draw_smoke(image: &mut RgbImage, x: i32, y: i32, radius: i32) {
+    let w = image.width() as i32;
+    let h = image.height() as i32;
+    let smoke_color: [u8; 3] = [180, 180, 180];
+    let alpha = 0.3f32;
+
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if dx * dx + dy * dy > radius * radius {
+                continue;
+            }
+            let px = x + dx;
+            let py = y + dy;
+            if px < 0 || px >= w || py < 0 || py >= h {
+                continue;
+            }
+            let bg = image.get_pixel(px as u32, py as u32).0;
+            let blended = Rgb([
+                (bg[0] as f32 * (1.0 - alpha) + smoke_color[0] as f32 * alpha) as u8,
+                (bg[1] as f32 * (1.0 - alpha) + smoke_color[1] as f32 * alpha) as u8,
+                (bg[2] as f32 * (1.0 - alpha) + smoke_color[2] as f32 * alpha) as u8,
+            ]);
+            image.put_pixel(px as u32, py as u32, blended);
+        }
+    }
+}
+
+/// Draw a plane icon (pre-colored RGBA from game files) with alpha blending.
+pub fn draw_plane_icon(image: &mut RgbImage, icon: &RgbaImage, x: i32, y: i32) {
+    let iw = icon.width() as i32;
+    let ih = icon.height() as i32;
+    let img_w = image.width() as i32;
+    let img_h = image.height() as i32;
+
+    for dy in 0..ih {
+        for dx in 0..iw {
+            let dest_x = x - iw / 2 + dx;
+            let dest_y = y - ih / 2 + dy;
+            if dest_x < 0 || dest_x >= img_w || dest_y < 0 || dest_y >= img_h {
+                continue;
+            }
+            let pixel = icon.get_pixel(dx as u32, dy as u32);
+            let alpha = pixel[3] as f32 / 255.0;
+            if alpha < 0.05 {
+                continue;
+            }
+            let bg = image.get_pixel(dest_x as u32, dest_y as u32).0;
+            let blended = Rgb([
+                (bg[0] as f32 * (1.0 - alpha) + pixel[0] as f32 * alpha) as u8,
+                (bg[1] as f32 * (1.0 - alpha) + pixel[1] as f32 * alpha) as u8,
+                (bg[2] as f32 * (1.0 - alpha) + pixel[2] as f32 * alpha) as u8,
+            ]);
+            image.put_pixel(dest_x as u32, dest_y as u32, blended);
+        }
+    }
+}
+
+/// Draw a plane as a fallback colored dot.
+pub fn draw_plane_dot(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
     let w = image.width() as i32;
     let h = image.height() as i32;
     if x < 0 || x >= w || y < 0 || y >= h {
         return;
     }
-    draw_filled_circle_mut(image, (x, y), 2, COLOR_PLANE);
+    draw_filled_circle_mut(image, (x, y), 2, color);
 }
 
 /// Draw the team score bar at the top of the frame.

@@ -222,6 +222,60 @@ fn load_ship_icons(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> HashMap<
     icons
 }
 
+/// Load all plane icons from game files into a HashMap keyed by name (e.g. "fighter_ally").
+fn load_plane_icons(
+    file_tree: &FileNode,
+    pkg_loader: &PkgFileLoader,
+) -> HashMap<String, RgbaImage> {
+    let dirs = [
+        "gui/battle_hud/markers_minimap/plane/consumables",
+        "gui/battle_hud/markers_minimap/plane/controllable",
+        "gui/battle_hud/markers_minimap/plane/airsupport",
+    ];
+    let suffixes = ["ally", "enemy", "own", "division", "teamkiller"];
+    let base_names = [
+        // controllable
+        "fighter_he",
+        "fighter_ap",
+        "fighter_he_st2024",
+        "bomber_he",
+        "bomber_ap",
+        "bomber_ap_st2024",
+        "skip_he",
+        "skip_ap",
+        "torpedo_regular",
+        "torpedo_regular_st2024",
+        "torpedo_deepwater",
+        "auxiliary",
+        // consumables
+        "fighter",
+        "fighter_upgrade",
+        "scout",
+        "smoke",
+        // airsupport
+        "bomber_depth_charge",
+        "bomber_mine",
+    ];
+
+    let mut icons = HashMap::new();
+    for dir in &dirs {
+        // Use the last path component as namespace (e.g. "consumables", "controllable", "airsupport")
+        let dir_name = dir.rsplit('/').next().unwrap_or(dir);
+        for base in &base_names {
+            for suffix in &suffixes {
+                let name = format!("{}_{}", base, suffix);
+                let path = format!("{}/{}.png", dir, name);
+                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
+                    let key = format!("{}/{}", dir_name, name);
+                    icons.insert(key, img.to_rgba8());
+                }
+            }
+        }
+    }
+    println!("Loaded {} plane icons", icons.len());
+    icons
+}
+
 /// Rasterize an SVG byte buffer to an RGBA image at the given size.
 fn rasterize_svg(svg_data: &[u8], size: u32) -> Option<RgbaImage> {
     let opt = resvg::usvg::Options::default();
@@ -365,6 +419,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("Loading ship icons...");
     let ship_icons = load_ship_icons(&file_tree, &pkg_loader);
+    let plane_icons = load_plane_icons(&file_tree, &pkg_loader);
 
     println!("Parsing replay...");
     let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(replay_path))?;
@@ -380,6 +435,7 @@ fn main() -> anyhow::Result<()> {
         map_info,
         dump_mode,
         ship_icons,
+        plane_icons,
         game_params,
     );
     let processor = builder.build(&replay_file.meta);

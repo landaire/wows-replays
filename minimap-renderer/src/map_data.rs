@@ -1,53 +1,9 @@
-pub use wows_replays::types::{EntityId, GameClock};
+pub use wows_replays::types::{EntityId, GameClock, WorldPos};
 
 /// Map metadata for coordinate conversion.
 #[derive(Debug, Clone)]
 pub struct MapInfo {
     pub space_size: i32,
-}
-
-/// World position in BigWorld units (game engine coordinates).
-/// X = east/west, Z = north/south. Origin at map center.
-#[derive(Debug, Clone, Copy)]
-pub struct WorldPos {
-    pub x: f32,
-    pub z: f32,
-}
-
-impl WorldPos {
-    pub fn lerp(self, other: WorldPos, t: f32) -> WorldPos {
-        self + (other - self) * t
-    }
-}
-
-impl std::ops::Add for WorldPos {
-    type Output = WorldPos;
-    fn add(self, rhs: WorldPos) -> WorldPos {
-        WorldPos {
-            x: self.x + rhs.x,
-            z: self.z + rhs.z,
-        }
-    }
-}
-
-impl std::ops::Sub for WorldPos {
-    type Output = WorldPos;
-    fn sub(self, rhs: WorldPos) -> WorldPos {
-        WorldPos {
-            x: self.x - rhs.x,
-            z: self.z - rhs.z,
-        }
-    }
-}
-
-impl std::ops::Mul<f32> for WorldPos {
-    type Output = WorldPos;
-    fn mul(self, rhs: f32) -> WorldPos {
-        WorldPos {
-            x: self.x * rhs,
-            z: self.z * rhs,
-        }
-    }
 }
 
 /// Pixel position on the minimap image.

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::BufWriter;
 
@@ -10,11 +10,11 @@ use openh264::formats::{RgbSliceU8, YUVBuffer};
 use openh264::OpenH264API;
 use wowsunpack::data::Version;
 use wowsunpack::game_params::provider::GameMetadataProvider;
-use wowsunpack::game_params::types::GameParamProvider;
+use wowsunpack::game_params::types::{GameParamProvider, PlaneCategory, Species};
 
-use wows_replays::analyzer::battle_controller::Relation;
 use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
 use wows_replays::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
+use wows_replays::types::{PlaneId, Relation};
 use wows_replays::ReplayMeta;
 
 use crate::drawing;
@@ -61,6 +61,63 @@ struct TorpedoSnapshot {
     clock: GameClock,
 }
 
+enum SmokeEvent {
+    SetRange { start: usize, points: Vec<WorldPos> },
+    RemoveRange { start: usize, count: usize },
+}
+
+struct SmokeCloud {
+    radius: f32,
+    created: GameClock,
+    destroyed: Option<GameClock>,
+    /// Initial point from EntityCreate
+    initial_point: WorldPos,
+    /// Timeline of points array mutations
+    events: Vec<(GameClock, SmokeEvent)>,
+}
+
+impl SmokeCloud {
+    fn points_at(&self, time: GameClock) -> Vec<WorldPos> {
+        let mut points = vec![self.initial_point];
+        for (clock, event) in &self.events {
+            if *clock > time {
+                break;
+            }
+            match event {
+                SmokeEvent::SetRange {
+                    start,
+                    points: new_pts,
+                } => {
+                    // Extend if needed
+                    while points.len() < start + new_pts.len() {
+                        points.push(WorldPos {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        });
+                    }
+                    for (i, p) in new_pts.iter().enumerate() {
+                        points[start + i] = *p;
+                    }
+                }
+                SmokeEvent::RemoveRange { start, count } => {
+                    let end = (start + count).min(points.len());
+                    points.drain(*start..end);
+                }
+            }
+        }
+        points
+    }
+}
+
+struct SquadronInfo {
+    owner_id: EntityId,
+    /// Icon base name derived from aircraft species (e.g. "fighter", "torpedo_regular")
+    icon_base: String,
+    /// Which icon directory to load from
+    icon_dir: &'static str,
+}
+
 struct KillEvent {
     clock: GameClock,
     killer_entity: EntityId,
@@ -84,6 +141,7 @@ pub struct MinimapBuilder {
     map_info: Option<map_data::MapInfo>,
     dump_mode: Option<DumpMode>,
     ship_icons: HashMap<String, ShipIcon>,
+    plane_icons: HashMap<String, RgbaImage>,
     game_params: GameMetadataProvider,
 }
 
@@ -94,6 +152,7 @@ impl MinimapBuilder {
         map_info: Option<map_data::MapInfo>,
         dump_mode: Option<DumpMode>,
         ship_icons: HashMap<String, ShipIcon>,
+        plane_icons: HashMap<String, RgbaImage>,
         game_params: GameMetadataProvider,
     ) -> Self {
         Self {
@@ -102,13 +161,14 @@ impl MinimapBuilder {
             map_info,
             dump_mode,
             ship_icons,
+            plane_icons,
             game_params,
         }
     }
 }
 
 impl AnalyzerMutBuilder for MinimapBuilder {
-    fn build(&self, meta: &ReplayMeta) -> Box<dyn AnalyzerMut> {
+    fn build(self, meta: &ReplayMeta) -> Box<dyn AnalyzerMut> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         let map_name = meta.mapName.clone();
 
@@ -131,26 +191,30 @@ impl AnalyzerMutBuilder for MinimapBuilder {
         Box::new(MinimapRenderer {
             version,
             map_name,
-            output_path: self.output_path.clone(),
-            dump_mode: self.dump_mode.clone(),
-            map_image: self.map_image.clone(),
-            map_info: self.map_info.clone(),
+            output_path: self.output_path,
+            dump_mode: self.dump_mode,
+            map_image: self.map_image,
+            map_info: self.map_info,
             relations_by_name: relations,
             species_by_name,
-            ship_icons: self.ship_icons.clone(),
+            ship_icons: self.ship_icons,
+            plane_icons: self.plane_icons,
+            game_params: self.game_params,
             player_species: HashMap::new(),
-            positions: HashMap::new(),
-            yaw_timeline: HashMap::new(),
+            positions: BTreeMap::new(),
+            yaw_timeline: BTreeMap::new(),
             minimap_updates: Vec::new(),
             shots: Vec::new(),
             torpedoes: Vec::new(),
             torpedo_hits: HashMap::new(),
-            planes: HashMap::new(),
+            planes: BTreeMap::new(),
+            squadron_info: HashMap::new(),
+            smoke_screens: BTreeMap::new(),
             kills: Vec::new(),
             scores: Vec::new(),
             player_names: HashMap::new(),
             player_relations: HashMap::new(),
-            dead_ships: HashMap::new(),
+            dead_ships: BTreeMap::new(),
             last_clock: GameClock(0.0),
         })
     }
@@ -170,22 +234,65 @@ struct MinimapRenderer {
 
     // Ship icons + per-entity species (resolved during OnArenaStateReceived)
     ship_icons: HashMap<String, ShipIcon>,
+    plane_icons: HashMap<String, RgbaImage>,
+    game_params: GameMetadataProvider,
     player_species: HashMap<EntityId, String>,
 
-    // Collected data
-    positions: HashMap<EntityId, Vec<(GameClock, ShipSnapshot)>>,
-    yaw_timeline: HashMap<EntityId, Vec<(GameClock, f32)>>,
+    // Collected data — BTreeMaps for deterministic draw order
+    positions: BTreeMap<EntityId, Vec<(GameClock, ShipSnapshot)>>,
+    yaw_timeline: BTreeMap<EntityId, Vec<(GameClock, f32)>>,
     minimap_updates: Vec<MinimapShipUpdate>,
     shots: Vec<ShotTrail>,
     torpedoes: Vec<TorpedoSnapshot>,
     torpedo_hits: HashMap<u64, GameClock>, // composite_id -> clock when hit
-    planes: HashMap<u64, Vec<(GameClock, NormalizedPos)>>,
+    planes: BTreeMap<PlaneId, Vec<(GameClock, WorldPos)>>,
+    squadron_info: HashMap<PlaneId, SquadronInfo>,
+    smoke_screens: BTreeMap<EntityId, SmokeCloud>,
     kills: Vec<KillEvent>,
     scores: Vec<(GameClock, i32, i32)>,
     player_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
-    dead_ships: HashMap<EntityId, (GameClock, MinimapPos)>,
+    dead_ships: BTreeMap<EntityId, (GameClock, MinimapPos)>,
     last_clock: GameClock,
+}
+
+/// Build the icon base name from species, consumable flag, and ammo type.
+///
+/// Consumable planes use simple names (e.g. "fighter", "scout") from the
+/// consumables icon directory. Controllable (CV) planes combine species with
+/// ammo type (e.g. "bomber_he", "torpedo_regular", "fighter_ap").
+fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) -> String {
+    use convert_case::{Case, Casing};
+
+    // ammoType values like "depthcharge" have no word boundary for convert_case,
+    // so normalize known cases before converting
+    let normalized = match ammo_type {
+        "depthcharge" => "depth_charge",
+        other => other,
+    };
+    let ammo = normalized.to_case(Case::Snake);
+    if is_consumable {
+        match species {
+            // ASW depth charge planes (consumable airsupport)
+            Species::Dive => format!("bomber_{ammo}"),
+            _ => {
+                let species_name: &str = (&species).into();
+                species_name.to_case(Case::Snake)
+            }
+        }
+    } else {
+        match species {
+            Species::Fighter => format!("fighter_{ammo}"),
+            Species::Dive => format!("bomber_{ammo}"),
+            Species::Bomber => match ammo.as_str() {
+                "torpedo_deepwater" => "torpedo_deepwater".to_string(),
+                _ => "torpedo_regular".to_string(),
+            },
+            Species::Skip => format!("skip_{ammo}"),
+            Species::Airship => "auxiliary".to_string(),
+            _ => format!("fighter_{ammo}"),
+        }
+    }
 }
 
 impl MinimapRenderer {
@@ -358,7 +465,28 @@ impl MinimapRenderer {
             drawing::draw_torpedo(frame, px.x, px.y + y_off, color);
         }
 
-        // 4. Ships — unified pass using both world positions and minimap updates
+        // 4. Smoke screens
+        if let Some(map_info) = &self.map_info {
+            for smoke in self.smoke_screens.values() {
+                if game_time < smoke.created {
+                    continue;
+                }
+                if let Some(end) = smoke.destroyed {
+                    if game_time >= end {
+                        continue;
+                    }
+                }
+                let active_points = smoke.points_at(game_time);
+                let px_radius =
+                    (smoke.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                for point in &active_points {
+                    let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
+                    drawing::draw_smoke(frame, px.x, px.y + y_off, px_radius.max(3));
+                }
+            }
+        }
+
+        // 5. Ships — unified pass using both world positions and minimap updates
         //
         // Precompute per-entity minimap update index (sorted by time already)
         let mut minimap_by_entity: HashMap<EntityId, Vec<usize>> = HashMap::new();
@@ -367,7 +495,7 @@ impl MinimapRenderer {
         }
 
         // Collect all known entity IDs from both sources
-        let all_entity_ids: HashSet<EntityId> = self
+        let all_entity_ids: BTreeSet<EntityId> = self
             .positions
             .keys()
             .chain(minimap_by_entity.keys())
@@ -496,13 +624,58 @@ impl MinimapRenderer {
         }
 
         // 7. Planes
-        for (_, plane_positions) in &self.planes {
+        // Show at interpolated position between updates. After the last update,
+        // the squadron is gone (recalled or destroyed), so don't render.
+        for (plane_id, plane_positions) in &self.planes {
+            if plane_positions.is_empty() {
+                continue;
+            }
+            let first_time = plane_positions.first().unwrap().0;
+            let last_time = plane_positions.last().unwrap().0;
+            if game_time < first_time || game_time > last_time {
+                continue;
+            }
             let idx = plane_positions.partition_point(|(t, _)| *t <= game_time);
-            if idx > 0 {
-                let (t, norm) = &plane_positions[idx - 1];
-                if (game_time - *t).abs() < 5.0 {
-                    let px = norm.to_minimap(MINIMAP_SIZE);
-                    drawing::draw_plane(frame, px.x, px.y + y_off);
+            let before = idx.checked_sub(1).map(|i| &plane_positions[i]);
+            let after = plane_positions.get(idx);
+            let world = match (before, after) {
+                (Some((t0, p0)), Some((t1, p1))) => {
+                    let span = *t1 - *t0;
+                    let frac = if span.abs() > 0.001 {
+                        (game_time - *t0) / span
+                    } else {
+                        0.0
+                    };
+                    p0.lerp(*p1, frac)
+                }
+                (Some((_, p)), None) => *p,
+                (None, Some((_, p))) => *p,
+                _ => continue,
+            };
+            if let Some(map_info) = &self.map_info {
+                let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
+                let info = self.squadron_info.get(plane_id);
+                let is_enemy = info
+                    .and_then(|i| self.player_relations.get(&i.owner_id))
+                    .map(|r| r.is_enemy())
+                    .unwrap_or(false);
+                let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
+                let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
+                let suffix = if is_enemy { "enemy" } else { "ally" };
+                let key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
+                let icon = self.plane_icons.get(&key).or_else(|| {
+                    self.plane_icons
+                        .get(&format!("consumables/fighter_{}", suffix))
+                });
+                if let Some(icon) = icon {
+                    drawing::draw_plane_icon(frame, icon, px.x, px.y + y_off);
+                } else {
+                    let color = if is_enemy {
+                        drawing::COLOR_TEAM_RED
+                    } else {
+                        drawing::COLOR_TEAM_GREEN
+                    };
+                    drawing::draw_plane_dot(frame, px.x, px.y + y_off, color);
                 }
             }
         }
@@ -708,6 +881,7 @@ impl AnalyzerMut for MinimapRenderer {
                     ShipSnapshot {
                         pos: WorldPos {
                             x: pos.position.x,
+                            y: pos.position.y,
                             z: pos.position.z,
                         },
                     },
@@ -723,6 +897,7 @@ impl AnalyzerMut for MinimapRenderer {
                         ShipSnapshot {
                             pos: WorldPos {
                                 x: orient.position.x,
+                                y: orient.position.y,
                                 z: orient.position.z,
                             },
                         },
@@ -778,10 +953,12 @@ impl AnalyzerMut for MinimapRenderer {
                     for shot in &salvo.shots {
                         let origin = WorldPos {
                             x: shot.origin.0,
+                            y: shot.origin.1,
                             z: shot.origin.2,
                         };
                         let target = WorldPos {
                             x: shot.target.0,
+                            y: shot.target.1,
                             z: shot.target.2,
                         };
                         let dx = target.x - origin.x;
@@ -815,10 +992,12 @@ impl AnalyzerMut for MinimapRenderer {
                         owner_id: EntityId::from(torp.owner_id),
                         origin: WorldPos {
                             x: torp.origin.0,
+                            y: torp.origin.1,
                             z: torp.origin.2,
                         },
                         velocity: WorldPos {
                             x: torp.direction.0,
+                            y: torp.direction.1,
                             z: torp.direction.2,
                         },
                         clock: decoded.clock,
@@ -840,13 +1019,58 @@ impl AnalyzerMut for MinimapRenderer {
                 }
             }
 
-            DecodedPacketPayload::PlanePosition {
-                squadron_id, x, y, ..
-            } => {
+            DecodedPacketPayload::PlanePosition { plane_id, x, y, .. } => {
                 self.planes
-                    .entry(squadron_id)
+                    .entry(plane_id)
                     .or_default()
-                    .push((decoded.clock, NormalizedPos { x, y }));
+                    .push((decoded.clock, WorldPos { x, y: 0.0, z: y }));
+            }
+
+            DecodedPacketPayload::PlaneAdded {
+                plane_id,
+                params_id,
+                x,
+                y,
+                ..
+            } => {
+                let owner_id = plane_id.owner_id();
+                let param = self.game_params.game_param_by_id(params_id.raw());
+                let aircraft = param.as_ref().and_then(|p| p.aircraft());
+                let category = aircraft
+                    .map(|a| a.category())
+                    .unwrap_or(&PlaneCategory::Controllable);
+                let is_consumable = matches!(
+                    category,
+                    PlaneCategory::Consumable | PlaneCategory::Airsupport
+                );
+                let ammo_type = aircraft.map(|a| a.ammo_type()).unwrap_or("");
+                let icon_base = param
+                    .as_ref()
+                    .and_then(|p| p.species())
+                    .map(|s| species_to_icon_base(s, is_consumable, ammo_type))
+                    .unwrap_or_else(|| "fighter".to_string());
+                let icon_dir = match category {
+                    PlaneCategory::Consumable => "consumables",
+                    PlaneCategory::Airsupport => "airsupport",
+                    PlaneCategory::Controllable => "controllable",
+                };
+                self.squadron_info.insert(
+                    plane_id,
+                    SquadronInfo {
+                        owner_id,
+                        icon_base,
+                        icon_dir,
+                    },
+                );
+                // Record initial position
+                self.planes
+                    .entry(plane_id)
+                    .or_default()
+                    .push((decoded.clock, WorldPos { x, y: 0.0, z: y }));
+            }
+
+            DecodedPacketPayload::PlaneRemoved { plane_id, .. } => {
+                self.planes.remove(&plane_id);
             }
 
             DecodedPacketPayload::ShipDestroyed { killer, victim, .. } => {
@@ -880,11 +1104,75 @@ impl AnalyzerMut for MinimapRenderer {
                 if prop_update.property == "state" {
                     self.handle_property_update(prop_update, decoded.clock);
                 }
+                if prop_update.property == "points"
+                    && self.smoke_screens.contains_key(&prop_update.entity_id)
+                {
+                    use wows_replays::nested_property_path::UpdateAction;
+                    let event = match &prop_update.update_cmd.action {
+                        UpdateAction::SetRange { start, values, .. } => {
+                            let points: Vec<WorldPos> = values
+                                .iter()
+                                .filter_map(|v| match v {
+                                    wowsunpack::rpc::typedefs::ArgValue::Vector3((x, y, z)) => {
+                                        Some(WorldPos {
+                                            x: *x,
+                                            y: *y,
+                                            z: *z,
+                                        })
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            Some(SmokeEvent::SetRange {
+                                start: *start,
+                                points,
+                            })
+                        }
+                        UpdateAction::RemoveRange { start, stop } => {
+                            Some(SmokeEvent::RemoveRange {
+                                start: *start,
+                                count: stop - start,
+                            })
+                        }
+                        _ => None,
+                    };
+                    if let Some(event) = event {
+                        if let Some(smoke) = self.smoke_screens.get_mut(&prop_update.entity_id) {
+                            smoke.events.push((decoded.clock, event));
+                        }
+                    }
+                }
             }
 
             DecodedPacketPayload::EntityCreate(create) => {
                 if create.entity_type == "BattleLogic" {
                     self.extract_initial_scores(&create.props, decoded.clock);
+                } else if create.entity_type == "SmokeScreen" {
+                    let radius = create
+                        .props
+                        .get("radius")
+                        .and_then(|v| v.float_32_ref().copied())
+                        .unwrap_or(0.0);
+                    self.smoke_screens.insert(
+                        create.entity_id,
+                        SmokeCloud {
+                            radius,
+                            created: decoded.clock,
+                            destroyed: None,
+                            initial_point: WorldPos {
+                                x: create.position.x,
+                                y: create.position.y,
+                                z: create.position.z,
+                            },
+                            events: Vec::new(),
+                        },
+                    );
+                }
+            }
+
+            DecodedPacketPayload::EntityLeave(leave) => {
+                if let Some(smoke) = self.smoke_screens.get_mut(&leave.entity_id) {
+                    smoke.destroyed = Some(decoded.clock);
                 }
             }
 
@@ -894,15 +1182,26 @@ impl AnalyzerMut for MinimapRenderer {
 
     fn finish(&mut self) {
         println!(
-            "Data collected: {} entities with positions, {} minimap updates, {} shots, {} torpedoes ({} hits), {} kills, last_clock={}",
+            "Data collected: {} entities with positions, {} minimap updates, {} shots, {} torpedoes ({} hits), {} kills, {} smoke screens, {} plane squadrons, last_clock={}",
             self.positions.len(),
             self.minimap_updates.len(),
             self.shots.len(),
             self.torpedoes.len(),
             self.torpedo_hits.len(),
             self.kills.len(),
+            self.smoke_screens.len(),
+            self.planes.len(),
             self.last_clock,
         );
+
+        // Summarize squadron types
+        let mut icon_counts: HashMap<String, usize> = HashMap::new();
+        for info in self.squadron_info.values() {
+            *icon_counts.entry(info.icon_base.clone()).or_default() += 1;
+        }
+        println!("Squadron icon types (active at end): {:?}", icon_counts);
+        // Count all PlaneAdded events by looking at planes map
+        println!("Total unique squadron IDs: {}", self.planes.len());
 
         if let Some(dump_mode) = self.dump_mode.clone() {
             let frame_idx = match dump_mode {

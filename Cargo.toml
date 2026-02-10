@@ -14,6 +14,6 @@ wowsunpack = { version = "0.11", default-features = false, features = ["json"] }
 pickled = "2.0.0-alpha3"
 
 [patch.crates-io]
-#wowsunpack = { path = "../wowsunpack" }
+wowsunpack = { path = "../wowsunpack" }
 #pickled = { path = "../pickled" }
 # muxide = { path = "../muxide" }
