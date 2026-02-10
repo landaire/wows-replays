@@ -42,7 +42,8 @@ pub enum DrawCommand {
         yaw: f32,
         /// Species name for icon lookup (e.g. "Destroyer")
         species: Option<String>,
-        color: [u8; 3],
+        /// Tint color. None = use the icon's native colors (for last_visible/invisible variants)
+        color: Option<[u8; 3]>,
         visibility: ShipVisibility,
         opacity: f32,
         /// Whether this is the player's own ship (uses `_self` icon variant)
@@ -61,7 +62,8 @@ pub enum DrawCommand {
         pos: MinimapPos,
         yaw: f32,
         species: Option<String>,
-        color: [u8; 3],
+        /// Tint color. None = use the icon's native colors
+        color: Option<[u8; 3]>,
         is_self: bool,
     },
     /// Plane icon

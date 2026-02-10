@@ -301,7 +301,7 @@ impl RenderTarget for ImageTarget {
                 opacity,
                 is_self,
             } => {
-                let rgb = Rgb(*color);
+                let rgb = color.map(Rgb);
                 let x = pos.x;
                 let y = pos.y + y_off;
 
@@ -321,15 +321,24 @@ impl RenderTarget for ImageTarget {
                 if let Some(icon) = icon {
                     draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, *opacity);
                 } else {
+                    let fallback = rgb.unwrap_or(Rgb([200, 200, 200]));
                     match visibility {
                         ShipVisibility::Visible => {
-                            draw_ship(&mut self.canvas, x, y, *yaw, rgb, 5);
+                            draw_ship(&mut self.canvas, x, y, *yaw, fallback, 5);
                         }
                         ShipVisibility::MinimapOnly => {
-                            draw_ship_outline(&mut self.canvas, x, y, *yaw, rgb, 5);
+                            draw_ship_outline(&mut self.canvas, x, y, *yaw, fallback, 5);
                         }
                         ShipVisibility::Undetected => {
-                            draw_ship_undetected(&mut self.canvas, x, y, *yaw, rgb, *opacity, 5);
+                            draw_ship_undetected(
+                                &mut self.canvas,
+                                x,
+                                y,
+                                *yaw,
+                                fallback,
+                                *opacity,
+                                5,
+                            );
                         }
                     }
                 }
@@ -360,7 +369,7 @@ impl RenderTarget for ImageTarget {
             } => {
                 let x = pos.x;
                 let y = pos.y + y_off;
-                let rgb = Rgb(*color);
+                let rgb = color.map(Rgb);
 
                 // Try dead icon variant, with dead_self for player's own ship
                 let icon = species.as_ref().and_then(|sp| {
@@ -377,7 +386,7 @@ impl RenderTarget for ImageTarget {
                 if let Some(icon) = icon {
                     draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, 1.0);
                 } else {
-                    draw_dead_ship(&mut self.canvas, x, y, rgb);
+                    draw_dead_ship(&mut self.canvas, x, y, rgb.unwrap_or(Rgb([200, 200, 200])));
                 }
             }
             DrawCommand::Plane {
@@ -632,19 +641,19 @@ fn draw_health_bar(
     }
 }
 
-/// Draw a ship icon (pre-rasterized SVG) rotated by yaw and tinted with the given color.
+/// Draw a ship icon (pre-rasterized SVG) rotated by yaw, optionally tinted.
 ///
-/// The icon is expected to be a white/alpha mask -- non-transparent pixels are tinted to `color`.
-/// The icon is rotated about its center by `yaw` radians (game convention: 0=east, CCW positive).
-/// The caller selects the correct icon variant (base, `_dead`, `_invisible`, `_last_visible`,
-/// `_self`), so this function applies uniform tinting and alpha blending to all variants.
+/// When `color` is `Some`, the icon's luminance is used as intensity and the result is
+/// tinted to that color (for visible ships with team colors). When `None`, the icon's
+/// original RGB values are used as-is (for last_visible, invisible, and dead variants
+/// that have their own coloring in the SVG).
 fn draw_ship_icon(
     image: &mut RgbImage,
     icon: &RgbaImage,
     x: i32,
     y: i32,
     yaw: f32,
-    color: Rgb<u8>,
+    color: Option<Rgb<u8>>,
     opacity: f32,
 ) {
     let iw = icon.width() as i32;
@@ -687,16 +696,20 @@ fn draw_ship_icon(
                 continue;
             }
 
-            // Tint: use the icon's luminance as intensity, apply team color
-            let luminance =
-                (pixel[0] as f32 * 0.299 + pixel[1] as f32 * 0.587 + pixel[2] as f32 * 0.114)
-                    / 255.0;
-
-            let tinted = Rgb([
-                (color[0] as f32 * luminance) as u8,
-                (color[1] as f32 * luminance) as u8,
-                (color[2] as f32 * luminance) as u8,
-            ]);
+            let tinted = if let Some(c) = color {
+                // Tint: use the icon's luminance as intensity, apply team color
+                let luminance =
+                    (pixel[0] as f32 * 0.299 + pixel[1] as f32 * 0.587 + pixel[2] as f32 * 0.114)
+                        / 255.0;
+                Rgb([
+                    (c[0] as f32 * luminance) as u8,
+                    (c[1] as f32 * luminance) as u8,
+                    (c[2] as f32 * luminance) as u8,
+                ])
+            } else {
+                // Use original icon colors
+                Rgb([pixel[0], pixel[1], pixel[2]])
+            };
 
             let bg = image.get_pixel(dest_x as u32, dest_y as u32);
             let blended = Rgb([

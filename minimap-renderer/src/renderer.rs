@@ -22,7 +22,6 @@ const SMOKE_ALPHA: f32 = 0.5;
 const TRACER_COLOR: [u8; 3] = [255, 255, 255];
 const TORPEDO_FRIENDLY_COLOR: [u8; 3] = [76, 232, 170];
 const TORPEDO_ENEMY_COLOR: [u8; 3] = [254, 77, 42];
-const DEAD_SHIP_COLOR: [u8; 3] = [200, 200, 200];
 const HP_BAR_FULL_COLOR: [u8; 3] = [0, 255, 0];
 const HP_BAR_MID_COLOR: [u8; 3] = [255, 255, 0];
 const HP_BAR_LOW_COLOR: [u8; 3] = [255, 0, 0];
@@ -338,7 +337,7 @@ impl MinimapRenderer {
                         pos: px,
                         yaw,
                         species: species.clone(),
-                        color,
+                        color: Some(color),
                         visibility: ShipVisibility::Visible,
                         opacity: 1.0,
                         is_self: relation.is_self(),
@@ -362,7 +361,7 @@ impl MinimapRenderer {
                         pos: px,
                         yaw,
                         species: species.clone(),
-                        color,
+                        color: None,
                         visibility: ShipVisibility::MinimapOnly,
                         opacity: 1.0,
                         is_self: relation.is_self(),
@@ -394,7 +393,7 @@ impl MinimapRenderer {
                     pos: px,
                     yaw,
                     species: species.clone(),
-                    color,
+                    color: None,
                     visibility: ShipVisibility::Undetected,
                     opacity: UNDETECTED_OPACITY,
                     is_self: relation.is_self(),
@@ -422,7 +421,7 @@ impl MinimapRenderer {
                     pos: px,
                     yaw,
                     species,
-                    color: DEAD_SHIP_COLOR,
+                    color: None,
                     is_self: relation.is_self(),
                 });
             }
