@@ -13,11 +13,10 @@ use wows_replays::types::GameClock;
 use crate::draw_command::RenderTarget;
 use crate::drawing::ImageTarget;
 use crate::renderer::MinimapRenderer;
+use crate::{CANVAS_HEIGHT, MINIMAP_SIZE};
 
 pub const TOTAL_FRAMES: usize = 1800;
 pub const FPS: f64 = 30.0;
-const MINIMAP_SIZE: u32 = 768;
-pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + 32; // 800
 
 #[derive(Clone, Debug)]
 pub enum DumpMode {

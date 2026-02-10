@@ -9,8 +9,7 @@ use wows_replays::types::{EntityId, PlaneId, Relation};
 use crate::draw_command::{DrawCommand, ShipVisibility};
 use crate::map_data::{self, WorldPos};
 
-// Use 768 (multiple of 16) for H.264 macroblock alignment
-const MINIMAP_SIZE: u32 = 768;
+use crate::MINIMAP_SIZE;
 
 // How long various effects persist in game-seconds
 const TRACER_LEN: f32 = 0.12; // fraction of total shot path length

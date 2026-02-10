@@ -5,6 +5,13 @@ pub mod map_data;
 pub mod renderer;
 pub mod video;
 
+/// Minimap image size in pixels (square). Multiple of 16 for H.264 macroblock alignment.
+pub const MINIMAP_SIZE: u32 = 768;
+/// Top margin for HUD elements (score bar, timer, kill feed).
+pub const HUD_HEIGHT: u32 = 32;
+/// Total canvas height: minimap + HUD.
+pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT;
+
 pub use draw_command::{DrawCommand, RenderTarget, ShipVisibility};
 pub use drawing::{ImageTarget, ShipIcon};
 pub use map_data::{MapInfo, MinimapPos};

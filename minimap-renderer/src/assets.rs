@@ -5,9 +5,7 @@ use wowsunpack::data::idx::FileNode;
 use wowsunpack::data::pkg::PkgFileLoader;
 
 use crate::map_data;
-
-/// Minimap image size in pixels (square).
-pub const MINIMAP_SIZE: u32 = 768;
+use crate::MINIMAP_SIZE;
 
 /// Icon size in pixels for rasterized ship icons.
 pub const ICON_SIZE: u32 = 24;

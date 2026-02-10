@@ -89,12 +89,7 @@ fn draw_plane_icon(image: &mut RgbImage, icon: &RgbaImage, x: i32, y: i32) {
     }
 }
 
-// Use 768 (multiple of 16) for H.264 macroblock alignment
-const MINIMAP_SIZE: u32 = 768;
-// Top margin for HUD elements (score bar, timer, kill feed)
-const HUD_HEIGHT: u32 = 32;
-// Total canvas height = map + HUD
-const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT; // 800
+use crate::{CANVAS_HEIGHT, HUD_HEIGHT, MINIMAP_SIZE};
 
 /// Pre-rasterized ship icon (RGBA, white/alpha mask to be tinted at draw time).
 pub type ShipIcon = RgbaImage;
