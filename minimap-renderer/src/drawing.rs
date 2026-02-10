@@ -18,110 +18,6 @@ fn load_font() -> FontRef<'static> {
     FontRef::try_from_slice(FONT_DATA).expect("failed to load embedded font")
 }
 
-/// Draw a ship as a filled circle with a heading line.
-fn draw_ship(image: &mut RgbImage, x: i32, y: i32, yaw: f32, color: Rgb<u8>, radius: i32) {
-    let w = image.width() as i32;
-    let h = image.height() as i32;
-    if x < -radius || x >= w + radius || y < -radius || y >= h + radius {
-        return;
-    }
-    draw_filled_circle_mut(image, (x, y), radius, color);
-
-    // Heading line
-    let line_len = (radius + 4) as f32;
-    let end_x = x as f32 + yaw.cos() * line_len;
-    let end_y = y as f32 - yaw.sin() * line_len;
-    draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), color);
-}
-
-/// Draw a ship circle as outline only (ring + heading line).
-fn draw_ship_outline(image: &mut RgbImage, x: i32, y: i32, yaw: f32, color: Rgb<u8>, radius: i32) {
-    let w = image.width() as i32;
-    let h = image.height() as i32;
-    if x < -radius || x >= w + radius || y < -radius || y >= h + radius {
-        return;
-    }
-
-    let r2_outer = (radius * radius) as f32;
-    let r2_inner = ((radius - 1).max(0) * (radius - 1).max(0)) as f32;
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            let d2 = (dx * dx + dy * dy) as f32;
-            if d2 <= r2_outer && d2 >= r2_inner {
-                let px = x + dx;
-                let py = y + dy;
-                if px >= 0 && px < w && py >= 0 && py < h {
-                    image.put_pixel(px as u32, py as u32, color);
-                }
-            }
-        }
-    }
-
-    let line_len = (radius + 4) as f32;
-    let end_x = x as f32 + yaw.cos() * line_len;
-    let end_y = y as f32 - yaw.sin() * line_len;
-    draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), color);
-}
-
-/// Draw a ship as a semi-transparent circle (for undetected ships, no icon fallback).
-fn draw_ship_undetected(
-    image: &mut RgbImage,
-    x: i32,
-    y: i32,
-    yaw: f32,
-    color: Rgb<u8>,
-    opacity: f32,
-    radius: i32,
-) {
-    let w = image.width() as i32;
-    let h = image.height() as i32;
-    if x < -radius || x >= w + radius || y < -radius || y >= h + radius {
-        return;
-    }
-
-    let r2 = (radius * radius) as f32;
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            if (dx * dx + dy * dy) as f32 > r2 {
-                continue;
-            }
-            let px = x + dx;
-            let py = y + dy;
-            if px >= 0 && px < w && py >= 0 && py < h {
-                let bg = image.get_pixel(px as u32, py as u32);
-                let blended = Rgb([
-                    (color[0] as f32 * opacity + bg[0] as f32 * (1.0 - opacity)) as u8,
-                    (color[1] as f32 * opacity + bg[1] as f32 * (1.0 - opacity)) as u8,
-                    (color[2] as f32 * opacity + bg[2] as f32 * (1.0 - opacity)) as u8,
-                ]);
-                image.put_pixel(px as u32, py as u32, blended);
-            }
-        }
-    }
-
-    let line_len = (radius + 4) as f32;
-    let end_x = x as f32 + yaw.cos() * line_len;
-    let end_y = y as f32 - yaw.sin() * line_len;
-    draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), color);
-}
-
-/// Draw a dead ship marker (X shape).
-fn draw_dead_ship(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
-    let size = 4.0f32;
-    draw_line_segment_mut(
-        image,
-        (x as f32 - size, y as f32 - size),
-        (x as f32 + size, y as f32 + size),
-        color,
-    );
-    draw_line_segment_mut(
-        image,
-        (x as f32 + size, y as f32 - size),
-        (x as f32 - size, y as f32 + size),
-        color,
-    );
-}
-
 /// Draw an artillery shot trajectory line.
 fn draw_shot_line(image: &mut RgbImage, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb<u8>) {
     draw_line_segment_mut(image, (x1, y1), (x2, y2), color);
@@ -306,42 +202,20 @@ impl RenderTarget for ImageTarget {
                 let y = pos.y + y_off;
 
                 // Pick the right icon variant based on visibility and self status
-                let icon = species.as_ref().and_then(|sp| {
-                    let variant_key = match (*visibility, *is_self) {
-                        (ShipVisibility::Visible, true) => format!("{}_self", sp),
-                        (ShipVisibility::Visible, false) => sp.clone(),
-                        (ShipVisibility::MinimapOnly, _) => format!("{}_last_visible", sp),
-                        (ShipVisibility::Undetected, _) => format!("{}_invisible", sp),
-                    };
-                    self.ship_icons
-                        .get(&variant_key)
-                        .or_else(|| self.ship_icons.get(sp))
-                });
+                let sp = species.as_ref().expect("ship has no species");
+                let variant_key = match (*visibility, *is_self) {
+                    (ShipVisibility::Visible, true) => format!("{}_self", sp),
+                    (ShipVisibility::Visible, false) => sp.clone(),
+                    (ShipVisibility::MinimapOnly, _) => format!("{}_last_visible", sp),
+                    (ShipVisibility::Undetected, _) => format!("{}_invisible", sp),
+                };
+                let icon = self
+                    .ship_icons
+                    .get(&variant_key)
+                    .or_else(|| self.ship_icons.get(sp))
+                    .unwrap_or_else(|| panic!("missing ship icon for '{}'", variant_key));
 
-                if let Some(icon) = icon {
-                    draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, *opacity);
-                } else {
-                    let fallback = rgb.unwrap_or(Rgb([200, 200, 200]));
-                    match visibility {
-                        ShipVisibility::Visible => {
-                            draw_ship(&mut self.canvas, x, y, *yaw, fallback, 5);
-                        }
-                        ShipVisibility::MinimapOnly => {
-                            draw_ship_outline(&mut self.canvas, x, y, *yaw, fallback, 5);
-                        }
-                        ShipVisibility::Undetected => {
-                            draw_ship_undetected(
-                                &mut self.canvas,
-                                x,
-                                y,
-                                *yaw,
-                                fallback,
-                                *opacity,
-                                5,
-                            );
-                        }
-                    }
-                }
+                draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, *opacity);
             }
             DrawCommand::HealthBar {
                 pos,
@@ -371,34 +245,26 @@ impl RenderTarget for ImageTarget {
                 let y = pos.y + y_off;
                 let rgb = color.map(Rgb);
 
-                // Try dead icon variant, with dead_self for player's own ship
-                let icon = species.as_ref().and_then(|sp| {
-                    let variant_key = if *is_self {
-                        format!("{}_dead_self", sp)
-                    } else {
-                        format!("{}_dead", sp)
-                    };
-                    self.ship_icons
-                        .get(&variant_key)
-                        .or_else(|| self.ship_icons.get(sp))
-                });
+                let sp = species.as_ref().expect("dead ship has no species");
+                let variant_key = if *is_self {
+                    format!("{}_dead_self", sp)
+                } else {
+                    format!("{}_dead", sp)
+                };
+                let icon = self
+                    .ship_icons
+                    .get(&variant_key)
+                    .or_else(|| self.ship_icons.get(sp))
+                    .unwrap_or_else(|| panic!("missing ship icon for '{}'", variant_key));
 
-                if let Some(icon) = icon {
-                    draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, 1.0);
-                } else {
-                    draw_dead_ship(&mut self.canvas, x, y, rgb.unwrap_or(Rgb([200, 200, 200])));
-                }
+                draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, 1.0);
             }
-            DrawCommand::Plane {
-                pos,
-                icon_key,
-                fallback_color,
-            } => {
-                if let Some(icon) = self.plane_icons.get(icon_key) {
-                    draw_plane_icon(&mut self.canvas, icon, pos.x, pos.y + y_off);
-                } else {
-                    draw_plane_dot(&mut self.canvas, pos.x, pos.y + y_off, Rgb(*fallback_color));
-                }
+            DrawCommand::Plane { pos, icon_key } => {
+                let icon = self
+                    .plane_icons
+                    .get(icon_key)
+                    .unwrap_or_else(|| panic!("missing plane icon for '{}'", icon_key));
+                draw_plane_icon(&mut self.canvas, icon, pos.x, pos.y + y_off);
             }
             DrawCommand::ScoreBar {
                 team0,
@@ -427,16 +293,6 @@ impl RenderTarget for ImageTarget {
     fn end_frame(&mut self) {
         // No-op — frame is ready to read via frame()
     }
-}
-
-/// Draw a plane as a fallback colored dot.
-fn draw_plane_dot(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
-    let w = image.width() as i32;
-    let h = image.height() as i32;
-    if x < 0 || x >= w || y < 0 || y >= h {
-        return;
-    }
-    draw_filled_circle_mut(image, (x, y), 2, color);
 }
 
 /// Draw the team score bar at the top of the frame.

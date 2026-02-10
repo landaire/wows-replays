@@ -446,17 +446,7 @@ impl MinimapRenderer {
                 let suffix = if is_enemy { "enemy" } else { "ally" };
                 let icon_key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
 
-                let fallback_color = if is_enemy {
-                    [254, 77, 42]
-                } else {
-                    [76, 232, 170]
-                };
-
-                commands.push(DrawCommand::Plane {
-                    pos: px,
-                    icon_key,
-                    fallback_color,
-                });
+                commands.push(DrawCommand::Plane { pos: px, icon_key });
             }
         }
 

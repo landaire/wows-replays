@@ -71,7 +71,6 @@ pub enum DrawCommand {
         pos: MinimapPos,
         /// Icon key for lookup (e.g. "controllable/fighter_he_enemy")
         icon_key: String,
-        fallback_color: [u8; 3],
     },
     /// Score bar
     ScoreBar {
