@@ -1,19 +1,17 @@
+use image::{RgbImage, RgbaImage};
 use std::collections::HashMap;
 use std::path::Path;
-
-use image::{RgbImage, RgbaImage};
 use wowsunpack::data::idx::FileNode;
 use wowsunpack::data::pkg::PkgFileLoader;
 
 use crate::map_data;
 
-/// Default minimap render size in pixels (multiple of 16 for H.264 macroblock alignment).
+/// Minimap image size in pixels (square).
 pub const MINIMAP_SIZE: u32 = 768;
 
 /// Icon size in pixels for rasterized ship icons.
 pub const ICON_SIZE: u32 = 24;
 
-/// Load an image from the packed game files.
 pub fn load_packed_image(
     path: &str,
     file_tree: &FileNode,
@@ -32,22 +30,26 @@ pub fn load_packed_image(
     None
 }
 
-/// Load and composite the minimap image (water + land layers) from packed game files.
 pub fn load_map_image(
     map_name: &str,
     file_tree: &FileNode,
     pkg_loader: &PkgFileLoader,
 ) -> Option<RgbImage> {
+    // map_name from meta is e.g. "spaces/28_naval_mission"
+    // minimap images live at spaces/<map>/minimap.png in the packed files
     let bare_name = map_name.strip_prefix("spaces/").unwrap_or(map_name);
 
     let water_path = format!("spaces/{}/minimap_water.png", bare_name);
     let land_path = format!("spaces/{}/minimap.png", bare_name);
 
+    // Load water (background) and land (foreground with alpha) separately,
+    // then composite land over water to get the final map image.
     let water = load_packed_image(&water_path, file_tree, pkg_loader);
     let land = load_packed_image(&land_path, file_tree, pkg_loader);
 
     let result = match (water, land) {
         (Some(water_img), Some(land_img)) => {
+            // Composite: start with water, overlay land using alpha
             let mut base = water_img.to_rgba8();
             let overlay = land_img.to_rgba8();
             image::imageops::overlay(&mut base, &overlay, 0, 0);
@@ -87,7 +89,6 @@ pub fn load_map_image(
     Some(result)
 }
 
-/// Load map metadata (space dimensions) from packed game files.
 pub fn load_map_info(
     map_name: &str,
     file_tree: &FileNode,
@@ -95,6 +96,7 @@ pub fn load_map_info(
 ) -> Option<map_data::MapInfo> {
     let bare_name = map_name.strip_prefix("spaces/").unwrap_or(map_name);
 
+    // Try multiple path variants — the virtual filesystem layout may differ
     let candidates = [
         format!("spaces/{}/space.settings", bare_name),
         format!("content/gameplay/{}/space.settings", bare_name),
@@ -125,10 +127,13 @@ pub fn load_map_info(
     let content = String::from_utf8_lossy(&buf);
     let doc = roxmltree::Document::parse(&content).ok()?;
 
+    // Helper: read a value either as an attribute on `node` or as a child element's text
     let read_value = |parent: &roxmltree::Node, name: &str| -> Option<String> {
+        // Try attribute first (e.g. <bounds minX="-9" />)
         if let Some(v) = parent.attribute(name) {
             return Some(v.to_string());
         }
+        // Then try child element (e.g. <bounds><minX> -9 </minX></bounds>)
         parent
             .children()
             .find(|c| c.has_tag_name(name))
@@ -142,17 +147,21 @@ pub fn load_map_info(
     let min_y: i32 = read_value(&bounds, "minY")?.parse().ok()?;
     let max_y: i32 = read_value(&bounds, "maxY")?.parse().ok()?;
 
+    // chunkSize can be a child element of root or of <terrain>
     let chunk_size: f64 = doc
         .descendants()
         .find(|n| n.has_tag_name("chunkSize"))
         .and_then(|n| n.text().and_then(|t| t.trim().parse().ok()))
         .unwrap_or(100.0);
 
+    // Formula from Python spaces.py:
+    // w = len(range(min_x, max_x + 1)) * chunk_size - 4 * chunk_size
     let chunks_x = (max_x - min_x + 1) as f64;
     let chunks_y = (max_y - min_y + 1) as f64;
     let space_w = ((chunks_x - 4.0) * chunk_size).round() as i32;
     let space_h = ((chunks_y - 4.0) * chunk_size).round() as i32;
 
+    // Use the larger dimension as space_size (maps should be square)
     let space_size = space_w.max(space_h);
 
     println!(
@@ -164,6 +173,7 @@ pub fn load_map_info(
 }
 
 /// Load and rasterize ship SVG icons from game files.
+/// Returns a map from species name to RGBA image.
 pub fn load_ship_icons(
     file_tree: &FileNode,
     pkg_loader: &PkgFileLoader,
@@ -201,7 +211,7 @@ pub fn load_ship_icons(
     icons
 }
 
-/// Load plane icons (pre-colored PNGs) from game files.
+/// Load all plane icons from game files into a HashMap keyed by name (e.g. "fighter_ally").
 pub fn load_plane_icons(
     file_tree: &FileNode,
     pkg_loader: &PkgFileLoader,
@@ -213,6 +223,7 @@ pub fn load_plane_icons(
     ];
     let suffixes = ["ally", "enemy", "own", "division", "teamkiller"];
     let base_names = [
+        // controllable
         "fighter_he",
         "fighter_ap",
         "fighter_he_st2024",
@@ -225,16 +236,19 @@ pub fn load_plane_icons(
         "torpedo_regular_st2024",
         "torpedo_deepwater",
         "auxiliary",
+        // consumables
         "fighter",
         "fighter_upgrade",
         "scout",
         "smoke",
+        // airsupport
         "bomber_depth_charge",
         "bomber_mine",
     ];
 
     let mut icons = HashMap::new();
     for dir in &dirs {
+        // Use the last path component as namespace (e.g. "consumables", "controllable", "airsupport")
         let dir_name = dir.rsplit('/').next().unwrap_or(dir);
         for base in &base_names {
             for suffix in &suffixes {
@@ -263,6 +277,7 @@ pub fn rasterize_svg(svg_data: &[u8], size: u32) -> Option<RgbaImage> {
 
     let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
 
+    // Center the icon in the output
     let offset_x = (size as f32 - tree_size.width() * scale) / 2.0;
     let offset_y = (size as f32 - tree_size.height() * scale) / 2.0;
     let transform =

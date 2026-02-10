@@ -9,15 +9,6 @@ use imageproc::rect::Rect;
 
 use crate::draw_command::{DrawCommand, RenderTarget, ShipVisibility};
 
-const COLOR_DEAD: Rgb<u8> = Rgb([128, 128, 128]);
-
-const COLOR_TORPEDO: Rgb<u8> = Rgb([254, 77, 42]);
-const COLOR_TORPEDO_FRIENDLY: Rgb<u8> = Rgb([76, 232, 170]);
-const COLOR_SHOT: Rgb<u8> = Rgb([255, 200, 50]);
-
-const COLOR_TEAM_GREEN: Rgb<u8> = Rgb([76, 232, 170]);
-const COLOR_TEAM_RED: Rgb<u8> = Rgb([254, 77, 42]);
-
 const COLOR_TEXT: Rgb<u8> = Rgb([255, 255, 255]);
 const COLOR_TEXT_SHADOW: Rgb<u8> = Rgb([0, 0, 0]);
 
@@ -72,15 +63,22 @@ fn draw_ship_outline(image: &mut RgbImage, x: i32, y: i32, yaw: f32, color: Rgb<
     draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), color);
 }
 
-/// Draw a ship as a gray, semi-transparent circle (for undetected ships, no icon fallback).
-fn draw_ship_undetected(image: &mut RgbImage, x: i32, y: i32, yaw: f32, radius: i32) {
+/// Draw a ship as a semi-transparent circle (for undetected ships, no icon fallback).
+fn draw_ship_undetected(
+    image: &mut RgbImage,
+    x: i32,
+    y: i32,
+    yaw: f32,
+    color: Rgb<u8>,
+    opacity: f32,
+    radius: i32,
+) {
     let w = image.width() as i32;
     let h = image.height() as i32;
     if x < -radius || x >= w + radius || y < -radius || y >= h + radius {
         return;
     }
 
-    let opacity = 0.4f32;
     let r2 = (radius * radius) as f32;
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -92,9 +90,9 @@ fn draw_ship_undetected(image: &mut RgbImage, x: i32, y: i32, yaw: f32, radius: 
             if px >= 0 && px < w && py >= 0 && py < h {
                 let bg = image.get_pixel(px as u32, py as u32);
                 let blended = Rgb([
-                    (COLOR_DEAD[0] as f32 * opacity + bg[0] as f32 * (1.0 - opacity)) as u8,
-                    (COLOR_DEAD[1] as f32 * opacity + bg[1] as f32 * (1.0 - opacity)) as u8,
-                    (COLOR_DEAD[2] as f32 * opacity + bg[2] as f32 * (1.0 - opacity)) as u8,
+                    (color[0] as f32 * opacity + bg[0] as f32 * (1.0 - opacity)) as u8,
+                    (color[1] as f32 * opacity + bg[1] as f32 * (1.0 - opacity)) as u8,
+                    (color[2] as f32 * opacity + bg[2] as f32 * (1.0 - opacity)) as u8,
                 ]);
                 image.put_pixel(px as u32, py as u32, blended);
             }
@@ -104,29 +102,29 @@ fn draw_ship_undetected(image: &mut RgbImage, x: i32, y: i32, yaw: f32, radius: 
     let line_len = (radius + 4) as f32;
     let end_x = x as f32 + yaw.cos() * line_len;
     let end_y = y as f32 - yaw.sin() * line_len;
-    draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), COLOR_DEAD);
+    draw_line_segment_mut(image, (x as f32, y as f32), (end_x, end_y), color);
 }
 
 /// Draw a dead ship marker (X shape).
-fn draw_dead_ship(image: &mut RgbImage, x: i32, y: i32) {
+fn draw_dead_ship(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
     let size = 4.0f32;
     draw_line_segment_mut(
         image,
         (x as f32 - size, y as f32 - size),
         (x as f32 + size, y as f32 + size),
-        COLOR_DEAD,
+        color,
     );
     draw_line_segment_mut(
         image,
         (x as f32 + size, y as f32 - size),
         (x as f32 - size, y as f32 + size),
-        COLOR_DEAD,
+        color,
     );
 }
 
 /// Draw an artillery shot trajectory line.
-fn draw_shot_line(image: &mut RgbImage, x1: f32, y1: f32, x2: f32, y2: f32) {
-    draw_line_segment_mut(image, (x1, y1), (x2, y2), COLOR_SHOT);
+fn draw_shot_line(image: &mut RgbImage, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb<u8>) {
+    draw_line_segment_mut(image, (x1, y1), (x2, y2), color);
 }
 
 /// Draw a torpedo dot.
@@ -140,11 +138,9 @@ fn draw_torpedo(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
 }
 
 /// Draw a smoke screen as a semi-transparent filled circle.
-fn draw_smoke(image: &mut RgbImage, x: i32, y: i32, radius: i32) {
+fn draw_smoke(image: &mut RgbImage, x: i32, y: i32, radius: i32, smoke_color: [u8; 3], alpha: f32) {
     let w = image.width() as i32;
     let h = image.height() as i32;
-    let smoke_color: [u8; 3] = [180, 180, 180];
-    let alpha = 0.3f32;
 
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -268,25 +264,33 @@ impl RenderTarget for ImageTarget {
     fn draw(&mut self, cmd: &DrawCommand) {
         let y_off = HUD_HEIGHT as i32;
         match cmd {
-            DrawCommand::ShotTracer { from, to } => {
+            DrawCommand::ShotTracer { from, to, color } => {
                 draw_shot_line(
                     &mut self.canvas,
                     from.x as f32,
                     from.y as f32 + y_off as f32,
                     to.x as f32,
                     to.y as f32 + y_off as f32,
+                    Rgb(*color),
                 );
             }
-            DrawCommand::Torpedo { pos, friendly } => {
-                let color = if *friendly {
-                    COLOR_TORPEDO_FRIENDLY
-                } else {
-                    COLOR_TORPEDO
-                };
-                draw_torpedo(&mut self.canvas, pos.x, pos.y + y_off, color);
+            DrawCommand::Torpedo { pos, color } => {
+                draw_torpedo(&mut self.canvas, pos.x, pos.y + y_off, Rgb(*color));
             }
-            DrawCommand::Smoke { pos, radius } => {
-                draw_smoke(&mut self.canvas, pos.x, pos.y + y_off, *radius);
+            DrawCommand::Smoke {
+                pos,
+                radius,
+                color,
+                alpha,
+            } => {
+                draw_smoke(
+                    &mut self.canvas,
+                    pos.x,
+                    pos.y + y_off,
+                    *radius,
+                    *color,
+                    *alpha,
+                );
             }
             DrawCommand::Ship {
                 pos,
@@ -294,7 +298,7 @@ impl RenderTarget for ImageTarget {
                 species,
                 color,
                 visibility,
-                health_fraction,
+                opacity,
             } => {
                 let rgb = Rgb(*color);
                 let x = pos.x;
@@ -303,7 +307,16 @@ impl RenderTarget for ImageTarget {
                 // Try icon first, then fallback to circle
                 let drew_icon = if let Some(species_name) = species {
                     if let Some(icon) = self.ship_icons.get(species_name) {
-                        draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, *visibility);
+                        draw_ship_icon(
+                            &mut self.canvas,
+                            icon,
+                            x,
+                            y,
+                            *yaw,
+                            rgb,
+                            *visibility,
+                            *opacity,
+                        );
                         true
                     } else {
                         false
@@ -321,17 +334,30 @@ impl RenderTarget for ImageTarget {
                             draw_ship_outline(&mut self.canvas, x, y, *yaw, rgb, 5);
                         }
                         ShipVisibility::Undetected => {
-                            draw_ship_undetected(&mut self.canvas, x, y, *yaw, 5);
+                            draw_ship_undetected(&mut self.canvas, x, y, *yaw, rgb, *opacity, 5);
                         }
                     }
                 }
-
-                if let Some(frac) = health_fraction {
-                    draw_health_bar(&mut self.canvas, x, y, *frac);
-                }
             }
-            DrawCommand::DeadShip { pos } => {
-                draw_dead_ship(&mut self.canvas, pos.x, pos.y + y_off);
+            DrawCommand::HealthBar {
+                pos,
+                fraction,
+                fill_color,
+                background_color,
+                background_alpha,
+            } => {
+                draw_health_bar(
+                    &mut self.canvas,
+                    pos.x,
+                    pos.y + y_off,
+                    *fraction,
+                    Rgb(*fill_color),
+                    Rgb(*background_color),
+                    *background_alpha,
+                );
+            }
+            DrawCommand::DeadShip { pos, color } => {
+                draw_dead_ship(&mut self.canvas, pos.x, pos.y + y_off, Rgb(*color));
             }
             DrawCommand::Plane {
                 pos,
@@ -344,8 +370,20 @@ impl RenderTarget for ImageTarget {
                     draw_plane_dot(&mut self.canvas, pos.x, pos.y + y_off, Rgb(*fallback_color));
                 }
             }
-            DrawCommand::ScoreBar { team0, team1 } => {
-                draw_score_bar(&mut self.canvas, *team0, *team1, &self.font);
+            DrawCommand::ScoreBar {
+                team0,
+                team1,
+                team0_color,
+                team1_color,
+            } => {
+                draw_score_bar(
+                    &mut self.canvas,
+                    *team0,
+                    *team1,
+                    Rgb(*team0_color),
+                    Rgb(*team1_color),
+                    &self.font,
+                );
             }
             DrawCommand::Timer { seconds } => {
                 draw_timer(&mut self.canvas, *seconds, &self.font);
@@ -372,36 +410,43 @@ fn draw_plane_dot(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
 }
 
 /// Draw the team score bar at the top of the frame.
-fn draw_score_bar(image: &mut RgbImage, team0_score: i32, team1_score: i32, font: &FontRef) {
+fn draw_score_bar(
+    image: &mut RgbImage,
+    team0_score: i32,
+    team1_score: i32,
+    team0_color: Rgb<u8>,
+    team1_color: Rgb<u8>,
+    font: &FontRef,
+) {
     let width = image.width();
     let bar_height = 20u32;
     let total = (team0_score + team1_score).max(1) as f32;
-    let green_width = ((team0_score as f32 / total) * width as f32) as u32;
+    let team0_width = ((team0_score as f32 / total) * width as f32) as u32;
 
-    // Green bar (team 0 / allies)
-    if green_width > 0 {
+    // Team 0 bar
+    if team0_width > 0 {
         draw_filled_rect_mut(
             image,
-            Rect::at(0, 0).of_size(green_width, bar_height),
-            COLOR_TEAM_GREEN,
+            Rect::at(0, 0).of_size(team0_width, bar_height),
+            team0_color,
         );
     }
-    // Red bar (team 1 / enemies)
-    if green_width < width {
+    // Team 1 bar
+    if team0_width < width {
         draw_filled_rect_mut(
             image,
-            Rect::at(green_width as i32, 0).of_size(width - green_width, bar_height),
-            COLOR_TEAM_RED,
+            Rect::at(team0_width as i32, 0).of_size(width - team0_width, bar_height),
+            team1_color,
         );
     }
 
     // Score text
     let scale = PxScale::from(14.0);
-    let green_text = format!("{}", team0_score);
-    let red_text = format!("{}", team1_score);
-    draw_text_mut(image, COLOR_TEXT, 5, 3, scale, font, &green_text);
-    let red_x = width as i32 - (red_text.len() as i32 * 9) - 5;
-    draw_text_mut(image, COLOR_TEXT, red_x, 3, scale, font, &red_text);
+    let team0_text = format!("{}", team0_score);
+    let team1_text = format!("{}", team1_score);
+    draw_text_mut(image, COLOR_TEXT, 5, 3, scale, font, &team0_text);
+    let team1_x = width as i32 - (team1_text.len() as i32 * 9) - 5;
+    draw_text_mut(image, COLOR_TEXT, team1_x, 3, scale, font, &team1_text);
 }
 
 /// Draw the game timer.
@@ -523,8 +568,15 @@ fn draw_grid(image: &mut RgbImage, minimap_size: u32, y_off: u32, font: &FontRef
 /// Draw a health bar below a ship icon.
 ///
 /// `fraction` is current health / max health (0.0 to 1.0).
-/// The bar is colored green→yellow→red based on health remaining.
-fn draw_health_bar(image: &mut RgbImage, x: i32, y: i32, fraction: f32) {
+fn draw_health_bar(
+    image: &mut RgbImage,
+    x: i32,
+    y: i32,
+    fraction: f32,
+    fill_color: Rgb<u8>,
+    bg_color: Rgb<u8>,
+    bg_alpha: f32,
+) {
     let bar_w = 20i32;
     let bar_h = 3i32;
     let bar_x = x - bar_w / 2;
@@ -534,19 +586,6 @@ fn draw_health_bar(image: &mut RgbImage, x: i32, y: i32, fraction: f32) {
     let img_h = image.height() as i32;
 
     let fill_w = (fraction.clamp(0.0, 1.0) * bar_w as f32).round() as i32;
-
-    // Health color: green at full, yellow at half, red at low
-    let fill_color = if fraction > 0.5 {
-        let t = (fraction - 0.5) * 2.0;
-        Rgb([((1.0 - t) * 255.0) as u8, 255, 0])
-    } else {
-        let t = fraction * 2.0;
-        Rgb([255, (t * 255.0) as u8, 0])
-    };
-
-    // Background (dark)
-    let bg_color = Rgb([40u8, 40, 40]);
-    let bg_alpha = 0.6f32;
 
     for dy in 0..bar_h {
         for dx in 0..bar_w {
@@ -585,6 +624,7 @@ fn draw_ship_icon(
     yaw: f32,
     color: Rgb<u8>,
     visibility: ShipVisibility,
+    opacity: f32,
 ) {
     let iw = icon.width() as i32;
     let ih = icon.height() as i32;
@@ -592,12 +632,6 @@ fn draw_ship_icon(
     let cy = ih as f32 / 2.0;
     let img_w = image.width() as i32;
     let img_h = image.height() as i32;
-
-    let (draw_color, opacity) = match visibility {
-        ShipVisibility::Visible => (color, 1.0f32),
-        ShipVisibility::MinimapOnly => (color, 1.0),
-        ShipVisibility::Undetected => (COLOR_DEAD, 0.4),
-    };
 
     // The SVG icons point upward (north = -Y in screen coords). In game coordinates,
     // yaw=0 means east (+X) and increases counter-clockwise. The screen-space rotation
@@ -653,9 +687,9 @@ fn draw_ship_icon(
             }
 
             let tinted = Rgb([
-                (draw_color[0] as f32 * luminance) as u8,
-                (draw_color[1] as f32 * luminance) as u8,
-                (draw_color[2] as f32 * luminance) as u8,
+                (color[0] as f32 * luminance) as u8,
+                (color[1] as f32 * luminance) as u8,
+                (color[2] as f32 * luminance) as u8,
             ]);
 
             let bg = image.get_pixel(dest_x as u32, dest_y as u32);

@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+name = "minimap_renderer"
+
+[[bin]]
+name = "minimap-renderer"
+path = "src/main.rs"
+
 [dependencies]
 wows_replays = { path = "../parser" }
 wowsunpack = { workspace = true }

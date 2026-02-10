@@ -14,32 +14,27 @@ use crate::draw_command::RenderTarget;
 use crate::drawing::ImageTarget;
 use crate::renderer::MinimapRenderer;
 
-const TOTAL_FRAMES: usize = 1800;
-const FPS: f64 = 30.0;
+pub const TOTAL_FRAMES: usize = 1800;
+pub const FPS: f64 = 30.0;
 const MINIMAP_SIZE: u32 = 768;
-const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + 32; // 800
+pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + 32; // 800
 
-/// Mode for dumping a single frame instead of rendering a full video.
 #[derive(Clone, Debug)]
 pub enum DumpMode {
     Frame(usize),
     Midpoint,
 }
 
-/// Video encoder that drives frame-by-frame rendering and H.264/MP4 output.
+/// Handles H.264 encoding and MP4 muxing for the minimap renderer.
 ///
-/// Owns the frame timing state and video encoding pipeline. Calls into
-/// `MinimapRenderer::draw_frame()` and `ImageTarget` to produce each frame,
-/// then encodes to H.264 on the fly.
+/// Encodes frames on-the-fly to avoid storing raw RGB data in memory.
+/// Stores encoded H.264 Annex B NAL data per frame, then muxes to MP4 at the end.
 pub struct VideoEncoder {
     output_path: String,
     dump_mode: Option<DumpMode>,
     game_duration: f32,
     last_rendered_frame: i64,
-
-    // H.264 encoder (created lazily on first video frame)
     encoder: Option<Encoder>,
-    // Encoded H.264 Annex B NAL data per frame
     h264_frames: Vec<Vec<u8>>,
 }
 
@@ -96,15 +91,16 @@ impl VideoEncoder {
         Ok(())
     }
 
-    /// Called after each packet is processed by the controller.
+    /// Called before each packet is processed by the controller.
     ///
     /// If the new clock has crossed one or more frame boundaries, renders
-    /// frames from the controller's current (up-to-date) state and encodes them.
+    /// frames from the controller's current state (which reflects all
+    /// packets up to but not including this one).
     pub fn advance_clock(
         &mut self,
         new_clock: GameClock,
-        renderer: &mut MinimapRenderer,
         controller: &dyn BattleControllerState,
+        renderer: &mut MinimapRenderer,
         target: &mut ImageTarget,
     ) {
         if self.game_duration <= 0.0 {
@@ -119,6 +115,9 @@ impl VideoEncoder {
             if self.last_rendered_frame >= TOTAL_FRAMES as i64 {
                 break;
             }
+
+            // Update squadron info for any new planes
+            renderer.update_squadron_info(controller);
 
             let commands = renderer.draw_frame(controller);
 
@@ -175,17 +174,20 @@ impl VideoEncoder {
     /// Finalize: flush any remaining frames and write the video file.
     pub fn finish(
         &mut self,
-        renderer: &mut MinimapRenderer,
         controller: &dyn BattleControllerState,
+        renderer: &mut MinimapRenderer,
         target: &mut ImageTarget,
     ) -> anyhow::Result<()> {
+        // Render up to the actual battle end (or last packet), not meta.duration.
+        // This avoids duplicating frozen frames when the match ends early.
         let end_clock = controller.battle_end_clock().unwrap_or(controller.clock());
-        self.advance_clock(end_clock, renderer, controller, target);
+        self.advance_clock(end_clock, controller, renderer, target);
 
         if self.dump_mode.is_some() {
             return Ok(());
         }
 
+        // Mux the already-encoded H.264 frames into MP4
         self.mux_to_mp4()
     }
 
@@ -195,6 +197,7 @@ impl VideoEncoder {
             return Err(anyhow!("No frames to mux"));
         }
 
+        // Extract SPS and PPS from the first keyframe
         let first_frame = &self.h264_frames[0];
         let nals = parse_annexb_nals(first_frame);
         let sps = nals
@@ -206,6 +209,7 @@ impl VideoEncoder {
             .find(|n| (n[0] & 0x1f) == 8)
             .ok_or_else(|| anyhow!("No PPS found in first frame"))?;
 
+        // Setup MP4 writer
         let mp4_config = mp4::Mp4Config {
             major_brand: str::parse("isom").unwrap(),
             minor_version: 512,

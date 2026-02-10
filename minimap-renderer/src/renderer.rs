@@ -1,20 +1,12 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufWriter;
 
-use anyhow::{anyhow, Context};
-use bytes::Bytes;
-use openh264::encoder::{Encoder, EncoderConfig, FrameRate};
-use openh264::formats::{RgbSliceU8, YUVBuffer};
-use openh264::OpenH264API;
 use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::game_params::types::{GameParamProvider, PlaneCategory, Species};
 
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
-use wows_replays::types::{EntityId, GameClock, PlaneId, Relation};
+use wows_replays::types::{EntityId, PlaneId, Relation};
 
-use crate::draw_command::{DrawCommand, RenderTarget, ShipVisibility};
-use crate::drawing::ImageTarget;
+use crate::draw_command::{DrawCommand, ShipVisibility};
 use crate::map_data::{self, MinimapPos, WorldPos};
 
 /// Convert a parser NormalizedPos to a minimap pixel position.
@@ -25,20 +17,55 @@ fn normalized_to_minimap(pos: &wows_replays::types::NormalizedPos, output_size: 
     }
 }
 
-const TOTAL_FRAMES: usize = 1800;
-const FPS: f64 = 30.0;
 // Use 768 (multiple of 16) for H.264 macroblock alignment
 const MINIMAP_SIZE: u32 = 768;
-const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + 32; // 800
 
 // How long various effects persist in game-seconds
 const TRACER_LEN: f32 = 0.12; // fraction of total shot path length
 const KILL_FEED_DURATION: f32 = 10.0;
 
+// Visual constants
+const SMOKE_COLOR: [u8; 3] = [200, 200, 200];
+const SMOKE_ALPHA: f32 = 0.5;
+const TRACER_COLOR: [u8; 3] = [255, 255, 255];
+const TORPEDO_FRIENDLY_COLOR: [u8; 3] = [76, 232, 170];
+const TORPEDO_ENEMY_COLOR: [u8; 3] = [254, 77, 42];
+const DEAD_SHIP_COLOR: [u8; 3] = [200, 200, 200];
+const HP_BAR_FULL_COLOR: [u8; 3] = [0, 255, 0];
+const HP_BAR_MID_COLOR: [u8; 3] = [255, 255, 0];
+const HP_BAR_LOW_COLOR: [u8; 3] = [255, 0, 0];
+const HP_BAR_BG_COLOR: [u8; 3] = [50, 50, 50];
+const HP_BAR_BG_ALPHA: f32 = 0.7;
+const UNDETECTED_OPACITY: f32 = 0.4;
+const TEAM0_COLOR: [u8; 3] = [76, 232, 170]; // Green
+const TEAM1_COLOR: [u8; 3] = [254, 77, 42]; // Red
+
+/// Configurable rendering options.
 #[derive(Clone, Debug)]
-pub enum DumpMode {
-    Frame(usize),
-    Midpoint,
+pub struct RenderOptions {
+    pub show_hp_bars: bool,
+    pub show_tracers: bool,
+    pub show_torpedoes: bool,
+    pub show_planes: bool,
+    pub show_smoke: bool,
+    pub show_score: bool,
+    pub show_timer: bool,
+    pub show_kill_feed: bool,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            show_hp_bars: true,
+            show_tracers: true,
+            show_torpedoes: true,
+            show_planes: true,
+            show_smoke: true,
+            show_score: true,
+            show_timer: true,
+            show_kill_feed: true,
+        }
+    }
 }
 
 struct SquadronInfo {
@@ -51,13 +78,11 @@ struct SquadronInfo {
 ///
 /// Reads live state from `BattleControllerState` at each frame boundary
 /// and emits `DrawCommand`s to a `RenderTarget`. No timelines are stored.
-/// Frames are encoded to H.264 on the fly to avoid storing raw RGB data.
 pub struct MinimapRenderer {
     // Config (immutable after construction)
-    output_path: String,
-    dump_mode: Option<DumpMode>,
     map_info: Option<map_data::MapInfo>,
     game_params: GameMetadataProvider,
+    options: RenderOptions,
 
     // Caches populated lazily from controller state
     squadron_info: HashMap<PlaneId, SquadronInfo>,
@@ -65,273 +90,86 @@ pub struct MinimapRenderer {
     player_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
     players_populated: bool,
-
-    // Frame tracking
-    game_duration: f32,
-    last_rendered_frame: i64,
-
-    // H.264 encoder (created lazily on first video frame)
-    encoder: Option<Encoder>,
-    // Encoded H.264 Annex B NAL data per frame (much smaller than raw RGB)
-    h264_frames: Vec<Vec<u8>>,
 }
 
 impl MinimapRenderer {
     pub fn new(
-        output_path: &str,
         map_info: Option<map_data::MapInfo>,
-        dump_mode: Option<DumpMode>,
         game_params: GameMetadataProvider,
-        game_duration: f32,
+        options: RenderOptions,
     ) -> Self {
         Self {
-            output_path: output_path.to_string(),
-            dump_mode,
             map_info,
             game_params,
+            options,
             squadron_info: HashMap::new(),
             player_species: HashMap::new(),
             player_names: HashMap::new(),
             player_relations: HashMap::new(),
             players_populated: false,
-            game_duration,
-            last_rendered_frame: -1,
-            encoder: None,
-            h264_frames: Vec::with_capacity(TOTAL_FRAMES),
         }
     }
 
-    /// Create the H.264 encoder on first use.
-    fn ensure_encoder(&mut self) -> anyhow::Result<()> {
-        if self.encoder.is_some() {
-            return Ok(());
-        }
-        let config = EncoderConfig::new()
-            .max_frame_rate(FrameRate::from_hz(FPS as f32))
-            .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
-            .rate_control_mode(openh264::encoder::RateControlMode::Bitrate)
-            .bitrate(openh264::encoder::BitRate::from_bps(20_000_000))
-            .qp(openh264::encoder::QpRange::new(0, 24))
-            .adaptive_quantization(false)
-            .background_detection(false);
-        self.encoder = Some(
-            Encoder::with_api_config(OpenH264API::from_source(), config)
-                .context("Failed to create H.264 encoder")?,
-        );
-        println!(
-            "Rendering {} frames ({}x{}, {:.1}s game time at {:.0} fps)...",
-            TOTAL_FRAMES, MINIMAP_SIZE, CANVAS_HEIGHT, self.game_duration, FPS
-        );
-        Ok(())
-    }
-
-    /// Encode a rendered frame to H.264 immediately.
-    fn encode_frame(&mut self, target: &ImageTarget) -> anyhow::Result<()> {
-        let encoder = self
-            .encoder
-            .as_mut()
-            .ok_or_else(|| anyhow!("Encoder not initialized"))?;
-        let frame_image = target.frame();
-        let rgb_data = frame_image.as_raw();
-        let rgb = RgbSliceU8::new(rgb_data, (MINIMAP_SIZE as usize, CANVAS_HEIGHT as usize));
-        let yuv = YUVBuffer::from_rgb_source(rgb);
-        let bitstream = encoder
-            .encode(&yuv)
-            .map_err(|e| anyhow!("H.264 encode error: {:?}", e))?;
-        self.h264_frames.push(bitstream.to_vec());
-        Ok(())
-    }
-
-    /// Called before each packet is processed by the controller.
-    ///
-    /// If the new clock has crossed one or more frame boundaries, renders
-    /// frames from the controller's current state (which reflects all
-    /// packets up to but not including this one).
-    pub fn advance_clock(
-        &mut self,
-        new_clock: GameClock,
-        controller: &dyn BattleControllerState,
-        target: &mut ImageTarget,
-    ) {
-        if self.game_duration <= 0.0 {
+    /// Populate player info from controller state (once).
+    pub fn populate_players(&mut self, controller: &dyn BattleControllerState) {
+        if self.players_populated {
             return;
         }
-
-        // Populate player info on first opportunity
-        self.populate_players(controller);
-
-        let frame_duration = self.game_duration / TOTAL_FRAMES as f32;
-        let target_frame = (new_clock.seconds() / frame_duration) as i64;
-
-        while self.last_rendered_frame < target_frame {
-            self.last_rendered_frame += 1;
-            if self.last_rendered_frame >= TOTAL_FRAMES as i64 {
-                break;
-            }
-
-            // Update squadron info for any new planes
-            self.update_squadron_info(controller);
-
-            let commands = self.draw_frame(controller);
-
-            if let Some(ref dump_mode) = self.dump_mode {
-                let dump_frame = match dump_mode {
-                    DumpMode::Frame(n) => *n as i64,
-                    DumpMode::Midpoint => TOTAL_FRAMES as i64 / 2,
-                };
-                if self.last_rendered_frame == dump_frame {
-                    target.begin_frame();
-                    for cmd in &commands {
-                        target.draw(cmd);
-                    }
-                    target.end_frame();
-
-                    let png_path = self.output_path.replace(".mp4", ".png");
-                    let png_path = if png_path == self.output_path {
-                        format!("{}.png", self.output_path)
-                    } else {
-                        png_path
-                    };
-                    if let Err(e) = target.frame().save(&png_path) {
-                        eprintln!("Error saving frame: {}", e);
-                    } else {
-                        let (w, h) = target.canvas_size();
-                        println!("Frame {} saved to {} ({}x{})", dump_frame, png_path, w, h);
-                    }
-                }
-            } else {
-                // Full video mode: render, encode to H.264 immediately
-                if let Err(e) = self.ensure_encoder() {
-                    eprintln!("Encoder error: {}", e);
-                    return;
-                }
-
-                target.begin_frame();
-                for cmd in &commands {
-                    target.draw(cmd);
-                }
-                target.end_frame();
-
-                if let Err(e) = self.encode_frame(target) {
-                    eprintln!("Encode error: {}", e);
-                    return;
-                }
-
-                if self.last_rendered_frame % 100 == 0 {
-                    println!("  Frame {}/{}", self.last_rendered_frame, TOTAL_FRAMES);
-                }
+        let players = controller.player_entities();
+        if players.is_empty() {
+            return;
+        }
+        for (entity_id, player) in players {
+            self.player_names
+                .insert(*entity_id, player.initial_state().username().to_string());
+            self.player_relations.insert(*entity_id, player.relation());
+            if let Some(species) = player.vehicle().species() {
+                let species_name = format!("{:?}", species);
+                self.player_species.insert(*entity_id, species_name);
             }
         }
+        self.players_populated = true;
     }
 
-    /// Finalize: flush any remaining frames and write the video file.
-    pub fn finish(
-        &mut self,
-        controller: &dyn BattleControllerState,
-        target: &mut ImageTarget,
-    ) -> anyhow::Result<()> {
-        // Render up to the actual battle end (or last packet), not meta.duration.
-        // This avoids duplicating frozen frames when the match ends early.
-        let end_clock = controller.battle_end_clock().unwrap_or(controller.clock());
-        self.advance_clock(end_clock, controller, target);
-
-        if self.dump_mode.is_some() {
-            return Ok(());
-        }
-
-        // Mux the already-encoded H.264 frames into MP4
-        self.mux_to_mp4()
-    }
-
-    /// Mux pre-encoded H.264 Annex B frames into an MP4 file.
-    fn mux_to_mp4(&self) -> anyhow::Result<()> {
-        if self.h264_frames.is_empty() {
-            return Err(anyhow!("No frames to mux"));
-        }
-
-        // Extract SPS and PPS from the first keyframe
-        let first_frame = &self.h264_frames[0];
-        let nals = parse_annexb_nals(first_frame);
-        let sps = nals
-            .iter()
-            .find(|n| (n[0] & 0x1f) == 7)
-            .ok_or_else(|| anyhow!("No SPS found in first frame"))?;
-        let pps = nals
-            .iter()
-            .find(|n| (n[0] & 0x1f) == 8)
-            .ok_or_else(|| anyhow!("No PPS found in first frame"))?;
-
-        // Setup MP4 writer
-        let mp4_config = mp4::Mp4Config {
-            major_brand: str::parse("isom").unwrap(),
-            minor_version: 512,
-            compatible_brands: vec![
-                str::parse("isom").unwrap(),
-                str::parse("iso2").unwrap(),
-                str::parse("avc1").unwrap(),
-                str::parse("mp41").unwrap(),
-            ],
-            timescale: 1000,
-        };
-
-        let file = File::create(&self.output_path).context("Failed to create output file")?;
-        let writer = BufWriter::new(file);
-        let mut mp4_writer = mp4::Mp4Writer::write_start(writer, &mp4_config)?;
-
-        let track_config = mp4::TrackConfig {
-            track_type: mp4::TrackType::Video,
-            timescale: 1000,
-            language: "und".to_string(),
-            media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
-                width: MINIMAP_SIZE as u16,
-                height: CANVAS_HEIGHT as u16,
-                seq_param_set: sps.to_vec(),
-                pic_param_set: pps.to_vec(),
-            }),
-        };
-        mp4_writer.add_track(&track_config)?;
-
-        let sample_duration = 1000 / FPS as u32;
-
-        for (frame_idx, annexb_data) in self.h264_frames.iter().enumerate() {
-            if annexb_data.is_empty() {
+    /// Update squadron info for any new planes in the controller.
+    pub fn update_squadron_info(&mut self, controller: &dyn BattleControllerState) {
+        for (plane_id, plane) in controller.active_planes() {
+            if self.squadron_info.contains_key(plane_id) {
                 continue;
             }
-            let nals = parse_annexb_nals(annexb_data);
-            let is_sync = nals.iter().any(|n| (n[0] & 0x1f) == 5);
-
-            let mut avcc_data = Vec::new();
-            for nal in &nals {
-                let nal_type = nal[0] & 0x1f;
-                if nal_type == 7 || nal_type == 8 {
-                    continue;
-                }
-                let len = nal.len() as u32;
-                avcc_data.extend_from_slice(&len.to_be_bytes());
-                avcc_data.extend_from_slice(nal);
-            }
-
-            if avcc_data.is_empty() {
-                continue;
-            }
-
-            let sample = mp4::Mp4Sample {
-                start_time: frame_idx as u64 * sample_duration as u64,
-                duration: sample_duration,
-                rendering_offset: 0,
-                is_sync,
-                bytes: Bytes::from(avcc_data),
+            let param = self.game_params.game_param_by_id(plane.params_id.raw());
+            let aircraft = param.as_ref().and_then(|p| p.aircraft());
+            let category = aircraft
+                .map(|a| a.category())
+                .unwrap_or(&PlaneCategory::Controllable);
+            let is_consumable = matches!(
+                category,
+                PlaneCategory::Consumable | PlaneCategory::Airsupport
+            );
+            let ammo_type = aircraft.map(|a| a.ammo_type()).unwrap_or("");
+            let icon_base = param
+                .as_ref()
+                .and_then(|p| p.species())
+                .map(|sp| species_to_icon_base(sp, is_consumable, ammo_type))
+                .unwrap_or_else(|| "fighter".to_string());
+            let icon_dir = match category {
+                PlaneCategory::Consumable => "consumables",
+                PlaneCategory::Airsupport => "airsupport",
+                PlaneCategory::Controllable => "controllable",
             };
-            mp4_writer.write_sample(1, &sample)?;
+            self.squadron_info.insert(
+                *plane_id,
+                SquadronInfo {
+                    owner_id: plane.owner_id,
+                    icon_base,
+                    icon_dir,
+                },
+            );
         }
-
-        mp4_writer.write_end()?;
-        println!("Video saved to {}", self.output_path);
-        Ok(())
     }
 
     /// Produce draw commands for the current frame from controller state.
-    fn draw_frame(&self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
+    pub fn draw_frame(&self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
         let map_info = match self.map_info.as_ref() {
             Some(info) => info,
             None => return Vec::new(),
@@ -341,89 +179,106 @@ impl MinimapRenderer {
         let mut commands = Vec::new();
 
         // 1. Score bar
-        let scores = controller.team_scores();
-        if scores.len() >= 2 {
-            commands.push(DrawCommand::ScoreBar {
-                team0: scores[0].score as i32,
-                team1: scores[1].score as i32,
-            });
-        }
-
-        // 2. Artillery shot tracers
-        for shot in controller.active_shots() {
-            for shot_data in &shot.salvo.shots {
-                let origin = WorldPos {
-                    x: shot_data.origin.0,
-                    y: shot_data.origin.1,
-                    z: shot_data.origin.2,
-                };
-                let target = WorldPos {
-                    x: shot_data.target.0,
-                    y: shot_data.target.1,
-                    z: shot_data.target.2,
-                };
-                let dx = target.x - origin.x;
-                let dz = target.z - origin.z;
-                let distance = (dx * dx + dz * dz).sqrt();
-                let flight_duration = if shot_data.speed > 0.0 {
-                    distance / shot_data.speed
-                } else {
-                    3.0
-                };
-
-                let elapsed = clock - shot.fired_at;
-                if elapsed < 0.0 || elapsed > flight_duration {
-                    continue;
-                }
-                let frac = elapsed / flight_duration;
-                let head = origin.lerp(target, frac);
-                let tail = origin.lerp(target, (frac - TRACER_LEN).max(0.0));
-                commands.push(DrawCommand::ShotTracer {
-                    from: map_info.world_to_minimap(tail, MINIMAP_SIZE),
-                    to: map_info.world_to_minimap(head, MINIMAP_SIZE),
+        if self.options.show_score {
+            let scores = controller.team_scores();
+            if scores.len() >= 2 {
+                commands.push(DrawCommand::ScoreBar {
+                    team0: scores[0].score as i32,
+                    team1: scores[1].score as i32,
+                    team0_color: TEAM0_COLOR,
+                    team1_color: TEAM1_COLOR,
                 });
             }
         }
 
+        // 2. Artillery shot tracers
+        if self.options.show_tracers {
+            for shot in controller.active_shots() {
+                for shot_data in &shot.salvo.shots {
+                    let origin = WorldPos {
+                        x: shot_data.origin.0,
+                        y: shot_data.origin.1,
+                        z: shot_data.origin.2,
+                    };
+                    let target = WorldPos {
+                        x: shot_data.target.0,
+                        y: shot_data.target.1,
+                        z: shot_data.target.2,
+                    };
+                    let dx = target.x - origin.x;
+                    let dz = target.z - origin.z;
+                    let distance = (dx * dx + dz * dz).sqrt();
+                    let flight_duration = if shot_data.speed > 0.0 {
+                        distance / shot_data.speed
+                    } else {
+                        3.0
+                    };
+
+                    let elapsed = clock - shot.fired_at;
+                    if elapsed < 0.0 || elapsed > flight_duration {
+                        continue;
+                    }
+                    let frac = elapsed / flight_duration;
+                    let head = origin.lerp(target, frac);
+                    let tail = origin.lerp(target, (frac - TRACER_LEN).max(0.0));
+                    commands.push(DrawCommand::ShotTracer {
+                        from: map_info.world_to_minimap(tail, MINIMAP_SIZE),
+                        to: map_info.world_to_minimap(head, MINIMAP_SIZE),
+                        color: TRACER_COLOR,
+                    });
+                }
+            }
+        }
+
         // 3. Torpedoes
-        let half_space = map_info.space_size as f32 / 2.0;
-        for torp in controller.active_torpedoes() {
-            let elapsed = clock - torp.launched_at;
-            if elapsed < 0.0 {
-                continue;
+        if self.options.show_torpedoes {
+            let half_space = map_info.space_size as f32 / 2.0;
+            for torp in controller.active_torpedoes() {
+                let elapsed = clock - torp.launched_at;
+                if elapsed < 0.0 {
+                    continue;
+                }
+                let world = WorldPos {
+                    x: torp.torpedo.origin.0 + torp.torpedo.direction.0 * elapsed,
+                    y: 0.0,
+                    z: torp.torpedo.origin.2 + torp.torpedo.direction.2 * elapsed,
+                };
+                if world.x.abs() > half_space || world.z.abs() > half_space {
+                    continue;
+                }
+                let relation = self
+                    .player_relations
+                    .get(&torp.torpedo.owner_id)
+                    .copied()
+                    .unwrap_or(Relation::new(2));
+                let color = if relation.is_self() || relation.is_ally() {
+                    TORPEDO_FRIENDLY_COLOR
+                } else {
+                    TORPEDO_ENEMY_COLOR
+                };
+                commands.push(DrawCommand::Torpedo {
+                    pos: map_info.world_to_minimap(world, MINIMAP_SIZE),
+                    color,
+                });
             }
-            let world = WorldPos {
-                x: torp.torpedo.origin.0 + torp.torpedo.direction.0 * elapsed,
-                y: 0.0,
-                z: torp.torpedo.origin.2 + torp.torpedo.direction.2 * elapsed,
-            };
-            if world.x.abs() > half_space || world.z.abs() > half_space {
-                continue;
-            }
-            let relation = self
-                .player_relations
-                .get(&torp.torpedo.owner_id)
-                .copied()
-                .unwrap_or(Relation::new(2));
-            let friendly = relation.is_self() || relation.is_ally();
-            commands.push(DrawCommand::Torpedo {
-                pos: map_info.world_to_minimap(world, MINIMAP_SIZE),
-                friendly,
-            });
         }
 
         // 4. Smoke screens
-        for entity in controller.entities_by_id().values() {
-            if let Some(smoke_ref) = entity.smoke_screen_ref() {
-                let smoke = smoke_ref.borrow();
-                let px_radius =
-                    (smoke.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
-                for point in &smoke.points {
-                    let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
-                    commands.push(DrawCommand::Smoke {
-                        pos: px,
-                        radius: px_radius.max(3),
-                    });
+        if self.options.show_smoke {
+            for entity in controller.entities_by_id().values() {
+                if let Some(smoke_ref) = entity.smoke_screen_ref() {
+                    let smoke = smoke_ref.borrow();
+                    let px_radius =
+                        (smoke.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                    for point in &smoke.points {
+                        let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
+                        commands.push(DrawCommand::Smoke {
+                            pos: px,
+                            radius: px_radius.max(3),
+                            color: SMOKE_COLOR,
+                            alpha: SMOKE_ALPHA,
+                        });
+                    }
                 }
             }
         }
@@ -481,7 +336,7 @@ impl MinimapRenderer {
 
             // Compute yaw based on visibility:
             // - Detected: use minimap heading (most accurate for icon rotation)
-            // - Undetected: use world position yaw (minimap heading may be stale/wrong)
+            // - Undetected: prefer minimap heading (more reliable than stale world_yaw=0.0)
             let minimap_yaw =
                 minimap.map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.to_radians());
             let world_yaw = world.map(|sp| sp.yaw);
@@ -494,22 +349,46 @@ impl MinimapRenderer {
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
-                        species,
+                        species: species.clone(),
                         color,
                         visibility: ShipVisibility::Visible,
-                        health_fraction,
+                        opacity: 1.0,
                     });
+                    if self.options.show_hp_bars {
+                        if let Some(frac) = health_fraction {
+                            let fill_color = hp_bar_color(frac);
+                            commands.push(DrawCommand::HealthBar {
+                                pos: px,
+                                fraction: frac,
+                                fill_color,
+                                background_color: HP_BAR_BG_COLOR,
+                                background_alpha: HP_BAR_BG_ALPHA,
+                            });
+                        }
+                    }
                 } else if let Some(mm) = minimap {
                     // Minimap-only position
                     let px = normalized_to_minimap(&mm.position, MINIMAP_SIZE);
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
-                        species,
+                        species: species.clone(),
                         color,
                         visibility: ShipVisibility::MinimapOnly,
-                        health_fraction,
+                        opacity: 1.0,
                     });
+                    if self.options.show_hp_bars {
+                        if let Some(frac) = health_fraction {
+                            let fill_color = hp_bar_color(frac);
+                            commands.push(DrawCommand::HealthBar {
+                                pos: px,
+                                fraction: frac,
+                                fill_color,
+                                background_color: HP_BAR_BG_COLOR,
+                                background_alpha: HP_BAR_BG_ALPHA,
+                            });
+                        }
+                    }
                 }
             } else {
                 // Undetected — prefer minimap heading (more reliable than stale world_yaw=0.0)
@@ -519,20 +398,20 @@ impl MinimapRenderer {
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
-                        species,
+                        species: species.clone(),
                         color,
                         visibility: ShipVisibility::Undetected,
-                        health_fraction,
+                        opacity: UNDETECTED_OPACITY,
                     });
                 } else if let Some(mm) = minimap {
                     let px = normalized_to_minimap(&mm.position, MINIMAP_SIZE);
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
-                        species,
+                        species: species.clone(),
                         color,
                         visibility: ShipVisibility::Undetected,
-                        health_fraction,
+                        opacity: UNDETECTED_OPACITY,
                     });
                 }
             }
@@ -542,135 +421,86 @@ impl MinimapRenderer {
         for (_, dead) in dead_ships {
             if clock >= dead.clock {
                 let px = map_info.world_to_minimap(dead.position, MINIMAP_SIZE);
-                commands.push(DrawCommand::DeadShip { pos: px });
+                commands.push(DrawCommand::DeadShip {
+                    pos: px,
+                    color: DEAD_SHIP_COLOR,
+                });
             }
         }
 
         // 7. Planes
-        for (plane_id, plane) in controller.active_planes() {
-            let world = WorldPos {
-                x: plane.x,
-                y: 0.0,
-                z: plane.y,
-            };
-            let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
+        if self.options.show_planes {
+            for (plane_id, plane) in controller.active_planes() {
+                let world = WorldPos {
+                    x: plane.x,
+                    y: 0.0,
+                    z: plane.y,
+                };
+                let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
 
-            let info = self.squadron_info.get(plane_id);
-            let is_enemy = info
-                .and_then(|i| self.player_relations.get(&i.owner_id))
-                .map(|r| r.is_enemy())
-                .unwrap_or(false);
+                let info = self.squadron_info.get(plane_id);
+                let is_enemy = info
+                    .and_then(|i| self.player_relations.get(&i.owner_id))
+                    .map(|r| r.is_enemy())
+                    .unwrap_or(false);
 
-            let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
-            let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
-            let suffix = if is_enemy { "enemy" } else { "ally" };
-            let icon_key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
+                let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
+                let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
+                let suffix = if is_enemy { "enemy" } else { "ally" };
+                let icon_key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
 
-            let fallback_color = if is_enemy {
-                [254, 77, 42]
-            } else {
-                [76, 232, 170]
-            };
+                let fallback_color = if is_enemy {
+                    [254, 77, 42]
+                } else {
+                    [76, 232, 170]
+                };
 
-            commands.push(DrawCommand::Plane {
-                pos: px,
-                icon_key,
-                fallback_color,
-            });
+                commands.push(DrawCommand::Plane {
+                    pos: px,
+                    icon_key,
+                    fallback_color,
+                });
+            }
         }
 
         // 8. Kill feed
-        let kills = controller.kills();
-        let mut recent_kills = Vec::new();
-        for kill in kills.iter().rev() {
-            if clock >= kill.clock && clock <= kill.clock + KILL_FEED_DURATION {
-                let killer_name = self
-                    .player_names
-                    .get(&kill.killer)
-                    .cloned()
-                    .unwrap_or_else(|| format!("#{}", kill.killer));
-                let victim_name = self
-                    .player_names
-                    .get(&kill.victim)
-                    .cloned()
-                    .unwrap_or_else(|| format!("#{}", kill.victim));
-                recent_kills.push((killer_name, victim_name));
-                if recent_kills.len() >= 5 {
-                    break;
+        if self.options.show_kill_feed {
+            let kills = controller.kills();
+            let mut recent_kills = Vec::new();
+            for kill in kills.iter().rev() {
+                if clock >= kill.clock && clock <= kill.clock + KILL_FEED_DURATION {
+                    let killer_name = self
+                        .player_names
+                        .get(&kill.killer)
+                        .cloned()
+                        .unwrap_or_else(|| format!("#{}", kill.killer));
+                    let victim_name = self
+                        .player_names
+                        .get(&kill.victim)
+                        .cloned()
+                        .unwrap_or_else(|| format!("#{}", kill.victim));
+                    recent_kills.push((killer_name, victim_name));
+                    if recent_kills.len() >= 5 {
+                        break;
+                    }
                 }
             }
-        }
-        if !recent_kills.is_empty() {
-            recent_kills.reverse();
-            commands.push(DrawCommand::KillFeed {
-                entries: recent_kills,
-            });
+            if !recent_kills.is_empty() {
+                recent_kills.reverse();
+                commands.push(DrawCommand::KillFeed {
+                    entries: recent_kills,
+                });
+            }
         }
 
         // 9. Timer
-        commands.push(DrawCommand::Timer {
-            seconds: clock.seconds(),
-        });
+        if self.options.show_timer {
+            commands.push(DrawCommand::Timer {
+                seconds: clock.seconds(),
+            });
+        }
 
         commands
-    }
-
-    /// Populate player info from controller state (once).
-    fn populate_players(&mut self, controller: &dyn BattleControllerState) {
-        if self.players_populated {
-            return;
-        }
-        let players = controller.player_entities();
-        if players.is_empty() {
-            return;
-        }
-        for (entity_id, player) in players {
-            self.player_names
-                .insert(*entity_id, player.initial_state().username().to_string());
-            self.player_relations.insert(*entity_id, player.relation());
-            if let Some(species) = player.vehicle().species() {
-                let species_name = format!("{:?}", species);
-                self.player_species.insert(*entity_id, species_name);
-            }
-        }
-        self.players_populated = true;
-    }
-
-    /// Update squadron info for any new planes in the controller.
-    fn update_squadron_info(&mut self, controller: &dyn BattleControllerState) {
-        for (plane_id, plane) in controller.active_planes() {
-            if self.squadron_info.contains_key(plane_id) {
-                continue;
-            }
-            let param = self.game_params.game_param_by_id(plane.params_id.raw());
-            let aircraft = param.as_ref().and_then(|p| p.aircraft());
-            let category = aircraft
-                .map(|a| a.category())
-                .unwrap_or(&PlaneCategory::Controllable);
-            let is_consumable = matches!(
-                category,
-                PlaneCategory::Consumable | PlaneCategory::Airsupport
-            );
-            let ammo_type = aircraft.map(|a| a.ammo_type()).unwrap_or("");
-            let icon_base = param
-                .as_ref()
-                .and_then(|p| p.species())
-                .map(|sp| species_to_icon_base(sp, is_consumable, ammo_type))
-                .unwrap_or_else(|| "fighter".to_string());
-            let icon_dir = match category {
-                PlaneCategory::Consumable => "consumables",
-                PlaneCategory::Airsupport => "airsupport",
-                PlaneCategory::Controllable => "controllable",
-            };
-            self.squadron_info.insert(
-                *plane_id,
-                SquadronInfo {
-                    owner_id: plane.owner_id,
-                    icon_base,
-                    icon_dir,
-                },
-            );
-        }
     }
 }
 
@@ -682,6 +512,17 @@ fn ship_color_rgb(relation: Relation) -> [u8; 3] {
         [76, 232, 170]
     } else {
         [254, 77, 42]
+    }
+}
+
+/// Get the health bar fill color based on health fraction.
+fn hp_bar_color(fraction: f32) -> [u8; 3] {
+    if fraction > 0.66 {
+        HP_BAR_FULL_COLOR
+    } else if fraction > 0.33 {
+        HP_BAR_MID_COLOR
+    } else {
+        HP_BAR_LOW_COLOR
     }
 }
 
@@ -715,41 +556,4 @@ fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) 
             _ => format!("fighter_{ammo}"),
         }
     }
-}
-
-/// Parse Annex B byte stream into individual NAL units (without start codes).
-fn parse_annexb_nals(data: &[u8]) -> Vec<&[u8]> {
-    let mut nals = Vec::new();
-    let mut i = 0;
-    while i < data.len() {
-        if i + 2 < data.len() && data[i] == 0 && data[i + 1] == 0 {
-            let (start, _) = if i + 3 < data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
-                (i + 4, 4)
-            } else if data[i + 2] == 1 {
-                (i + 3, 3)
-            } else {
-                i += 1;
-                continue;
-            };
-            let mut end = start;
-            while end < data.len() {
-                if end + 2 < data.len()
-                    && data[end] == 0
-                    && data[end + 1] == 0
-                    && (data[end + 2] == 1
-                        || (end + 3 < data.len() && data[end + 2] == 0 && data[end + 3] == 1))
-                {
-                    break;
-                }
-                end += 1;
-            }
-            if end > start {
-                nals.push(&data[start..end]);
-            }
-            i = end;
-        } else {
-            i += 1;
-        }
-    }
-    nals
 }

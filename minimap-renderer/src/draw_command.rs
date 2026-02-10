@@ -16,14 +16,26 @@ pub enum ShipVisibility {
 /// The renderer reads game state and produces a sequence of these commands.
 /// A `RenderTarget` implementation consumes them to produce visual output,
 /// whether that's a software-rendered image or GPU draw calls.
+///
+/// All visual properties (colors, opacity, etc.) are fully resolved by the renderer,
+/// so backends don't need to duplicate game logic.
 #[derive(Debug)]
 pub enum DrawCommand {
     /// Artillery tracer line segment
-    ShotTracer { from: MinimapPos, to: MinimapPos },
+    ShotTracer {
+        from: MinimapPos,
+        to: MinimapPos,
+        color: [u8; 3],
+    },
     /// Torpedo dot
-    Torpedo { pos: MinimapPos, friendly: bool },
+    Torpedo { pos: MinimapPos, color: [u8; 3] },
     /// Smoke puff circle (alpha blended)
-    Smoke { pos: MinimapPos, radius: i32 },
+    Smoke {
+        pos: MinimapPos,
+        radius: i32,
+        color: [u8; 3],
+        alpha: f32,
+    },
     /// Ship with icon, rotation, color, visibility
     Ship {
         pos: MinimapPos,
@@ -32,10 +44,18 @@ pub enum DrawCommand {
         species: Option<String>,
         color: [u8; 3],
         visibility: ShipVisibility,
-        health_fraction: Option<f32>,
+        opacity: f32,
+    },
+    /// Health bar above a ship
+    HealthBar {
+        pos: MinimapPos,
+        fraction: f32,
+        fill_color: [u8; 3],
+        background_color: [u8; 3],
+        background_alpha: f32,
     },
     /// Dead ship X marker
-    DeadShip { pos: MinimapPos },
+    DeadShip { pos: MinimapPos, color: [u8; 3] },
     /// Plane icon
     Plane {
         pos: MinimapPos,
@@ -44,7 +64,12 @@ pub enum DrawCommand {
         fallback_color: [u8; 3],
     },
     /// Score bar
-    ScoreBar { team0: i32, team1: i32 },
+    ScoreBar {
+        team0: i32,
+        team1: i32,
+        team0_color: [u8; 3],
+        team1_color: [u8; 3],
+    },
     /// Game timer
     Timer { seconds: f32 },
     /// Kill feed entries (killer_name, victim_name)
