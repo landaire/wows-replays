@@ -201,6 +201,8 @@ impl AnalyzerMutBuilder for MinimapBuilder {
             plane_icons: self.plane_icons,
             game_params: self.game_params,
             player_species: HashMap::new(),
+            health_timeline: BTreeMap::new(),
+            max_health: HashMap::new(),
             positions: BTreeMap::new(),
             yaw_timeline: BTreeMap::new(),
             minimap_updates: Vec::new(),
@@ -237,6 +239,10 @@ struct MinimapRenderer {
     plane_icons: HashMap<String, RgbaImage>,
     game_params: GameMetadataProvider,
     player_species: HashMap<EntityId, String>,
+
+    // Health tracking: (clock, health) timeline per entity, and max health
+    health_timeline: BTreeMap<EntityId, Vec<(GameClock, f32)>>,
+    max_health: HashMap<EntityId, f32>,
 
     // Collected data — BTreeMaps for deterministic draw order
     positions: BTreeMap<EntityId, Vec<(GameClock, ShipSnapshot)>>,
@@ -561,6 +567,7 @@ impl MinimapRenderer {
                         yaw,
                         color,
                         drawing::ShipVisibility::Visible,
+                        game_time,
                     );
                 } else if let Some(update) = latest_minimap {
                     // Detected but no world position → MinimapOnly (outline at minimap coords)
@@ -573,6 +580,7 @@ impl MinimapRenderer {
                         update.heading,
                         color,
                         drawing::ShipVisibility::MinimapOnly,
+                        game_time,
                     );
                 }
             } else if let Some(disappear_update) = latest_minimap {
@@ -600,6 +608,7 @@ impl MinimapRenderer {
                         yaw,
                         color,
                         drawing::ShipVisibility::Undetected,
+                        game_time,
                     );
                 } else {
                     // No world position — use the minimap position from the disappearing event
@@ -612,6 +621,7 @@ impl MinimapRenderer {
                         disappear_update.heading,
                         color,
                         drawing::ShipVisibility::Undetected,
+                        game_time,
                     );
                 }
             }
@@ -1150,8 +1160,37 @@ impl AnalyzerMut for MinimapRenderer {
                 }
             }
 
+            DecodedPacketPayload::EntityProperty(prop) => {
+                if prop.property == "health" {
+                    if let Some(&val) = prop.value.float_32_ref() {
+                        self.health_timeline
+                            .entry(prop.entity_id)
+                            .or_default()
+                            .push((decoded.clock, val));
+                    }
+                }
+            }
+
             DecodedPacketPayload::EntityCreate(create) => {
-                if create.entity_type == "BattleLogic" {
+                if create.entity_type == "Vehicle" {
+                    let mh = create
+                        .props
+                        .get("maxHealth")
+                        .and_then(|v| v.float_32_ref().copied());
+                    let hp = create
+                        .props
+                        .get("health")
+                        .and_then(|v| v.float_32_ref().copied());
+                    if let Some(mh) = mh {
+                        self.max_health.insert(create.entity_id, mh);
+                    }
+                    if let Some(hp) = hp {
+                        self.health_timeline
+                            .entry(create.entity_id)
+                            .or_default()
+                            .push((decoded.clock, hp));
+                    }
+                } else if create.entity_type == "BattleLogic" {
                     self.extract_initial_scores(&create.props, decoded.clock);
                 } else if create.entity_type == "SmokeScreen" {
                     let radius = create
@@ -1245,7 +1284,27 @@ impl AnalyzerMut for MinimapRenderer {
 }
 
 impl MinimapRenderer {
+    /// Get the health fraction (0.0–1.0) for an entity at a given time.
+    fn health_fraction(&self, entity_id: EntityId, game_time: GameClock) -> Option<f32> {
+        let max = *self.max_health.get(&entity_id)?;
+        if max <= 0.0 {
+            return None;
+        }
+        let timeline = self.health_timeline.get(&entity_id)?;
+        if timeline.is_empty() {
+            return None;
+        }
+        let idx = timeline.partition_point(|(t, _)| *t <= game_time);
+        let hp = if idx > 0 {
+            timeline[idx - 1].1
+        } else {
+            return None;
+        };
+        Some((hp / max).clamp(0.0, 1.0))
+    }
+
     /// Draw a ship using its species icon if available, otherwise fall back to a circle.
+    /// Also draws a health bar below the ship when health data is available.
     fn draw_ship_or_icon(
         &self,
         frame: &mut RgbImage,
@@ -1255,10 +1314,14 @@ impl MinimapRenderer {
         yaw: f32,
         color: Rgb<u8>,
         visibility: drawing::ShipVisibility,
+        game_time: GameClock,
     ) {
         if let Some(species) = self.player_species.get(&entity_id) {
             if let Some(icon) = self.ship_icons.get(species) {
                 drawing::draw_ship_icon(frame, icon, x, y, yaw, color, visibility);
+                if let Some(frac) = self.health_fraction(entity_id, game_time) {
+                    drawing::draw_health_bar(frame, x, y, frac);
+                }
                 return;
             }
         }
@@ -1273,6 +1336,9 @@ impl MinimapRenderer {
             drawing::ShipVisibility::Undetected => {
                 drawing::draw_ship_undetected(frame, x, y, yaw, 5);
             }
+        }
+        if let Some(frac) = self.health_fraction(entity_id, game_time) {
+            drawing::draw_health_bar(frame, x, y, frac);
         }
     }
 

@@ -375,6 +375,58 @@ pub fn draw_grid(image: &mut RgbImage, minimap_size: u32, y_off: u32, font: &Fon
     }
 }
 
+/// Draw a health bar below a ship icon.
+///
+/// `fraction` is current health / max health (0.0 to 1.0).
+/// The bar is colored green→yellow→red based on health remaining.
+pub fn draw_health_bar(image: &mut RgbImage, x: i32, y: i32, fraction: f32) {
+    let bar_w = 20i32;
+    let bar_h = 3i32;
+    let bar_x = x - bar_w / 2;
+    let bar_y = y + 10; // below the ship icon
+
+    let img_w = image.width() as i32;
+    let img_h = image.height() as i32;
+
+    let fill_w = (fraction.clamp(0.0, 1.0) * bar_w as f32).round() as i32;
+
+    // Health color: green at full, yellow at half, red at low
+    let fill_color = if fraction > 0.5 {
+        let t = (fraction - 0.5) * 2.0;
+        Rgb([((1.0 - t) * 255.0) as u8, 255, 0])
+    } else {
+        let t = fraction * 2.0;
+        Rgb([255, (t * 255.0) as u8, 0])
+    };
+
+    // Background (dark)
+    let bg_color = Rgb([40u8, 40, 40]);
+    let bg_alpha = 0.6f32;
+
+    for dy in 0..bar_h {
+        for dx in 0..bar_w {
+            let px = bar_x + dx;
+            let py = bar_y + dy;
+            if px < 0 || px >= img_w || py < 0 || py >= img_h {
+                continue;
+            }
+            let bg = image.get_pixel(px as u32, py as u32).0;
+            if dx < fill_w {
+                // Filled portion
+                image.put_pixel(px as u32, py as u32, fill_color);
+            } else {
+                // Empty portion (semi-transparent dark background)
+                let blended = Rgb([
+                    (bg_color[0] as f32 * bg_alpha + bg[0] as f32 * (1.0 - bg_alpha)) as u8,
+                    (bg_color[1] as f32 * bg_alpha + bg[1] as f32 * (1.0 - bg_alpha)) as u8,
+                    (bg_color[2] as f32 * bg_alpha + bg[2] as f32 * (1.0 - bg_alpha)) as u8,
+                ]);
+                image.put_pixel(px as u32, py as u32, blended);
+            }
+        }
+    }
+}
+
 /// Get the ship color based on relation to the recording player.
 pub fn ship_color(relation: Relation) -> Rgb<u8> {
     if relation.is_self() {
