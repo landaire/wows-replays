@@ -1,3 +1,4 @@
+mod draw_command;
 mod drawing;
 mod map_data;
 mod renderer;
@@ -16,10 +17,12 @@ use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::rpc::entitydefs::{parse_scripts, EntitySpec};
 
 use image::{RgbImage, RgbaImage};
-use wows_replays::analyzer::{AnalyzerAdapter, AnalyzerMutBuilder};
+use wows_replays::analyzer::battle_controller::BattleController;
+use wows_replays::analyzer::Analyzer;
 use wows_replays::ReplayFile;
 
-use renderer::{DumpMode, MinimapBuilder};
+use drawing::ImageTarget;
+use renderer::{DumpMode, MinimapRenderer};
 
 const MINIMAP_SIZE: u32 = 768;
 
@@ -416,6 +419,8 @@ fn main() -> anyhow::Result<()> {
     println!("Loading game params...");
     let game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
         .map_err(|e| anyhow!("Failed to load GameParams: {:?}", e))?;
+    let controller_game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
+        .map_err(|e| anyhow!("Failed to load GameParams for controller: {:?}", e))?;
 
     println!("Loading ship icons...");
     let ship_icons = load_ship_icons(&file_tree, &pkg_loader);
@@ -429,21 +434,31 @@ fn main() -> anyhow::Result<()> {
     let map_image = load_map_image(map_name, &file_tree, &pkg_loader);
     let map_info = load_map_info(map_name, &file_tree, &pkg_loader);
 
-    let builder = MinimapBuilder::new(
-        output,
-        map_image,
-        map_info,
-        dump_mode,
-        ship_icons,
-        plane_icons,
-        game_params,
-    );
-    let processor = builder.build(&replay_file.meta);
+    let game_duration = replay_file.meta.duration as f32;
 
-    let mut p = wows_replays::packet2::Parser::new(&specs);
-    let mut analyzer_set = AnalyzerAdapter::new(vec![processor]);
-    p.parse_packets_mut::<AnalyzerAdapter>(&replay_file.packet_data, &mut analyzer_set)?;
-    analyzer_set.finish();
+    let mut target = ImageTarget::new(map_image, ship_icons, plane_icons);
+
+    let mut renderer =
+        MinimapRenderer::new(output, map_info, dump_mode, game_params, game_duration);
+
+    let mut controller = BattleController::new(&replay_file.meta, &controller_game_params);
+
+    let mut parser = wows_replays::packet2::Parser::new(&specs);
+    let mut remaining = &replay_file.packet_data[..];
+    while !remaining.is_empty() {
+        let (rest, packet) = parser
+            .parse_packet(remaining)
+            .map_err(|e| anyhow!("Packet parse error: {:?}", e))?;
+        remaining = rest;
+
+        // Render any frames whose boundary falls before this packet's clock
+        renderer.advance_clock(packet.clock, &controller, &mut target);
+
+        // Then update state with this packet
+        controller.process(&packet);
+    }
+    controller.finish();
+    renderer.finish(&controller, &mut target)?;
 
     println!("Done!");
     Ok(())

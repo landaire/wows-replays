@@ -5,7 +5,7 @@ use crate::packet2::Packet;
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
-use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
+use super::analyzer::Analyzer;
 
 pub struct SurveyStats {
     pub total_packets: usize,
@@ -43,10 +43,8 @@ impl SurveyBuilder {
             skip_decoder,
         }
     }
-}
 
-impl AnalyzerMutBuilder for SurveyBuilder {
-    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    pub fn build(self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         {
             let mut stats: RefMut<_> = self.stats.borrow_mut();
@@ -63,17 +61,17 @@ impl AnalyzerMutBuilder for SurveyBuilder {
 
 struct Survey {
     skip_decoder: bool,
-    decoder: Box<dyn AnalyzerMut>,
+    decoder: Box<dyn Analyzer>,
     stats: Rc<RefCell<SurveyStats>>,
     version: Version,
 }
 
-impl AnalyzerMut for Survey {
+impl Analyzer for Survey {
     fn finish(&mut self) {
         self.decoder.finish();
     }
 
-    fn process_mut(&mut self, packet: &Packet<'_, '_>) {
+    fn process(&mut self, packet: &Packet<'_, '_>) {
         // Do stuff and such
         let mut stats: RefMut<_> = self.stats.borrow_mut();
         if !self.skip_decoder {

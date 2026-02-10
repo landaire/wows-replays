@@ -18,10 +18,8 @@ impl TrailsBuilder {
             output: output.to_string(),
         }
     }
-}
 
-impl AnalyzerMutBuilder for TrailsBuilder {
-    fn build(self, meta: &wows_replays::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    pub fn build(self, meta: &wows_replays::ReplayMeta) -> Box<dyn Analyzer> {
         Box::new(TrailRenderer {
             trails: HashMap::new(),
             player_trail: vec![],
@@ -38,8 +36,8 @@ struct TrailRenderer {
     meta: Option<ReplayMeta>,
 }
 
-impl AnalyzerMut for TrailRenderer {
-    fn process_mut(&mut self, packet: &Packet<'_, '_>) {
+impl Analyzer for TrailRenderer {
+    fn process(&mut self, packet: &Packet<'_, '_>) {
         match &packet.payload {
             PacketType::Position(pos) => {
                 self.trails.entry(pos.pid).or_default();

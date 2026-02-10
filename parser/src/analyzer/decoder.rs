@@ -14,7 +14,7 @@ use wowsunpack::game_params::convert::pickle_to_json;
 use wowsunpack::rpc::typedefs::ArgValue;
 use wowsunpack::unpack_rpc_args;
 
-use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
+use super::analyzer::Analyzer;
 
 pub struct DecoderBuilder {
     silent: bool,
@@ -30,10 +30,8 @@ impl DecoderBuilder {
             path: output.map(|s| s.to_string()),
         }
     }
-}
 
-impl AnalyzerMutBuilder for DecoderBuilder {
-    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    pub fn build(self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         let mut decoder = Decoder {
             silent: self.silent,
@@ -2128,10 +2126,10 @@ struct RawMinimapUpdate {
     is_disappearing: bool,
 }
 
-impl AnalyzerMut for Decoder {
+impl Analyzer for Decoder {
     fn finish(&mut self) {}
 
-    fn process_mut(&mut self, packet: &Packet<'_, '_>) {
+    fn process(&mut self, packet: &Packet<'_, '_>) {
         let decoded = DecodedPacket::from(&self.version, false, packet);
         //println!("{:#?}", decoded);
         //println!("{}", serde_json::to_string_pretty(&decoded).unwrap());

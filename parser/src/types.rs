@@ -190,7 +190,7 @@ impl From<i64> for PlaneId {
 
 /// World-space position in BigWorld coordinates.
 /// X = east/west, Y = up/down (altitude), Z = north/south. Origin at map center.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct WorldPos {
     pub x: f32,
     pub y: f32,
@@ -248,7 +248,7 @@ pub struct NormalizedPos {
 
 /// A game clock value in seconds since the replay started recording.
 /// Note: there is typically a ~30s pre-game countdown, so game_time = clock - 30.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct GameClock(pub f32);
 
 impl GameClock {

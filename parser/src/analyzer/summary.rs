@@ -3,7 +3,7 @@ use wowsunpack::rpc::typedefs::ArgValue;
 use crate::packet2::{EntityMethodPacket, Packet, PacketType};
 use std::collections::HashMap;
 
-use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
+use super::analyzer::Analyzer;
 
 pub struct SummaryBuilder;
 
@@ -17,10 +17,8 @@ impl SummaryBuilder {
     pub fn new() -> Self {
         Self
     }
-}
 
-impl AnalyzerMutBuilder for SummaryBuilder {
-    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    pub fn build(self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer> {
         println!("Username: {}", meta.playerName);
         println!("Date/time: {}", meta.dateTime);
         println!("Map: {}", meta.mapDisplayName);
@@ -67,7 +65,7 @@ struct Summary {
     damage: HashMap<(i64, i64), (i64, f64)>,
 }
 
-impl AnalyzerMut for Summary {
+impl Analyzer for Summary {
     fn finish(&mut self) {
         for (ribbon, count) in self.ribbons.iter() {
             println!("{:?}: {}", ribbon, count);
@@ -81,7 +79,7 @@ impl AnalyzerMut for Summary {
         );
     }
 
-    fn process_mut(&mut self, packet: &Packet<'_, '_>) {
+    fn process(&mut self, packet: &Packet<'_, '_>) {
         // Collect banners, damage reports, etc.
         if let Packet {
             payload:

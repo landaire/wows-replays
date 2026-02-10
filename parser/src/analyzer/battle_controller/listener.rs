@@ -1,0 +1,64 @@
+use std::collections::HashMap;
+
+use crate::Rc;
+use crate::types::{EntityId, GameClock, PlaneId};
+
+use super::controller::{Entity, GameMessage, Player, SharedPlayer};
+use super::state::{
+    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, CapturePointState, DeadShip,
+    KillRecord, MinimapPosition, ShipPosition, TeamScore,
+};
+
+/// Readonly view into BattleController state.
+///
+/// This trait hides the `G: ResourceLoader` generic on BattleController,
+/// allowing callers to read state without being generic themselves.
+pub trait BattleControllerState {
+    /// Current replay clock time
+    fn clock(&self) -> GameClock;
+
+    /// Latest world-space position per ship entity
+    fn ship_positions(&self) -> &HashMap<EntityId, ShipPosition>;
+
+    /// Latest minimap position per entity
+    fn minimap_positions(&self) -> &HashMap<EntityId, MinimapPosition>;
+
+    /// Players parsed from arena state (entity_id -> Player)
+    fn player_entities(&self) -> &HashMap<EntityId, Rc<Player>>;
+
+    /// Players parsed from replay metadata
+    fn metadata_players(&self) -> &[SharedPlayer];
+
+    /// All tracked entities (vehicles, buildings, smoke screens)
+    fn entities_by_id(&self) -> &HashMap<EntityId, Entity>;
+
+    /// Current capture point states
+    fn capture_points(&self) -> &[CapturePointState];
+
+    /// Current team scores
+    fn team_scores(&self) -> &[TeamScore];
+
+    /// Chat messages received so far
+    fn game_chat(&self) -> &[GameMessage];
+
+    /// Active consumables per entity
+    fn active_consumables(&self) -> &HashMap<EntityId, Vec<ActiveConsumable>>;
+
+    /// Active artillery salvos in flight
+    fn active_shots(&self) -> &[ActiveShot];
+
+    /// Active torpedoes in the water
+    fn active_torpedoes(&self) -> &[ActiveTorpedo];
+
+    /// Active plane squadrons on the minimap
+    fn active_planes(&self) -> &HashMap<PlaneId, ActivePlane>;
+
+    /// All ship kills that have occurred
+    fn kills(&self) -> &[KillRecord];
+
+    /// Dead ships and their last known positions
+    fn dead_ships(&self) -> &HashMap<EntityId, DeadShip>;
+
+    /// Clock time when the battle ended, if it has ended
+    fn battle_end_clock(&self) -> Option<GameClock>;
+}

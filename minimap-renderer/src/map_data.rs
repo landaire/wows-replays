@@ -1,4 +1,4 @@
-pub use wows_replays::types::{EntityId, GameClock, WorldPos};
+pub use wows_replays::types::WorldPos;
 
 /// Map metadata for coordinate conversion.
 #[derive(Debug, Clone)]
@@ -15,15 +15,6 @@ pub struct MinimapPos {
     pub y: i32,
 }
 
-/// Normalized minimap position from MinimapUpdate packets.
-/// Values in [0,1] range. (0,0) = top-left, (1,1) = bottom-right.
-/// Note: in game data, y=0 is bottom, y=1 is top, so we flip at conversion.
-#[derive(Debug, Clone, Copy)]
-pub struct NormalizedPos {
-    pub x: f32,
-    pub y: f32,
-}
-
 impl MapInfo {
     /// Convert world coordinates to minimap pixel coordinates.
     pub fn world_to_minimap(&self, pos: WorldPos, output_size: u32) -> MinimapPos {
@@ -32,17 +23,6 @@ impl MapInfo {
         MinimapPos {
             x: (pos.x as f64 * scale + half) as i32,
             y: (-pos.z as f64 * scale + half) as i32,
-        }
-    }
-}
-
-impl NormalizedPos {
-    /// Convert normalized [0,1] position to minimap pixel coordinates.
-    /// Flips Y axis: game's y=0 is bottom, minimap y=0 is top.
-    pub fn to_minimap(self, output_size: u32) -> MinimapPos {
-        MinimapPos {
-            x: (self.x * output_size as f32) as i32,
-            y: ((1.0 - self.y) * output_size as f32) as i32,
         }
     }
 }

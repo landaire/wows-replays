@@ -12,14 +12,7 @@ use wowsunpack::{
     rpc::entitydefs::parse_scripts,
 };
 
-use wows_replays::{
-    analyzer::{
-        chat::ChatLoggerBuilder, summary::SummaryBuilder, AnalyzerAdapter, AnalyzerBuilder,
-        AnalyzerMutBuilder,
-    },
-    types::EntityId,
-    ErrorKind, ReplayFile,
-};
+use wows_replays::{analyzer::Analyzer, types::EntityId, ErrorKind, ReplayFile};
 
 struct InvestigativePrinter {
     filter_packet: Option<u32>,
@@ -30,10 +23,10 @@ struct InvestigativePrinter {
     version: Version,
 }
 
-impl wows_replays::analyzer::AnalyzerMut for InvestigativePrinter {
+impl wows_replays::analyzer::Analyzer for InvestigativePrinter {
     fn finish(&mut self) {}
 
-    fn process_mut(&mut self, packet: &wows_replays::packet2::Packet<'_, '_>) {
+    fn process(&mut self, packet: &wows_replays::packet2::Packet<'_, '_>) {
         let decoded =
             wows_replays::analyzer::decoder::DecodedPacket::from(&self.version, true, packet);
 
@@ -115,51 +108,39 @@ impl wows_replays::analyzer::AnalyzerMut for InvestigativePrinter {
     }
 }
 
-pub struct InvestigativeBuilder {
+fn build_investigative_printer(
+    meta: &wows_replays::ReplayMeta,
     no_meta: bool,
-    filter_packet: Option<String>,
-    filter_method: Option<String>,
-    timestamp: Option<String>,
-    entity_id: Option<String>,
-}
-
-impl AnalyzerMutBuilder for InvestigativeBuilder {
-    fn build(
-        self,
-        meta: &wows_replays::ReplayMeta,
-    ) -> Box<dyn wows_replays::analyzer::AnalyzerMut> {
-        let version = Version::from_client_exe(&meta.clientVersionFromExe);
-        let decoder = InvestigativePrinter {
-            version,
-            filter_packet: self
-                .filter_packet
-                .as_ref()
-                .map(|s| parse_int::parse::<u32>(s).unwrap()),
-            filter_method: self.filter_method.clone(),
-            timestamp: self.timestamp.as_ref().map(|s| {
-                let ts_parts: Vec<_> = s.split("+").collect();
-                let offset = ts_parts[1].parse::<u32>().unwrap();
-                let parts: Vec<_> = ts_parts[0].split(":").collect();
-                if parts.len() == 3 {
-                    let h = parts[0].parse::<u32>().unwrap();
-                    let m = parts[1].parse::<u32>().unwrap();
-                    let s = parts[2].parse::<u32>().unwrap();
-                    (h * 3600 + m * 60 + s) as f32 - offset as f32
-                } else {
-                    panic!("Expected hh:mm:ss+offset as timestamp");
-                }
-            }),
-            entity_id: self
-                .entity_id
-                .as_ref()
-                .map(|s| EntityId::from(parse_int::parse::<u32>(s).unwrap())),
-            meta: !self.no_meta,
-        };
-        if !self.no_meta {
-            println!("{}", &serde_json::to_string(&meta).unwrap());
-        }
-        Box::new(decoder)
+    filter_packet: Option<&str>,
+    filter_method: Option<&str>,
+    timestamp: Option<&str>,
+    entity_id: Option<&str>,
+) -> Box<dyn Analyzer> {
+    let version = Version::from_client_exe(&meta.clientVersionFromExe);
+    let decoder = InvestigativePrinter {
+        version,
+        filter_packet: filter_packet.map(|s| parse_int::parse::<u32>(s).unwrap()),
+        filter_method: filter_method.map(|s| s.to_string()),
+        timestamp: timestamp.map(|s| {
+            let ts_parts: Vec<_> = s.split("+").collect();
+            let offset = ts_parts[1].parse::<u32>().unwrap();
+            let parts: Vec<_> = ts_parts[0].split(":").collect();
+            if parts.len() == 3 {
+                let h = parts[0].parse::<u32>().unwrap();
+                let m = parts[1].parse::<u32>().unwrap();
+                let s = parts[2].parse::<u32>().unwrap();
+                (h * 3600 + m * 60 + s) as f32 - offset as f32
+            } else {
+                panic!("Expected hh:mm:ss+offset as timestamp");
+            }
+        }),
+        entity_id: entity_id.map(|s| EntityId::from(parse_int::parse::<u32>(s).unwrap())),
+        meta: !no_meta,
+    };
+    if !no_meta {
+        println!("{}", &serde_json::to_string(&meta).unwrap());
     }
+    Box::new(decoder)
 }
 
 fn load_game_data(
@@ -279,16 +260,16 @@ fn load_game_data(
     Ok(specs)
 }
 
-fn parse_replay<P: wows_replays::analyzer::AnalyzerMutBuilder>(
+fn parse_replay<F>(
     replay: &std::path::PathBuf,
     game_dir: Option<&str>,
     extracted_dir: Option<&str>,
-    processor: P,
-) -> Result<(), wows_replays::ErrorKind> {
+    build: F,
+) -> Result<(), wows_replays::ErrorKind>
+where
+    F: FnOnce(&wows_replays::ReplayMeta) -> Box<dyn Analyzer>,
+{
     let replay_file = ReplayFile::from_file(replay)?;
-
-    //let mut file = std::fs::File::create("foo.bin").unwrap();
-    //file.write_all(&replay_file.packet_data).unwrap();
 
     let specs = load_game_data(
         game_dir,
@@ -297,21 +278,19 @@ fn parse_replay<P: wows_replays::analyzer::AnalyzerMutBuilder>(
     )
     .expect("failed to load game specs");
 
-    let version_parts: Vec<_> = replay_file.meta.clientVersionFromExe.split(",").collect();
-    assert!(version_parts.len() == 4);
+    let mut analyzer = build(&replay_file.meta);
 
-    let processor = processor.build(&replay_file.meta);
-
-    // Parse packets
-    let mut p = wows_replays::packet2::Parser::new(&specs);
-    let mut analyzer_set = AnalyzerAdapter::new(vec![processor]);
-    match p.parse_packets_mut::<AnalyzerAdapter>(&replay_file.packet_data, &mut analyzer_set) {
-        Ok(()) => {
-            analyzer_set.finish();
-            Ok(())
-        }
-        Err(e) => Err(e),
+    let mut parser = wows_replays::packet2::Parser::new(&specs);
+    let mut remaining = &replay_file.packet_data[..];
+    while !remaining.is_empty() {
+        let (rest, packet) = parser
+            .parse_packet(remaining)
+            .map_err(|e| wows_replays::ErrorKind::ParsingFailure(format!("{:?}", e)))?;
+        remaining = rest;
+        analyzer.process(&packet);
     }
+    analyzer.finish();
+    Ok(())
 }
 
 fn truncate_string(s: &str, length: usize) -> &str {
@@ -479,9 +458,10 @@ fn survey_file(
     let survey_stats = std::rc::Rc::new(std::cell::RefCell::new(
         wows_replays::analyzer::survey::SurveyStats::new(),
     ));
-    let survey =
-        wows_replays::analyzer::survey::SurveyBuilder::new(survey_stats.clone(), skip_decode);
-    match parse_replay(&replay, game_dir, extracted_dir, survey) {
+    let stats_clone = survey_stats.clone();
+    match parse_replay(&replay, game_dir, extracted_dir, |meta| {
+        wows_replays::analyzer::survey::SurveyBuilder::new(stats_clone, skip_decode).build(meta)
+    }) {
         Ok(_) => {
             let stats = survey_stats.borrow();
             if stats.invalid_packets > 0 {
@@ -645,23 +625,46 @@ fn main() {
 
     if let Some(matches) = matches.subcommand_matches("dump") {
         let input = matches.value_of("REPLAY").unwrap();
-        let dump = wows_replays::analyzer::decoder::DecoderBuilder::new(
-            false,
-            matches.is_present("no-meta"),
-            matches.value_of("output"),
-        );
-        parse_replay(&std::path::PathBuf::from(input), game_dir, extracted, dump).unwrap();
+        let no_meta = matches.is_present("no-meta");
+        let output = matches.value_of("output").map(|s| s.to_string());
+        parse_replay(
+            &std::path::PathBuf::from(input),
+            game_dir,
+            extracted,
+            |meta| {
+                wows_replays::analyzer::decoder::DecoderBuilder::new(
+                    false,
+                    no_meta,
+                    output.as_deref(),
+                )
+                .build(meta)
+            },
+        )
+        .unwrap();
     }
     if let Some(matches) = matches.subcommand_matches("investigate") {
         let input = matches.value_of("REPLAY").unwrap();
-        let dump = InvestigativeBuilder {
-            no_meta: !matches.is_present("meta"),
-            filter_packet: matches.value_of("filter-packet").map(|s| s.to_string()),
-            filter_method: matches.value_of("filter-method").map(|s| s.to_string()),
-            entity_id: matches.value_of("entity-id").map(|s| s.to_string()),
-            timestamp: matches.value_of("timestamp").map(|s| s.to_string()),
-        };
-        parse_replay(&std::path::PathBuf::from(input), game_dir, extracted, dump).unwrap();
+        let no_meta = !matches.is_present("meta");
+        let filter_packet = matches.value_of("filter-packet");
+        let filter_method = matches.value_of("filter-method");
+        let entity_id = matches.value_of("entity-id");
+        let timestamp = matches.value_of("timestamp");
+        parse_replay(
+            &std::path::PathBuf::from(input),
+            game_dir,
+            extracted,
+            |meta| {
+                build_investigative_printer(
+                    meta,
+                    no_meta,
+                    filter_packet,
+                    filter_method,
+                    timestamp,
+                    entity_id,
+                )
+            },
+        )
+        .unwrap();
     }
     if let Some(matches) = matches.subcommand_matches("spec") {
         let target_version = Version::from_client_exe(matches.value_of("version").unwrap());
@@ -671,17 +674,21 @@ fn main() {
     }
     if let Some(matches) = matches.subcommand_matches("summary") {
         let input = matches.value_of("REPLAY").unwrap();
-        let dump = SummaryBuilder::new();
-        parse_replay(&std::path::PathBuf::from(input), game_dir, extracted, dump).unwrap();
-    }
-    if let Some(matches) = matches.subcommand_matches("chat") {
-        let input = matches.value_of("REPLAY").unwrap();
-        let chatlogger = ChatLoggerBuilder::new();
         parse_replay(
             &std::path::PathBuf::from(input),
             game_dir,
             extracted,
-            chatlogger,
+            |meta| wows_replays::analyzer::summary::SummaryBuilder::new().build(meta),
+        )
+        .unwrap();
+    }
+    if let Some(matches) = matches.subcommand_matches("chat") {
+        let input = matches.value_of("REPLAY").unwrap();
+        parse_replay(
+            &std::path::PathBuf::from(input),
+            game_dir,
+            extracted,
+            |meta| wows_replays::analyzer::chat::ChatLoggerBuilder::new().build(meta),
         )
         .unwrap();
     }
@@ -689,13 +696,12 @@ fn main() {
     {
         if let Some(matches) = matches.subcommand_matches("trace") {
             let input = matches.value_of("REPLAY").unwrap();
-            let output = matches.value_of("out").unwrap();
-            let trailer = analysis::trails::TrailsBuilder::new(output);
+            let output = matches.value_of("out").unwrap().to_string();
             parse_replay(
                 &std::path::PathBuf::from(input),
                 game_dir,
                 extracted,
-                trailer,
+                |meta| analysis::trails::TrailsBuilder::new(&output).build(meta),
             )
             .unwrap();
         }

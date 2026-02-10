@@ -5,7 +5,7 @@ use crate::packet2::Packet;
 use crate::types::AccountId;
 use std::collections::HashMap;
 
-use super::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
+use super::analyzer::Analyzer;
 
 pub struct ChatLoggerBuilder;
 
@@ -19,10 +19,8 @@ impl ChatLoggerBuilder {
     pub fn new() -> ChatLoggerBuilder {
         ChatLoggerBuilder
     }
-}
 
-impl AnalyzerMutBuilder for ChatLoggerBuilder {
-    fn build(self, meta: &crate::ReplayMeta) -> Box<dyn AnalyzerMut> {
+    pub fn build(self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         Box::new(ChatLogger {
             usernames: HashMap::new(),
@@ -36,10 +34,10 @@ pub struct ChatLogger {
     version: Version,
 }
 
-impl AnalyzerMut for ChatLogger {
+impl Analyzer for ChatLogger {
     fn finish(&mut self) {}
 
-    fn process_mut(&mut self, packet: &Packet<'_, '_>) {
+    fn process(&mut self, packet: &Packet<'_, '_>) {
         let decoded = DecodedPacket::from(&self.version, false, packet);
         match decoded.payload {
             DecodedPacketPayload::Chat {

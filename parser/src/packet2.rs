@@ -782,7 +782,7 @@ impl<'argtype> Parser<'argtype> {
         Ok((i, payload))
     }
 
-    fn parse_packet<'a, 'b>(&'b mut self, i: &'a [u8]) -> IResult<&'a [u8], Packet<'a, 'b>> {
+    pub fn parse_packet<'a, 'b>(&'b mut self, i: &'a [u8]) -> IResult<&'a [u8], Packet<'a, 'b>> {
         let (i, packet_size) = le_u32(i)?;
         let (i, packet_type) = le_u32(i)?;
         let (i, raw_clock) = le_f32(i)?;
@@ -820,35 +820,4 @@ impl<'argtype> Parser<'argtype> {
             },
         ))
     }
-
-    pub fn parse_packets_mut<P: PacketProcessorMut>(
-        &mut self,
-        i: &[u8],
-        p: &mut P,
-    ) -> Result<(), ErrorKind> {
-        let mut i = i;
-        while !i.is_empty() {
-            let (remaining, packet) = self.parse_packet(i)?;
-            i = remaining;
-            p.process_mut(packet);
-        }
-        Ok(())
-    }
-
-    pub fn parse_packets<P: PacketProcessor>(&mut self, i: &[u8], p: &P) -> Result<(), ErrorKind> {
-        let mut i = i;
-        while !i.is_empty() {
-            let (remaining, packet) = self.parse_packet(i)?;
-            i = remaining;
-            p.process(packet);
-        }
-        Ok(())
-    }
-}
-
-pub trait PacketProcessor {
-    fn process(&self, packet: Packet<'_, '_>);
-}
-pub trait PacketProcessorMut {
-    fn process_mut(&mut self, packet: Packet<'_, '_>);
 }

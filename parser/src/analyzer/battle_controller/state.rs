@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 
-use crate::analyzer::decoder::Consumable;
-use crate::types::{EntityId, GameClock, GameParamId, NormalizedPos, WorldPos};
+use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, TorpedoData};
+use crate::types::{EntityId, GameClock, GameParamId, NormalizedPos, PlaneId, WorldPos};
 
 /// Last known world-space position of a ship entity.
 #[derive(Debug, Clone, Serialize)]
@@ -69,4 +71,52 @@ pub struct BuildingEntity {
 pub struct SmokeScreenEntity {
     pub id: EntityId,
     pub radius: f32,
+    /// World position where the smoke was created
+    pub position: WorldPos,
+    /// Current active smoke puff positions (mutated via SetRange/RemoveRange)
+    pub points: Vec<WorldPos>,
+}
+
+/// An active artillery salvo in flight.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveShot {
+    pub entity_id: EntityId,
+    pub salvo: ArtillerySalvo,
+    pub fired_at: GameClock,
+}
+
+/// An active torpedo in the water.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveTorpedo {
+    pub entity_id: EntityId,
+    pub torpedo: TorpedoData,
+    pub launched_at: GameClock,
+}
+
+/// An active plane squadron on the minimap.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivePlane {
+    pub plane_id: PlaneId,
+    pub owner_id: EntityId,
+    pub team_id: u32,
+    pub params_id: GameParamId,
+    pub x: f32,
+    pub y: f32,
+    pub last_updated: GameClock,
+}
+
+/// A ship kill event.
+#[derive(Debug, Clone, Serialize)]
+pub struct KillRecord {
+    pub clock: GameClock,
+    pub killer: EntityId,
+    pub victim: EntityId,
+    pub cause: DeathCause,
+}
+
+/// A dead ship's last known position.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeadShip {
+    pub clock: GameClock,
+    pub position: WorldPos,
 }

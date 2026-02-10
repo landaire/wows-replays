@@ -1,6 +1,6 @@
 use std::{
     borrow::Borrow,
-    cell::{Cell, Ref, RefCell, UnsafeCell},
+    cell::{RefCell, UnsafeCell},
     collections::HashMap,
     str::FromStr,
     time::Duration,
@@ -22,19 +22,21 @@ static TIME_UNTIL_GAME_START: Duration = Duration::from_secs(30);
 use crate::{
     IResult, Rc, ReplayMeta,
     analyzer::{
-        analyzer::AnalyzerMut,
+        analyzer::Analyzer,
         decoder::{ChatMessageExtra, DeathCause, DecodedPacket, PlayerStateData},
     },
     nested_property_path::{PropertyNestLevel, UpdateAction},
-    packet2::{EntityCreatePacket, Packet, PacketProcessorMut, PacketType},
-    types::{AccountId, EntityId, GameClock, GameParamId, NormalizedPos, Relation, WorldPos},
+    packet2::{EntityCreatePacket, Packet, PacketType},
+    types::{
+        AccountId, EntityId, GameClock, GameParamId, NormalizedPos, PlaneId, Relation, WorldPos,
+    },
 };
 
+use super::listener::BattleControllerState;
 use super::state::{
-    ActiveConsumable, BuildingEntity, CapturePointState, MinimapPosition, ShipPosition,
-    SmokeScreenEntity, TeamScore,
+    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, BuildingEntity, CapturePointState,
+    DeadShip, KillRecord, MinimapPosition, ShipPosition, SmokeScreenEntity, TeamScore,
 };
-use super::timeline::{GameTimeline, TimelineEvent};
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ShipConfig {
@@ -341,17 +343,6 @@ impl MetadataPlayer {
 pub type SharedPlayer = Rc<MetadataPlayer>;
 type MethodName = String;
 
-pub trait EventHandler {
-    fn on_chat_message(&self, message: GameMessage) {}
-    fn on_aren_state_received(&self, entity_id: EntityId) {}
-}
-
-pub enum xEntityType {
-    Client = 1,
-    Cell = 2,
-    Base = 4,
-}
-
 #[derive(Debug, Clone, Copy, EnumString)]
 pub enum EntityType {
     Building,
@@ -386,7 +377,6 @@ pub struct BattleReport {
     battle_results: Option<String>,
     frags: HashMap<Rc<Player>, Vec<DeathInfo>>,
     match_result: Option<BattleResult>,
-    timeline: GameTimeline,
     capture_points: Vec<CapturePointState>,
     team_scores: Vec<TeamScore>,
     buildings: Vec<BuildingEntity>,
@@ -443,10 +433,6 @@ impl BattleReport {
         self.match_result.as_ref()
     }
 
-    pub fn timeline(&self) -> &GameTimeline {
-        &self.timeline
-    }
-
     pub fn capture_points(&self) -> &[CapturePointState] {
         &self.capture_points
     }
@@ -475,21 +461,26 @@ pub struct BattleController<'res, 'replay, G> {
     property_callbacks: HashMap<(ParamType, String), fn(&ArgValue<'_>)>,
     damage_dealt: HashMap<EntityId, Vec<DamageEvent>>,
     frags: HashMap<EntityId, Vec<Death>>,
-    event_handler: Option<Rc<dyn EventHandler>>,
     game_chat: Vec<GameMessage>,
     version: Version,
     battle_results: Option<String>,
     match_finished: bool,
+    battle_end_clock: Option<GameClock>,
     winning_team: Option<i8>,
     arena_id: i64,
+    current_clock: GameClock,
 
-    // Timeline and minimap state
-    timeline: GameTimeline,
+    // World state
     ship_positions: HashMap<EntityId, ShipPosition>,
     minimap_positions: HashMap<EntityId, MinimapPosition>,
     capture_points: Vec<CapturePointState>,
     team_scores: Vec<TeamScore>,
     active_consumables: HashMap<EntityId, Vec<ActiveConsumable>>,
+    active_shots: Vec<ActiveShot>,
+    active_torpedoes: Vec<ActiveTorpedo>,
+    active_planes: HashMap<PlaneId, ActivePlane>,
+    kills: Vec<KillRecord>,
+    dead_ships: HashMap<EntityId, DeadShip>,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
@@ -520,26 +511,53 @@ where
             entities_by_id: Default::default(),
             method_callbacks: Default::default(),
             property_callbacks: Default::default(),
-            event_handler: None,
             game_chat: Default::default(),
             version: Version::from_client_exe(&game_meta.clientVersionFromExe),
             damage_dealt: Default::default(),
             frags: Default::default(),
             battle_results: Default::default(),
             match_finished: false,
+            battle_end_clock: None,
             winning_team: None,
             arena_id: 0,
-            timeline: GameTimeline::new(),
+            current_clock: GameClock::default(),
             ship_positions: HashMap::default(),
             minimap_positions: HashMap::default(),
             capture_points: Vec::new(),
             team_scores: Vec::new(),
             active_consumables: HashMap::default(),
+            active_shots: Vec::new(),
+            active_torpedoes: Vec::new(),
+            active_planes: HashMap::default(),
+            kills: Vec::new(),
+            dead_ships: HashMap::default(),
         }
     }
 
-    pub fn set_event_handler(&mut self, event_handler: Rc<dyn EventHandler>) {
-        self.event_handler = Some(event_handler);
+    /// Reset all mutable state for seeking (re-parse from start).
+    /// Keeps config: game_meta, game_resources, metadata_players, version.
+    pub fn reset(&mut self) {
+        self.player_entities.clear();
+        self.entities_by_id.clear();
+        self.damage_dealt.clear();
+        self.frags.clear();
+        self.game_chat.clear();
+        self.battle_results = None;
+        self.match_finished = false;
+        self.battle_end_clock = None;
+        self.winning_team = None;
+        self.arena_id = 0;
+        self.current_clock = GameClock::default();
+        self.ship_positions.clear();
+        self.minimap_positions.clear();
+        self.capture_points.clear();
+        self.team_scores.clear();
+        self.active_consumables.clear();
+        self.active_shots.clear();
+        self.active_torpedoes.clear();
+        self.active_planes.clear();
+        self.kills.clear();
+        self.dead_ships.clear();
     }
 
     pub fn players(&self) -> &[SharedPlayer] {
@@ -617,16 +635,6 @@ where
 
         debug!("chat message from sender {sender_name} in channel {channel:?}: {message}");
 
-        self.timeline.push(
-            clock,
-            TimelineEvent::ChatMessage {
-                entity_id,
-                sender_name: sender_name.clone(),
-                channel: channel.clone(),
-                message: message.to_string(),
-            },
-        );
-
         let message = GameMessage {
             clock,
             sender_relation: sender_team,
@@ -643,10 +651,6 @@ where
             &self.game_chat,
             self.game_chat.len()
         );
-
-        if let Some(event_handler) = self.event_handler.as_ref() {
-            event_handler.on_chat_message(message);
-        }
     }
 
     fn handle_entity_create<'packet>(
@@ -779,7 +783,6 @@ where
             game_chat: self.game_chat,
             battle_results: self.battle_results,
             frags,
-            timeline: self.timeline,
             capture_points: self.capture_points,
             team_scores: self.team_scores,
             buildings,
@@ -788,26 +791,6 @@ where
 
     pub fn battle_results(&self) -> Option<&String> {
         self.battle_results.as_ref()
-    }
-
-    pub fn timeline(&self) -> &GameTimeline {
-        &self.timeline
-    }
-
-    pub fn ship_positions(&self) -> &HashMap<EntityId, ShipPosition> {
-        &self.ship_positions
-    }
-
-    pub fn minimap_positions(&self) -> &HashMap<EntityId, MinimapPosition> {
-        &self.minimap_positions
-    }
-
-    pub fn capture_points(&self) -> &[CapturePointState] {
-        &self.capture_points
-    }
-
-    pub fn team_scores(&self) -> &[TeamScore] {
-        &self.team_scores
     }
 
     fn handle_property_update(
@@ -882,18 +865,6 @@ where
                             _ => {}
                         }
                     }
-
-                    self.timeline.push(
-                        clock,
-                        TimelineEvent::CapturePointUpdate {
-                            point_index: *point_idx,
-                            team_id: evt_team_id,
-                            invader_team: evt_invader_team,
-                            progress: evt_progress,
-                            has_invaders: evt_has_invaders,
-                            both_inside: evt_both_inside,
-                        },
-                    );
                 }
             }
         }
@@ -916,13 +887,6 @@ where
                                     });
                                 }
                                 self.team_scores[*team_idx].score = score as i64;
-                                self.timeline.push(
-                                    clock,
-                                    TimelineEvent::TeamScoreUpdate {
-                                        team_index: *team_idx,
-                                        score: score as i64,
-                                    },
-                                );
                             }
                         }
                     }
@@ -1009,16 +973,6 @@ where
                     packet.entity_id,
                     Entity::Building(Rc::new(RefCell::new(building.clone()))),
                 );
-
-                self.timeline.push(
-                    clock,
-                    TimelineEvent::BuildingStateChanged {
-                        entity_id: packet.entity_id,
-                        is_alive,
-                        is_suppressed,
-                        team_id,
-                    },
-                );
             }
             EntityType::SmokeScreen => {
                 let mut radius: f32 = 0.0;
@@ -1026,27 +980,22 @@ where
                     radius = v.float_32_ref().copied().unwrap_or(0.0);
                 }
 
+                let position = WorldPos {
+                    x: packet.position.x,
+                    y: packet.position.y,
+                    z: packet.position.z,
+                };
+
                 let smoke = SmokeScreenEntity {
                     id: packet.entity_id,
                     radius,
+                    position,
+                    points: vec![position],
                 };
 
                 self.entities_by_id.insert(
                     packet.entity_id,
                     Entity::SmokeScreen(Rc::new(RefCell::new(smoke))),
-                );
-
-                self.timeline.push(
-                    clock,
-                    TimelineEvent::SmokeScreenCreated {
-                        entity_id: packet.entity_id,
-                        position: WorldPos {
-                            x: packet.position.x,
-                            y: packet.position.y,
-                            z: packet.position.z,
-                        },
-                        radius,
-                    },
                 );
             }
             EntityType::BattleLogic => debug!("BattleLogic create"),
@@ -1959,19 +1908,86 @@ struct Death {
     cause: DeathCause,
 }
 
-impl<'res, 'replay, G> AnalyzerMut for BattleController<'res, 'replay, G>
+impl<'res, 'replay, G> BattleControllerState for BattleController<'res, 'replay, G>
 where
     G: ResourceLoader,
 {
-    fn process_mut(&mut self, packet: &Packet<'_, '_>) {
+    fn clock(&self) -> GameClock {
+        self.current_clock
+    }
+
+    fn ship_positions(&self) -> &HashMap<EntityId, ShipPosition> {
+        &self.ship_positions
+    }
+
+    fn minimap_positions(&self) -> &HashMap<EntityId, MinimapPosition> {
+        &self.minimap_positions
+    }
+
+    fn player_entities(&self) -> &HashMap<EntityId, Rc<Player>> {
+        &self.player_entities
+    }
+
+    fn metadata_players(&self) -> &[SharedPlayer] {
+        &self.metadata_players
+    }
+
+    fn entities_by_id(&self) -> &HashMap<EntityId, Entity> {
+        &self.entities_by_id
+    }
+
+    fn capture_points(&self) -> &[CapturePointState] {
+        &self.capture_points
+    }
+
+    fn team_scores(&self) -> &[TeamScore] {
+        &self.team_scores
+    }
+
+    fn game_chat(&self) -> &[GameMessage] {
+        &self.game_chat
+    }
+
+    fn active_consumables(&self) -> &HashMap<EntityId, Vec<ActiveConsumable>> {
+        &self.active_consumables
+    }
+
+    fn active_shots(&self) -> &[ActiveShot] {
+        &self.active_shots
+    }
+
+    fn active_torpedoes(&self) -> &[ActiveTorpedo] {
+        &self.active_torpedoes
+    }
+
+    fn active_planes(&self) -> &HashMap<PlaneId, ActivePlane> {
+        &self.active_planes
+    }
+
+    fn kills(&self) -> &[KillRecord] {
+        &self.kills
+    }
+
+    fn dead_ships(&self) -> &HashMap<EntityId, DeadShip> {
+        &self.dead_ships
+    }
+
+    fn battle_end_clock(&self) -> Option<GameClock> {
+        self.battle_end_clock
+    }
+}
+
+impl<'res, 'replay, G> Analyzer for BattleController<'res, 'replay, G>
+where
+    G: ResourceLoader,
+{
+    fn process(&mut self, packet: &Packet<'_, '_>) {
         let span = span!(Level::TRACE, "packet processing");
         let _enter = span.enter();
 
-        // trace!("packet: {packet:#?}");
-        //
+        self.current_clock = packet.clock;
 
         let decoded = DecodedPacket::from(&self.version, false, packet);
-        let payload_kind = decoded.payload.kind();
         match decoded.payload {
             crate::analyzer::decoder::DecodedPacketPayload::Chat {
                 entity_id,
@@ -1996,10 +2012,7 @@ where
             } => {
                 trace!("HANDLE VOICE LINE");
             }
-            crate::analyzer::decoder::DecodedPacketPayload::Ribbon(ribbon) => {
-                self.timeline
-                    .push(packet.clock, TimelineEvent::Ribbon(ribbon));
-            }
+            crate::analyzer::decoder::DecodedPacketPayload::Ribbon(_ribbon) => {}
             crate::analyzer::decoder::DecodedPacketPayload::Position(pos) => {
                 let world_pos = WorldPos {
                     x: pos.position.x,
@@ -2015,19 +2028,23 @@ where
                     last_updated: packet.clock,
                 };
                 self.ship_positions.insert(pos.pid, ship_pos);
-                self.timeline.push(
-                    packet.clock,
-                    TimelineEvent::ShipPosition {
-                        entity_id: pos.pid,
-                        position: world_pos,
-                        yaw: pos.rotation.yaw,
-                        pitch: pos.rotation.pitch,
-                        roll: pos.rotation.roll,
-                    },
-                );
             }
-            crate::analyzer::decoder::DecodedPacketPayload::PlayerOrientation(_orientation) => {
-                trace!("PLAYER ORIENTATION")
+            crate::analyzer::decoder::DecodedPacketPayload::PlayerOrientation(ref orientation) => {
+                if orientation.parent_id == EntityId::from(0u32) {
+                    let ship_pos = ShipPosition {
+                        entity_id: orientation.pid,
+                        position: WorldPos {
+                            x: orientation.position.x,
+                            y: orientation.position.y,
+                            z: orientation.position.z,
+                        },
+                        yaw: orientation.rotation.yaw,
+                        pitch: orientation.rotation.pitch,
+                        roll: orientation.rotation.roll,
+                        last_updated: packet.clock,
+                    };
+                    self.ship_positions.insert(orientation.pid, ship_pos);
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::DamageStat(_damage) => {
                 trace!("DAMAGE STAT")
@@ -2043,20 +2060,30 @@ where
                     victim,
                     cause,
                 });
-                self.timeline.push(
-                    packet.clock,
-                    TimelineEvent::ShipDestroyed {
-                        killer,
+                self.kills.push(KillRecord {
+                    clock: packet.clock,
+                    killer,
+                    victim,
+                    cause,
+                });
+                // Record dead ship position from last known ship position
+                if let Some(ship_pos) = self.ship_positions.get(&victim) {
+                    self.dead_ships.insert(
                         victim,
-                        cause,
-                    },
-                );
+                        DeadShip {
+                            clock: packet.clock,
+                            position: ship_pos.position,
+                        },
+                    );
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityMethod(method) => {
                 debug!("ENTITY METHOD, {:#?}", method)
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityProperty(prop) => {
-                if let Some(entity) = self.entities_by_id.get(&prop.entity_id) {
+                let entity_id = prop.entity_id;
+                let property = prop.property.to_string();
+                if let Some(entity) = self.entities_by_id.get(&entity_id) {
                     if let Some(vehicle) = entity.vehicle_ref() {
                         let mut vehicle = RefCell::borrow_mut(vehicle);
                         vehicle
@@ -2075,19 +2102,14 @@ where
                 trace!("ENTITY ENTER")
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityLeave(leave) => {
+                let entity_id = leave.entity_id;
                 if self
                     .entities_by_id
-                    .get(&leave.entity_id)
+                    .get(&entity_id)
                     .and_then(|e| e.smoke_screen_ref())
                     .is_some()
                 {
-                    self.entities_by_id.remove(&leave.entity_id);
-                    self.timeline.push(
-                        packet.clock,
-                        TimelineEvent::SmokeScreenDestroyed {
-                            entity_id: leave.entity_id,
-                        },
-                    );
+                    self.entities_by_id.remove(&entity_id);
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityCreate(entity_create) => {
@@ -2095,8 +2117,8 @@ where
             }
             crate::analyzer::decoder::DecodedPacketPayload::OnArenaStateReceived {
                 arena_id: arg0,
-                team_build_type_id: arg1,
-                pre_battles_info: arg2,
+                team_build_type_id: _,
+                pre_battles_info: _,
                 player_states: players,
             } => {
                 debug!("OnArenaStateReceived");
@@ -2148,9 +2170,9 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::CheckPing(_) => trace!("CHECK PING"),
             crate::analyzer::decoder::DecodedPacketPayload::DamageReceived {
                 victim,
-                aggressors,
+                ref aggressors,
             } => {
-                for damage in &aggressors {
+                for damage in aggressors {
                     self.damage_dealt
                         .entry(damage.aggressor)
                         .or_default()
@@ -2158,18 +2180,13 @@ where
                             amount: damage.damage,
                             victim,
                         });
-                    self.timeline.push(
-                        packet.clock,
-                        TimelineEvent::DamageDealt {
-                            aggressor_id: damage.aggressor,
-                            victim_id: victim,
-                            damage: damage.damage,
-                        },
-                    );
                 }
             }
-            crate::analyzer::decoder::DecodedPacketPayload::MinimapUpdate { updates, arg1: _ } => {
-                for update in &updates {
+            crate::analyzer::decoder::DecodedPacketPayload::MinimapUpdate {
+                ref updates,
+                arg1: _,
+            } => {
+                for update in updates {
                     let visible = !update.disappearing;
                     self.minimap_positions.insert(
                         update.entity_id,
@@ -2181,31 +2198,51 @@ where
                             last_updated: packet.clock,
                         },
                     );
-                    self.timeline.push(
-                        packet.clock,
-                        TimelineEvent::MinimapVisionUpdate {
-                            entity_id: update.entity_id,
-                            position: update.position,
-                            heading: update.heading,
-                            disappearing: update.disappearing,
-                        },
-                    );
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::PropertyUpdate(update) => {
                 if let Some(entity) = self.entities_by_id.get(&update.entity_id) {
                     debug!("PROPERTY UPDATE: {:#?}", update);
                 }
+                // Handle smoke screen point mutations
+                if update.property == "points" {
+                    if let Some(entity) = self.entities_by_id.get(&update.entity_id) {
+                        if let Some(smoke_ref) = entity.smoke_screen_ref() {
+                            let mut smoke = RefCell::borrow_mut(smoke_ref);
+                            match &update.update_cmd.action {
+                                UpdateAction::SetRange { start, values, .. } => {
+                                    while smoke.points.len() < start + values.len() {
+                                        smoke.points.push(WorldPos::default());
+                                    }
+                                    for (i, v) in values.iter().enumerate() {
+                                        if let ArgValue::Vector3((x, y, z)) = v {
+                                            smoke.points[start + i] = WorldPos {
+                                                x: *x,
+                                                y: *y,
+                                                z: *z,
+                                            };
+                                        }
+                                    }
+                                }
+                                UpdateAction::RemoveRange { start, stop } => {
+                                    let end = (*stop).min(smoke.points.len());
+                                    smoke.points.drain(*start..end);
+                                }
+                                _ => {}
+                            }
+                            drop(smoke);
+                        }
+                    }
+                }
                 self.handle_property_update(packet.clock, update);
             }
             crate::analyzer::decoder::DecodedPacketPayload::BattleEnd {
                 winning_team,
-                state,
+                state: _,
             } => {
                 self.match_finished = true;
+                self.battle_end_clock = Some(packet.clock);
                 self.winning_team = winning_team;
-                self.timeline
-                    .push(packet.clock, TimelineEvent::BattleEnd { winning_team });
             }
             crate::analyzer::decoder::DecodedPacketPayload::Consumable {
                 entity,
@@ -2220,55 +2257,71 @@ where
                         activated_at: packet.clock,
                         duration,
                     });
-                self.timeline.push(
-                    packet.clock,
-                    TimelineEvent::ConsumableActivated {
-                        entity_id: entity,
-                        consumable,
-                        duration,
-                    },
-                );
             }
             crate::analyzer::decoder::DecodedPacketPayload::ArtilleryShots {
                 entity_id,
                 salvos,
             } => {
-                self.timeline.push(
-                    packet.clock,
-                    TimelineEvent::ArtilleryShots { entity_id, salvos },
-                );
+                for salvo in salvos {
+                    self.active_shots.push(ActiveShot {
+                        entity_id,
+                        salvo,
+                        fired_at: packet.clock,
+                    });
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::TorpedoesReceived {
                 entity_id,
                 torpedoes,
             } => {
-                self.timeline.push(
-                    packet.clock,
-                    TimelineEvent::TorpedoesLaunched {
+                for torpedo in torpedoes {
+                    self.active_torpedoes.push(ActiveTorpedo {
                         entity_id,
-                        torpedoes,
-                    },
-                );
+                        torpedo,
+                        launched_at: packet.clock,
+                    });
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::PlanePosition {
-                entity_id,
+                entity_id: _,
                 plane_id,
                 x,
                 y,
             } => {
-                self.timeline.push(
-                    packet.clock,
-                    TimelineEvent::PlanePosition {
-                        entity_id,
+                if let Some(plane) = self.active_planes.get_mut(&plane_id) {
+                    plane.x = x;
+                    plane.y = y;
+                    plane.last_updated = packet.clock;
+                }
+            }
+            crate::analyzer::decoder::DecodedPacketPayload::PlaneAdded {
+                entity_id,
+                plane_id,
+                team_id,
+                params_id,
+                x,
+                y,
+            } => {
+                self.active_planes.insert(
+                    plane_id,
+                    ActivePlane {
                         plane_id,
+                        owner_id: entity_id,
+                        team_id,
+                        params_id,
                         x,
                         y,
+                        last_updated: packet.clock,
                     },
                 );
             }
-            crate::analyzer::decoder::DecodedPacketPayload::PlaneAdded { .. } => {}
-            crate::analyzer::decoder::DecodedPacketPayload::PlaneRemoved { .. } => {}
-            crate::analyzer::decoder::DecodedPacketPayload::CruiseState { state, value } => {
+            crate::analyzer::decoder::DecodedPacketPayload::PlaneRemoved {
+                entity_id: _,
+                plane_id,
+            } => {
+                self.active_planes.remove(&plane_id);
+            }
+            crate::analyzer::decoder::DecodedPacketPayload::CruiseState { .. } => {
                 trace!("CRUISE STATE")
             }
             crate::analyzer::decoder::DecodedPacketPayload::Map(_) => trace!("MAP"),
@@ -2280,7 +2333,18 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::CameraFreeLook(_) => {
                 trace!("CAMERA FREE LOOK")
             }
-            crate::analyzer::decoder::DecodedPacketPayload::ShotKills { .. } => {}
+            crate::analyzer::decoder::DecodedPacketPayload::ShotKills { entity_id: _, hits } => {
+                // Remove matched torpedoes by composite key
+                for hit in &hits {
+                    let composite_key = format!("{}{}", hit.owner_id, hit.shot_id);
+                    if let Ok(key) = composite_key.parse::<u64>() {
+                        self.active_torpedoes.retain(|t| {
+                            let torp_key = format!("{}{}", t.torpedo.owner_id, t.torpedo.shot_id);
+                            torp_key.parse::<u64>().map(|k| k != key).unwrap_or(true)
+                        });
+                    }
+                }
+            }
             crate::analyzer::decoder::DecodedPacketPayload::Unknown(_) => trace!("UNKNOWN"),
             crate::analyzer::decoder::DecodedPacketPayload::Invalid(_) => trace!("INVALID"),
             crate::analyzer::decoder::DecodedPacketPayload::Audit(_) => trace!("AUDIT"),
@@ -2351,13 +2415,4 @@ where
     }
 
     fn finish(&mut self) {}
-}
-
-impl<'res, 'replay, G> PacketProcessorMut for BattleController<'res, 'replay, G>
-where
-    G: ResourceLoader,
-{
-    fn process_mut(&mut self, packet: Packet<'_, '_>) {
-        AnalyzerMut::process_mut(self, &packet);
-    }
 }

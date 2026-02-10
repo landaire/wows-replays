@@ -1,33 +1,39 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufWriter;
 
 use anyhow::{anyhow, Context};
 use bytes::Bytes;
-use image::{Rgb, RgbImage, RgbaImage};
 use openh264::encoder::{Encoder, EncoderConfig, FrameRate};
 use openh264::formats::{RgbSliceU8, YUVBuffer};
 use openh264::OpenH264API;
-use wowsunpack::data::Version;
 use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::game_params::types::{GameParamProvider, PlaneCategory, Species};
 
-use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
-use wows_replays::analyzer::{AnalyzerMut, AnalyzerMutBuilder};
-use wows_replays::types::{PlaneId, Relation};
-use wows_replays::ReplayMeta;
+use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
+use wows_replays::types::{EntityId, GameClock, PlaneId, Relation};
 
-use crate::drawing;
-use crate::map_data;
+use crate::draw_command::{DrawCommand, RenderTarget, ShipVisibility};
+use crate::drawing::ImageTarget;
+use crate::map_data::{self, MinimapPos, WorldPos};
+
+/// Convert a parser NormalizedPos to a minimap pixel position.
+fn normalized_to_minimap(pos: &wows_replays::types::NormalizedPos, output_size: u32) -> MinimapPos {
+    MinimapPos {
+        x: (pos.x * output_size as f32) as i32,
+        y: ((1.0 - pos.y) * output_size as f32) as i32,
+    }
+}
 
 const TOTAL_FRAMES: usize = 1800;
 const FPS: f64 = 30.0;
 // Use 768 (multiple of 16) for H.264 macroblock alignment
 const MINIMAP_SIZE: u32 = 768;
-// Top margin for HUD elements (score bar, timer, kill feed)
-const HUD_HEIGHT: u32 = 32;
-// Total canvas height = map + HUD. Round up to next multiple of 16 for H.264.
-const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT; // 800
+const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + 32; // 800
+
+// How long various effects persist in game-seconds
+const TRACER_LEN: f32 = 0.12; // fraction of total shot path length
+const KILL_FEED_DURATION: f32 = 10.0;
 
 #[derive(Clone, Debug)]
 pub enum DumpMode {
@@ -35,698 +41,71 @@ pub enum DumpMode {
     Midpoint,
 }
 
-// How long various effects persist in game-seconds
-const SHOT_DURATION: f32 = 3.0;
-const TORPEDO_MAX_DURATION: f32 = 180.0; // safety fallback; torpedoes primarily removed by hit events
-const KILL_FEED_DURATION: f32 = 10.0;
-
-use crate::map_data::{EntityId, GameClock, MinimapPos, NormalizedPos, WorldPos};
-
-struct ShipSnapshot {
-    pos: WorldPos,
-}
-
-struct ShotTrail {
-    origin: WorldPos,
-    target: WorldPos,
-    flight_duration: f32,
-    clock: GameClock,
-}
-
-struct TorpedoSnapshot {
-    composite_id: u64,
-    owner_id: EntityId,
-    origin: WorldPos,
-    velocity: WorldPos,
-    clock: GameClock,
-}
-
-enum SmokeEvent {
-    SetRange { start: usize, points: Vec<WorldPos> },
-    RemoveRange { start: usize, count: usize },
-}
-
-struct SmokeCloud {
-    radius: f32,
-    created: GameClock,
-    destroyed: Option<GameClock>,
-    /// Initial point from EntityCreate
-    initial_point: WorldPos,
-    /// Timeline of points array mutations
-    events: Vec<(GameClock, SmokeEvent)>,
-}
-
-impl SmokeCloud {
-    fn points_at(&self, time: GameClock) -> Vec<WorldPos> {
-        let mut points = vec![self.initial_point];
-        for (clock, event) in &self.events {
-            if *clock > time {
-                break;
-            }
-            match event {
-                SmokeEvent::SetRange {
-                    start,
-                    points: new_pts,
-                } => {
-                    // Extend if needed
-                    while points.len() < start + new_pts.len() {
-                        points.push(WorldPos {
-                            x: 0.0,
-                            y: 0.0,
-                            z: 0.0,
-                        });
-                    }
-                    for (i, p) in new_pts.iter().enumerate() {
-                        points[start + i] = *p;
-                    }
-                }
-                SmokeEvent::RemoveRange { start, count } => {
-                    let end = (start + count).min(points.len());
-                    points.drain(*start..end);
-                }
-            }
-        }
-        points
-    }
-}
-
 struct SquadronInfo {
     owner_id: EntityId,
-    /// Icon base name derived from aircraft species (e.g. "fighter", "torpedo_regular")
     icon_base: String,
-    /// Which icon directory to load from
     icon_dir: &'static str,
 }
 
-struct KillEvent {
-    clock: GameClock,
-    killer_entity: EntityId,
-    victim_entity: EntityId,
-}
-
-struct MinimapShipUpdate {
-    entity_id: EntityId,
-    pos: NormalizedPos,
-    heading: f32,
-    disappearing: bool,
-    clock: GameClock,
-}
-
-/// Pre-rasterized ship icon (RGBA, white/alpha mask to be tinted at draw time).
-pub type ShipIcon = RgbaImage;
-
-pub struct MinimapBuilder {
-    output_path: String,
-    map_image: Option<RgbImage>,
-    map_info: Option<map_data::MapInfo>,
-    dump_mode: Option<DumpMode>,
-    ship_icons: HashMap<String, ShipIcon>,
-    plane_icons: HashMap<String, RgbaImage>,
-    game_params: GameMetadataProvider,
-}
-
-impl MinimapBuilder {
-    pub fn new(
-        output_path: &str,
-        map_image: Option<RgbImage>,
-        map_info: Option<map_data::MapInfo>,
-        dump_mode: Option<DumpMode>,
-        ship_icons: HashMap<String, ShipIcon>,
-        plane_icons: HashMap<String, RgbaImage>,
-        game_params: GameMetadataProvider,
-    ) -> Self {
-        Self {
-            output_path: output_path.to_string(),
-            map_image,
-            map_info,
-            dump_mode,
-            ship_icons,
-            plane_icons,
-            game_params,
-        }
-    }
-}
-
-impl AnalyzerMutBuilder for MinimapBuilder {
-    fn build(self, meta: &ReplayMeta) -> Box<dyn AnalyzerMut> {
-        let version = Version::from_client_exe(&meta.clientVersionFromExe);
-        let map_name = meta.mapName.clone();
-
-        // Build relation map from meta.vehicles
-        let mut relations: HashMap<String, Relation> = HashMap::new();
-        for v in &meta.vehicles {
-            relations.insert(v.name.clone(), Relation::new(v.relation));
-        }
-
-        // Resolve species by player name (meta.vehicles has shipId = shipParamsId)
-        let mut species_by_name: HashMap<String, String> = HashMap::new();
-        for v in &meta.vehicles {
-            if let Some(param) = self.game_params.game_param_by_id(v.shipId.raw()) {
-                if let Some(species) = param.species() {
-                    species_by_name.insert(v.name.clone(), format!("{:?}", species));
-                }
-            }
-        }
-
-        Box::new(MinimapRenderer {
-            version,
-            map_name,
-            output_path: self.output_path,
-            dump_mode: self.dump_mode,
-            map_image: self.map_image,
-            map_info: self.map_info,
-            relations_by_name: relations,
-            species_by_name,
-            ship_icons: self.ship_icons,
-            plane_icons: self.plane_icons,
-            game_params: self.game_params,
-            player_species: HashMap::new(),
-            health_timeline: BTreeMap::new(),
-            max_health: HashMap::new(),
-            positions: BTreeMap::new(),
-            yaw_timeline: BTreeMap::new(),
-            minimap_updates: Vec::new(),
-            shots: Vec::new(),
-            torpedoes: Vec::new(),
-            torpedo_hits: HashMap::new(),
-            planes: BTreeMap::new(),
-            squadron_info: HashMap::new(),
-            smoke_screens: BTreeMap::new(),
-            kills: Vec::new(),
-            scores: Vec::new(),
-            player_names: HashMap::new(),
-            player_relations: HashMap::new(),
-            dead_ships: BTreeMap::new(),
-            last_clock: GameClock(0.0),
-        })
-    }
-}
-
-struct MinimapRenderer {
-    version: Version,
-    map_name: String,
+/// Streaming minimap renderer.
+///
+/// Reads live state from `BattleControllerState` at each frame boundary
+/// and emits `DrawCommand`s to a `RenderTarget`. No timelines are stored.
+/// Frames are encoded to H.264 on the fly to avoid storing raw RGB data.
+pub struct MinimapRenderer {
+    // Config (immutable after construction)
     output_path: String,
     dump_mode: Option<DumpMode>,
-    map_image: Option<RgbImage>,
     map_info: Option<map_data::MapInfo>,
-
-    // From replay meta
-    relations_by_name: HashMap<String, Relation>,
-    species_by_name: HashMap<String, String>,
-
-    // Ship icons + per-entity species (resolved during OnArenaStateReceived)
-    ship_icons: HashMap<String, ShipIcon>,
-    plane_icons: HashMap<String, RgbaImage>,
     game_params: GameMetadataProvider,
-    player_species: HashMap<EntityId, String>,
 
-    // Health tracking: (clock, health) timeline per entity, and max health
-    health_timeline: BTreeMap<EntityId, Vec<(GameClock, f32)>>,
-    max_health: HashMap<EntityId, f32>,
-
-    // Collected data — BTreeMaps for deterministic draw order
-    positions: BTreeMap<EntityId, Vec<(GameClock, ShipSnapshot)>>,
-    yaw_timeline: BTreeMap<EntityId, Vec<(GameClock, f32)>>,
-    minimap_updates: Vec<MinimapShipUpdate>,
-    shots: Vec<ShotTrail>,
-    torpedoes: Vec<TorpedoSnapshot>,
-    torpedo_hits: HashMap<u64, GameClock>, // composite_id -> clock when hit
-    planes: BTreeMap<PlaneId, Vec<(GameClock, WorldPos)>>,
+    // Caches populated lazily from controller state
     squadron_info: HashMap<PlaneId, SquadronInfo>,
-    smoke_screens: BTreeMap<EntityId, SmokeCloud>,
-    kills: Vec<KillEvent>,
-    scores: Vec<(GameClock, i32, i32)>,
+    player_species: HashMap<EntityId, String>,
     player_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
-    dead_ships: BTreeMap<EntityId, (GameClock, MinimapPos)>,
-    last_clock: GameClock,
-}
+    players_populated: bool,
 
-/// Build the icon base name from species, consumable flag, and ammo type.
-///
-/// Consumable planes use simple names (e.g. "fighter", "scout") from the
-/// consumables icon directory. Controllable (CV) planes combine species with
-/// ammo type (e.g. "bomber_he", "torpedo_regular", "fighter_ap").
-fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) -> String {
-    use convert_case::{Case, Casing};
+    // Frame tracking
+    game_duration: f32,
+    last_rendered_frame: i64,
 
-    // ammoType values like "depthcharge" have no word boundary for convert_case,
-    // so normalize known cases before converting
-    let normalized = match ammo_type {
-        "depthcharge" => "depth_charge",
-        other => other,
-    };
-    let ammo = normalized.to_case(Case::Snake);
-    if is_consumable {
-        match species {
-            // ASW depth charge planes (consumable airsupport)
-            Species::Dive => format!("bomber_{ammo}"),
-            _ => {
-                let species_name: &str = (&species).into();
-                species_name.to_case(Case::Snake)
-            }
-        }
-    } else {
-        match species {
-            Species::Fighter => format!("fighter_{ammo}"),
-            Species::Dive => format!("bomber_{ammo}"),
-            Species::Bomber => match ammo.as_str() {
-                "torpedo_deepwater" => "torpedo_deepwater".to_string(),
-                _ => "torpedo_regular".to_string(),
-            },
-            Species::Skip => format!("skip_{ammo}"),
-            Species::Airship => "auxiliary".to_string(),
-            _ => format!("fighter_{ammo}"),
-        }
-    }
+    // H.264 encoder (created lazily on first video frame)
+    encoder: Option<Encoder>,
+    // Encoded H.264 Annex B NAL data per frame (much smaller than raw RGB)
+    h264_frames: Vec<Vec<u8>>,
 }
 
 impl MinimapRenderer {
-    /// Interpolate between position samples, or return the nearest sample.
-    /// Returns None only if there are no samples at all or game_time is before the first sample.
-    fn interpolate_position(
-        positions: &[(GameClock, ShipSnapshot)],
-        game_time: GameClock,
-    ) -> Option<WorldPos> {
-        if positions.is_empty() {
-            return None;
-        }
-
-        let idx = positions.partition_point(|(t, _)| *t <= game_time);
-
-        let before = idx.checked_sub(1).map(|i| &positions[i]);
-        let after = positions.get(idx);
-
-        match (before, after) {
-            (Some((t0, s0)), Some((t1, s1))) => {
-                let span = *t1 - *t0;
-                let frac = if span.abs() > 0.001 {
-                    (game_time - *t0) / span
-                } else {
-                    0.0
-                };
-                Some(s0.pos.lerp(s1.pos, frac))
-            }
-            (Some((_t, snap)), None) => Some(snap.pos),
-            (None, Some((_t, snap))) => Some(snap.pos),
-            _ => None,
+    pub fn new(
+        output_path: &str,
+        map_info: Option<map_data::MapInfo>,
+        dump_mode: Option<DumpMode>,
+        game_params: GameMetadataProvider,
+        game_duration: f32,
+    ) -> Self {
+        Self {
+            output_path: output_path.to_string(),
+            dump_mode,
+            map_info,
+            game_params,
+            squadron_info: HashMap::new(),
+            player_species: HashMap::new(),
+            player_names: HashMap::new(),
+            player_relations: HashMap::new(),
+            players_populated: false,
+            game_duration,
+            last_rendered_frame: -1,
+            encoder: None,
+            h264_frames: Vec::with_capacity(TOTAL_FRAMES),
         }
     }
 
-    fn interpolate_yaw(yaw_samples: &[(GameClock, f32)], game_time: GameClock) -> f32 {
-        use std::f32::consts::PI;
-
-        if yaw_samples.is_empty() {
-            return 0.0;
+    /// Create the H.264 encoder on first use.
+    fn ensure_encoder(&mut self) -> anyhow::Result<()> {
+        if self.encoder.is_some() {
+            return Ok(());
         }
-
-        let idx = yaw_samples.partition_point(|(t, _)| *t <= game_time);
-
-        let before = idx.checked_sub(1).map(|i| &yaw_samples[i]);
-        let after = yaw_samples.get(idx);
-
-        match (before, after) {
-            (Some((t0, y0)), Some((t1, y1))) => {
-                let span = *t1 - *t0;
-                let frac = if span.abs() > 0.001 {
-                    (game_time - *t0) / span
-                } else {
-                    0.0
-                };
-                // Shortest-arc interpolation: wrap the delta to [-PI, PI]
-                let mut delta = y1 - y0;
-                while delta > PI {
-                    delta -= 2.0 * PI;
-                }
-                while delta < -PI {
-                    delta += 2.0 * PI;
-                }
-                y0 + delta * frac
-            }
-            (Some((_, y)), None) => *y,
-            (None, Some((_, y))) => *y,
-            _ => 0.0,
-        }
-    }
-
-    /// Build a full canvas (MINIMAP_SIZE x CANVAS_HEIGHT) with the map placed below the HUD area.
-    fn build_canvas(&self, map_image: &RgbImage, font: &ab_glyph::FontRef) -> RgbImage {
-        let mut canvas = RgbImage::from_pixel(MINIMAP_SIZE, CANVAS_HEIGHT, Rgb([20, 25, 35]));
-        // Paste map image at y=HUD_HEIGHT
-        for y in 0..map_image.height().min(MINIMAP_SIZE) {
-            for x in 0..map_image.width().min(MINIMAP_SIZE) {
-                canvas.put_pixel(x, y + HUD_HEIGHT, *map_image.get_pixel(x, y));
-            }
-        }
-        // Draw grid overlay
-        drawing::draw_grid(&mut canvas, MINIMAP_SIZE, HUD_HEIGHT, font);
-        canvas
-    }
-
-    fn render_single_frame(&mut self, frame_idx: usize) -> anyhow::Result<RgbImage> {
-        let map_info = self
-            .map_info
-            .as_ref()
-            .ok_or_else(|| anyhow!("No map info for: {}", self.map_name))?;
-        let font = drawing::load_font();
-        let map_image = self
-            .map_image
-            .clone()
-            .unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
-
-        let game_duration = self.last_clock;
-        if game_duration.seconds() <= 0.0 {
-            return Err(anyhow!("No game data found"));
-        }
-
-        let game_time = GameClock(frame_idx as f32 * game_duration.seconds() / TOTAL_FRAMES as f32);
-        let mut frame = self.build_canvas(&map_image, &font);
-        self.draw_frame(&mut frame, game_time, &map_info, &font);
-        Ok(frame)
-    }
-
-    fn draw_frame(
-        &self,
-        frame: &mut RgbImage,
-        game_time: GameClock,
-        map_info: &map_data::MapInfo,
-        font: &ab_glyph::FontRef,
-    ) {
-        let y_off = HUD_HEIGHT as i32;
-
-        // 1. Score bar (drawn in HUD area, no offset)
-        let (score0, score1) = self.get_scores_at(game_time);
-        drawing::draw_score_bar(frame, score0, score1, font);
-
-        // 2. Artillery shot tracers (short segments moving from origin to target)
-        const TRACER_LEN: f32 = 0.12; // fraction of total path length
-        for shot in &self.shots {
-            let elapsed = game_time - shot.clock;
-            if elapsed < 0.0 || elapsed > shot.flight_duration {
-                continue;
-            }
-            let frac = elapsed / shot.flight_duration;
-            let head = shot.origin.lerp(shot.target, frac);
-            let tail = shot.origin.lerp(shot.target, (frac - TRACER_LEN).max(0.0));
-            let head_px = map_info.world_to_minimap(head, MINIMAP_SIZE);
-            let tail_px = map_info.world_to_minimap(tail, MINIMAP_SIZE);
-            drawing::draw_shot_line(
-                frame,
-                tail_px.x as f32,
-                tail_px.y as f32 + y_off as f32,
-                head_px.x as f32,
-                head_px.y as f32 + y_off as f32,
-            );
-        }
-
-        // 3. Torpedoes
-        // Direction vector magnitude IS the speed (m/s)
-        // Torpedoes are removed when hit (via receiveShotKills) or out of bounds
-        let half_space = map_info.space_size as f32 / 2.0;
-        for torp in &self.torpedoes {
-            if game_time < torp.clock || game_time > torp.clock + TORPEDO_MAX_DURATION {
-                continue;
-            }
-            // Skip torpedoes that have been hit (at or after the hit time)
-            if let Some(&hit_time) = self.torpedo_hits.get(&torp.composite_id) {
-                if game_time >= hit_time {
-                    continue;
-                }
-            }
-            let elapsed = game_time - torp.clock;
-            let world = torp.origin + torp.velocity * elapsed;
-            // Skip torpedoes that have left the map
-            if world.x.abs() > half_space || world.z.abs() > half_space {
-                continue;
-            }
-            let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
-            let relation = self
-                .player_relations
-                .get(&torp.owner_id)
-                .copied()
-                .unwrap_or(Relation::new(2));
-            let color = if relation.is_self() || relation.is_ally() {
-                drawing::COLOR_TORPEDO_FRIENDLY
-            } else {
-                drawing::COLOR_TORPEDO
-            };
-            drawing::draw_torpedo(frame, px.x, px.y + y_off, color);
-        }
-
-        // 4. Smoke screens
-        if let Some(map_info) = &self.map_info {
-            for smoke in self.smoke_screens.values() {
-                if game_time < smoke.created {
-                    continue;
-                }
-                if let Some(end) = smoke.destroyed {
-                    if game_time >= end {
-                        continue;
-                    }
-                }
-                let active_points = smoke.points_at(game_time);
-                let px_radius =
-                    (smoke.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
-                for point in &active_points {
-                    let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
-                    drawing::draw_smoke(frame, px.x, px.y + y_off, px_radius.max(3));
-                }
-            }
-        }
-
-        // 5. Ships — unified pass using both world positions and minimap updates
-        //
-        // Precompute per-entity minimap update index (sorted by time already)
-        let mut minimap_by_entity: HashMap<EntityId, Vec<usize>> = HashMap::new();
-        for (i, u) in self.minimap_updates.iter().enumerate() {
-            minimap_by_entity.entry(u.entity_id).or_default().push(i);
-        }
-
-        // Collect all known entity IDs from both sources
-        let all_entity_ids: BTreeSet<EntityId> = self
-            .positions
-            .keys()
-            .chain(minimap_by_entity.keys())
-            .copied()
-            .collect();
-
-        for entity_id in &all_entity_ids {
-            // Skip dead ships
-            if let Some((death_time, _)) = self.dead_ships.get(entity_id) {
-                if game_time >= *death_time {
-                    continue;
-                }
-            }
-
-            // Find the most recent minimap update at or before current game time.
-            // This is the authoritative source for whether a ship is detected.
-            let latest_minimap = minimap_by_entity.get(entity_id).and_then(|indices| {
-                indices.iter().rev().find_map(|&i| {
-                    let u = &self.minimap_updates[i];
-                    if u.clock <= game_time {
-                        Some(u)
-                    } else {
-                        None
-                    }
-                })
-            });
-
-            // Visibility is determined by the minimap data:
-            // - disappearing=false means detected (Visible or MinimapOnly depending on position data)
-            // - disappearing=true means undetected (show last known position)
-            // - no minimap data yet means the ship hasn't appeared
-            let detected = latest_minimap.map(|u| !u.disappearing).unwrap_or(false);
-
-            // Best world position (interpolated or last sample)
-            let world_pos = self
-                .positions
-                .get(entity_id)
-                .and_then(|p| Self::interpolate_position(p, game_time));
-
-            let relation = self
-                .player_relations
-                .get(entity_id)
-                .copied()
-                .unwrap_or(Relation::new(2));
-            let color = drawing::ship_color(relation);
-
-            if detected {
-                if let Some(world) = world_pos {
-                    // Detected + world position → Visible (solid icon at precise position)
-                    let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
-                    let yaw = self
-                        .yaw_timeline
-                        .get(entity_id)
-                        .map(|ys| Self::interpolate_yaw(ys, game_time))
-                        .unwrap_or(0.0);
-                    self.draw_ship_or_icon(
-                        frame,
-                        *entity_id,
-                        px.x,
-                        px.y + y_off,
-                        yaw,
-                        color,
-                        drawing::ShipVisibility::Visible,
-                        game_time,
-                    );
-                } else if let Some(update) = latest_minimap {
-                    // Detected but no world position → MinimapOnly (outline at minimap coords)
-                    let px = update.pos.to_minimap(MINIMAP_SIZE);
-                    self.draw_ship_or_icon(
-                        frame,
-                        *entity_id,
-                        px.x,
-                        px.y + y_off,
-                        update.heading,
-                        color,
-                        drawing::ShipVisibility::MinimapOnly,
-                        game_time,
-                    );
-                }
-            } else if let Some(disappear_update) = latest_minimap {
-                // Undetected — show frozen at the position when the ship went dark.
-                // Use the disappearing event's timestamp to look up where the ship was.
-                let vanish_time = disappear_update.clock;
-
-                let frozen_world = self
-                    .positions
-                    .get(entity_id)
-                    .and_then(|p| Self::interpolate_position(p, vanish_time));
-
-                if let Some(world) = frozen_world {
-                    let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
-                    let yaw = self
-                        .yaw_timeline
-                        .get(entity_id)
-                        .map(|ys| Self::interpolate_yaw(ys, vanish_time))
-                        .unwrap_or(0.0);
-                    self.draw_ship_or_icon(
-                        frame,
-                        *entity_id,
-                        px.x,
-                        px.y + y_off,
-                        yaw,
-                        color,
-                        drawing::ShipVisibility::Undetected,
-                        game_time,
-                    );
-                } else {
-                    // No world position — use the minimap position from the disappearing event
-                    let px = disappear_update.pos.to_minimap(MINIMAP_SIZE);
-                    self.draw_ship_or_icon(
-                        frame,
-                        *entity_id,
-                        px.x,
-                        px.y + y_off,
-                        disappear_update.heading,
-                        color,
-                        drawing::ShipVisibility::Undetected,
-                        game_time,
-                    );
-                }
-            }
-            // If no minimap data exists yet, skip — ship hasn't appeared in the replay
-        }
-
-        // 6. Dead ship markers
-        for (_, &(death_time, ref pos)) in &self.dead_ships {
-            if game_time >= death_time {
-                drawing::draw_dead_ship(frame, pos.x, pos.y + y_off);
-            }
-        }
-
-        // 7. Planes
-        // Show at interpolated position between updates. After the last update,
-        // the squadron is gone (recalled or destroyed), so don't render.
-        for (plane_id, plane_positions) in &self.planes {
-            if plane_positions.is_empty() {
-                continue;
-            }
-            let first_time = plane_positions.first().unwrap().0;
-            let last_time = plane_positions.last().unwrap().0;
-            if game_time < first_time || game_time > last_time {
-                continue;
-            }
-            let idx = plane_positions.partition_point(|(t, _)| *t <= game_time);
-            let before = idx.checked_sub(1).map(|i| &plane_positions[i]);
-            let after = plane_positions.get(idx);
-            let world = match (before, after) {
-                (Some((t0, p0)), Some((t1, p1))) => {
-                    let span = *t1 - *t0;
-                    let frac = if span.abs() > 0.001 {
-                        (game_time - *t0) / span
-                    } else {
-                        0.0
-                    };
-                    p0.lerp(*p1, frac)
-                }
-                (Some((_, p)), None) => *p,
-                (None, Some((_, p))) => *p,
-                _ => continue,
-            };
-            if let Some(map_info) = &self.map_info {
-                let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
-                let info = self.squadron_info.get(plane_id);
-                let is_enemy = info
-                    .and_then(|i| self.player_relations.get(&i.owner_id))
-                    .map(|r| r.is_enemy())
-                    .unwrap_or(false);
-                let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
-                let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
-                let suffix = if is_enemy { "enemy" } else { "ally" };
-                let key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
-                let icon = self.plane_icons.get(&key).or_else(|| {
-                    self.plane_icons
-                        .get(&format!("consumables/fighter_{}", suffix))
-                });
-                if let Some(icon) = icon {
-                    drawing::draw_plane_icon(frame, icon, px.x, px.y + y_off);
-                } else {
-                    let color = if is_enemy {
-                        drawing::COLOR_TEAM_RED
-                    } else {
-                        drawing::COLOR_TEAM_GREEN
-                    };
-                    drawing::draw_plane_dot(frame, px.x, px.y + y_off, color);
-                }
-            }
-        }
-
-        // 8. Kill feed
-        let recent_kills = self.get_recent_kills(game_time);
-        if !recent_kills.is_empty() {
-            drawing::draw_kill_feed(frame, &recent_kills, font);
-        }
-
-        // 9. Timer
-        drawing::draw_timer(frame, game_time.seconds(), font);
-    }
-
-    fn render_frames(&mut self) -> anyhow::Result<()> {
-        let map_info = self
-            .map_info
-            .as_ref()
-            .ok_or_else(|| anyhow!("No map info for: {}", self.map_name))?
-            .clone();
-
-        let font = drawing::load_font();
-
-        let map_image = self
-            .map_image
-            .take()
-            .unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
-
-        let game_duration = self.last_clock;
-        if game_duration.seconds() <= 0.0 {
-            return Err(anyhow!("No game data found"));
-        }
-
-        println!(
-            "Rendering {} frames ({}x{}, {} game time at {:.0} fps)...",
-            TOTAL_FRAMES, MINIMAP_SIZE, CANVAS_HEIGHT, game_duration, FPS
-        );
-
-        // Setup H.264 encoder — screen content mode for sharp graphics, low QP for quality
         let config = EncoderConfig::new()
             .max_frame_rate(FrameRate::from_hz(FPS as f32))
             .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
@@ -735,35 +114,143 @@ impl MinimapRenderer {
             .qp(openh264::encoder::QpRange::new(0, 24))
             .adaptive_quantization(false)
             .background_detection(false);
-        let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
-            .context("Failed to create H.264 encoder")?;
+        self.encoder = Some(
+            Encoder::with_api_config(OpenH264API::from_source(), config)
+                .context("Failed to create H.264 encoder")?,
+        );
+        println!(
+            "Rendering {} frames ({}x{}, {:.1}s game time at {:.0} fps)...",
+            TOTAL_FRAMES, MINIMAP_SIZE, CANVAS_HEIGHT, self.game_duration, FPS
+        );
+        Ok(())
+    }
 
-        // Encode all frames first, collecting Annex B NAL units
-        let mut encoded_frames: Vec<Vec<u8>> = Vec::with_capacity(TOTAL_FRAMES);
-        for frame_idx in 0..TOTAL_FRAMES {
-            let game_time =
-                GameClock(frame_idx as f32 * game_duration.seconds() / TOTAL_FRAMES as f32);
+    /// Encode a rendered frame to H.264 immediately.
+    fn encode_frame(&mut self, target: &ImageTarget) -> anyhow::Result<()> {
+        let encoder = self
+            .encoder
+            .as_mut()
+            .ok_or_else(|| anyhow!("Encoder not initialized"))?;
+        let frame_image = target.frame();
+        let rgb_data = frame_image.as_raw();
+        let rgb = RgbSliceU8::new(rgb_data, (MINIMAP_SIZE as usize, CANVAS_HEIGHT as usize));
+        let yuv = YUVBuffer::from_rgb_source(rgb);
+        let bitstream = encoder
+            .encode(&yuv)
+            .map_err(|e| anyhow!("H.264 encode error: {:?}", e))?;
+        self.h264_frames.push(bitstream.to_vec());
+        Ok(())
+    }
 
-            let mut frame = self.build_canvas(&map_image, &font);
-            self.draw_frame(&mut frame, game_time, &map_info, &font);
-
-            let rgb_data = frame.into_raw();
-            let rgb = RgbSliceU8::new(&rgb_data, (MINIMAP_SIZE as usize, CANVAS_HEIGHT as usize));
-            let yuv = YUVBuffer::from_rgb_source(rgb);
-            let bitstream = encoder
-                .encode(&yuv)
-                .map_err(|e| anyhow!("H.264 encode error: {:?}", e))?;
-
-            let encoded = bitstream.to_vec();
-            encoded_frames.push(encoded);
-
-            if frame_idx % 100 == 0 {
-                println!("  Frame {}/{}", frame_idx, TOTAL_FRAMES);
-            }
+    /// Called before each packet is processed by the controller.
+    ///
+    /// If the new clock has crossed one or more frame boundaries, renders
+    /// frames from the controller's current state (which reflects all
+    /// packets up to but not including this one).
+    pub fn advance_clock(
+        &mut self,
+        new_clock: GameClock,
+        controller: &dyn BattleControllerState,
+        target: &mut ImageTarget,
+    ) {
+        if self.game_duration <= 0.0 {
+            return;
         }
 
-        // Extract SPS and PPS from the first keyframe, and convert all frames to AVCC format
-        let first_frame = &encoded_frames[0];
+        // Populate player info on first opportunity
+        self.populate_players(controller);
+
+        let frame_duration = self.game_duration / TOTAL_FRAMES as f32;
+        let target_frame = (new_clock.seconds() / frame_duration) as i64;
+
+        while self.last_rendered_frame < target_frame {
+            self.last_rendered_frame += 1;
+            if self.last_rendered_frame >= TOTAL_FRAMES as i64 {
+                break;
+            }
+
+            // Update squadron info for any new planes
+            self.update_squadron_info(controller);
+
+            let commands = self.draw_frame(controller);
+
+            if let Some(ref dump_mode) = self.dump_mode {
+                let dump_frame = match dump_mode {
+                    DumpMode::Frame(n) => *n as i64,
+                    DumpMode::Midpoint => TOTAL_FRAMES as i64 / 2,
+                };
+                if self.last_rendered_frame == dump_frame {
+                    target.begin_frame();
+                    for cmd in &commands {
+                        target.draw(cmd);
+                    }
+                    target.end_frame();
+
+                    let png_path = self.output_path.replace(".mp4", ".png");
+                    let png_path = if png_path == self.output_path {
+                        format!("{}.png", self.output_path)
+                    } else {
+                        png_path
+                    };
+                    if let Err(e) = target.frame().save(&png_path) {
+                        eprintln!("Error saving frame: {}", e);
+                    } else {
+                        let (w, h) = target.canvas_size();
+                        println!("Frame {} saved to {} ({}x{})", dump_frame, png_path, w, h);
+                    }
+                }
+            } else {
+                // Full video mode: render, encode to H.264 immediately
+                if let Err(e) = self.ensure_encoder() {
+                    eprintln!("Encoder error: {}", e);
+                    return;
+                }
+
+                target.begin_frame();
+                for cmd in &commands {
+                    target.draw(cmd);
+                }
+                target.end_frame();
+
+                if let Err(e) = self.encode_frame(target) {
+                    eprintln!("Encode error: {}", e);
+                    return;
+                }
+
+                if self.last_rendered_frame % 100 == 0 {
+                    println!("  Frame {}/{}", self.last_rendered_frame, TOTAL_FRAMES);
+                }
+            }
+        }
+    }
+
+    /// Finalize: flush any remaining frames and write the video file.
+    pub fn finish(
+        &mut self,
+        controller: &dyn BattleControllerState,
+        target: &mut ImageTarget,
+    ) -> anyhow::Result<()> {
+        // Render up to the actual battle end (or last packet), not meta.duration.
+        // This avoids duplicating frozen frames when the match ends early.
+        let end_clock = controller.battle_end_clock().unwrap_or(controller.clock());
+        self.advance_clock(end_clock, controller, target);
+
+        if self.dump_mode.is_some() {
+            return Ok(());
+        }
+
+        // Mux the already-encoded H.264 frames into MP4
+        self.mux_to_mp4()
+    }
+
+    /// Mux pre-encoded H.264 Annex B frames into an MP4 file.
+    fn mux_to_mp4(&self) -> anyhow::Result<()> {
+        if self.h264_frames.is_empty() {
+            return Err(anyhow!("No frames to mux"));
+        }
+
+        // Extract SPS and PPS from the first keyframe
+        let first_frame = &self.h264_frames[0];
         let nals = parse_annexb_nals(first_frame);
         let sps = nals
             .iter()
@@ -804,22 +291,20 @@ impl MinimapRenderer {
         };
         mp4_writer.add_track(&track_config)?;
 
-        let sample_duration = 1000 / FPS as u32; // ms per frame
+        let sample_duration = 1000 / FPS as u32;
 
-        for (frame_idx, annexb_data) in encoded_frames.iter().enumerate() {
+        for (frame_idx, annexb_data) in self.h264_frames.iter().enumerate() {
             if annexb_data.is_empty() {
                 continue;
             }
-
             let nals = parse_annexb_nals(annexb_data);
             let is_sync = nals.iter().any(|n| (n[0] & 0x1f) == 5);
 
-            // Convert to AVCC format (length-prefixed): skip SPS/PPS NALs
             let mut avcc_data = Vec::new();
             for nal in &nals {
                 let nal_type = nal[0] & 0x1f;
                 if nal_type == 7 || nal_type == 8 {
-                    continue; // SPS/PPS are in the track config, not in samples
+                    continue;
                 }
                 let len = nal.len() as u32;
                 avcc_data.extend_from_slice(&len.to_be_bytes());
@@ -845,581 +330,389 @@ impl MinimapRenderer {
         Ok(())
     }
 
-    fn get_scores_at(&self, game_time: GameClock) -> (i32, i32) {
-        let mut best = (0, 0);
-        for &(t, s0, s1) in &self.scores {
-            if t <= game_time {
-                best = (s0, s1);
-            } else {
-                break;
+    /// Produce draw commands for the current frame from controller state.
+    fn draw_frame(&self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
+        let map_info = match self.map_info.as_ref() {
+            Some(info) => info,
+            None => return Vec::new(),
+        };
+
+        let clock = controller.clock();
+        let mut commands = Vec::new();
+
+        // 1. Score bar
+        let scores = controller.team_scores();
+        if scores.len() >= 2 {
+            commands.push(DrawCommand::ScoreBar {
+                team0: scores[0].score as i32,
+                team1: scores[1].score as i32,
+            });
+        }
+
+        // 2. Artillery shot tracers
+        for shot in controller.active_shots() {
+            for shot_data in &shot.salvo.shots {
+                let origin = WorldPos {
+                    x: shot_data.origin.0,
+                    y: shot_data.origin.1,
+                    z: shot_data.origin.2,
+                };
+                let target = WorldPos {
+                    x: shot_data.target.0,
+                    y: shot_data.target.1,
+                    z: shot_data.target.2,
+                };
+                let dx = target.x - origin.x;
+                let dz = target.z - origin.z;
+                let distance = (dx * dx + dz * dz).sqrt();
+                let flight_duration = if shot_data.speed > 0.0 {
+                    distance / shot_data.speed
+                } else {
+                    3.0
+                };
+
+                let elapsed = clock - shot.fired_at;
+                if elapsed < 0.0 || elapsed > flight_duration {
+                    continue;
+                }
+                let frac = elapsed / flight_duration;
+                let head = origin.lerp(target, frac);
+                let tail = origin.lerp(target, (frac - TRACER_LEN).max(0.0));
+                commands.push(DrawCommand::ShotTracer {
+                    from: map_info.world_to_minimap(tail, MINIMAP_SIZE),
+                    to: map_info.world_to_minimap(head, MINIMAP_SIZE),
+                });
             }
         }
-        best
-    }
 
-    fn get_recent_kills(&self, game_time: GameClock) -> Vec<(String, String)> {
-        let mut result = Vec::new();
-        for kill in self.kills.iter().rev() {
-            if game_time >= kill.clock && game_time <= kill.clock + KILL_FEED_DURATION {
+        // 3. Torpedoes
+        let half_space = map_info.space_size as f32 / 2.0;
+        for torp in controller.active_torpedoes() {
+            let elapsed = clock - torp.launched_at;
+            if elapsed < 0.0 {
+                continue;
+            }
+            let world = WorldPos {
+                x: torp.torpedo.origin.0 + torp.torpedo.direction.0 * elapsed,
+                y: 0.0,
+                z: torp.torpedo.origin.2 + torp.torpedo.direction.2 * elapsed,
+            };
+            if world.x.abs() > half_space || world.z.abs() > half_space {
+                continue;
+            }
+            let relation = self
+                .player_relations
+                .get(&torp.torpedo.owner_id)
+                .copied()
+                .unwrap_or(Relation::new(2));
+            let friendly = relation.is_self() || relation.is_ally();
+            commands.push(DrawCommand::Torpedo {
+                pos: map_info.world_to_minimap(world, MINIMAP_SIZE),
+                friendly,
+            });
+        }
+
+        // 4. Smoke screens
+        for entity in controller.entities_by_id().values() {
+            if let Some(smoke_ref) = entity.smoke_screen_ref() {
+                let smoke = smoke_ref.borrow();
+                let px_radius =
+                    (smoke.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                for point in &smoke.points {
+                    let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
+                    commands.push(DrawCommand::Smoke {
+                        pos: px,
+                        radius: px_radius.max(3),
+                    });
+                }
+            }
+        }
+
+        // 5. Ships
+        let ship_positions = controller.ship_positions();
+        let minimap_positions = controller.minimap_positions();
+
+        // Collect all entity IDs that have either world or minimap positions
+        let mut all_ship_ids: Vec<EntityId> = ship_positions
+            .keys()
+            .chain(minimap_positions.keys())
+            .copied()
+            .collect();
+        all_ship_ids.sort();
+        all_ship_ids.dedup();
+
+        let dead_ships = controller.dead_ships();
+
+        for entity_id in &all_ship_ids {
+            // Skip dead ships (they get an X marker below)
+            if let Some(dead) = dead_ships.get(entity_id) {
+                if clock >= dead.clock {
+                    continue;
+                }
+            }
+
+            let relation = self
+                .player_relations
+                .get(entity_id)
+                .copied()
+                .unwrap_or(Relation::new(2));
+            let color = ship_color_rgb(relation);
+            let species = self.player_species.get(entity_id).cloned();
+
+            let minimap = minimap_positions.get(entity_id);
+            let world = ship_positions.get(entity_id);
+            let detected = minimap.map(|m| m.visible).unwrap_or(false);
+
+            // Get health fraction from entity
+            let health_fraction = controller
+                .entities_by_id()
+                .get(entity_id)
+                .and_then(|e| e.vehicle_ref())
+                .map(|v| {
+                    let v = v.borrow();
+                    let max = v.props().max_health();
+                    if max > 0.0 {
+                        Some((v.props().health() / max).clamp(0.0, 1.0))
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+
+            // Compute yaw based on visibility:
+            // - Detected: use minimap heading (most accurate for icon rotation)
+            // - Undetected: use world position yaw (minimap heading may be stale/wrong)
+            let minimap_yaw =
+                minimap.map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.to_radians());
+            let world_yaw = world.map(|sp| sp.yaw);
+
+            if detected {
+                let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
+                if let Some(ship_pos) = world {
+                    // Have world position — use it for location, minimap heading for yaw
+                    let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
+                    commands.push(DrawCommand::Ship {
+                        pos: px,
+                        yaw,
+                        species,
+                        color,
+                        visibility: ShipVisibility::Visible,
+                        health_fraction,
+                    });
+                } else if let Some(mm) = minimap {
+                    // Minimap-only position
+                    let px = normalized_to_minimap(&mm.position, MINIMAP_SIZE);
+                    commands.push(DrawCommand::Ship {
+                        pos: px,
+                        yaw,
+                        species,
+                        color,
+                        visibility: ShipVisibility::MinimapOnly,
+                        health_fraction,
+                    });
+                }
+            } else {
+                // Undetected — show at last known position with world yaw
+                let yaw = world_yaw.or(minimap_yaw).unwrap_or(0.0);
+                if let Some(ship_pos) = world {
+                    let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
+                    commands.push(DrawCommand::Ship {
+                        pos: px,
+                        yaw,
+                        species,
+                        color,
+                        visibility: ShipVisibility::Undetected,
+                        health_fraction,
+                    });
+                } else if let Some(mm) = minimap {
+                    let px = normalized_to_minimap(&mm.position, MINIMAP_SIZE);
+                    commands.push(DrawCommand::Ship {
+                        pos: px,
+                        yaw,
+                        species,
+                        color,
+                        visibility: ShipVisibility::Undetected,
+                        health_fraction,
+                    });
+                }
+            }
+        }
+
+        // 6. Dead ship markers
+        for (_, dead) in dead_ships {
+            if clock >= dead.clock {
+                let px = map_info.world_to_minimap(dead.position, MINIMAP_SIZE);
+                commands.push(DrawCommand::DeadShip { pos: px });
+            }
+        }
+
+        // 7. Planes
+        for (plane_id, plane) in controller.active_planes() {
+            let world = WorldPos {
+                x: plane.x,
+                y: 0.0,
+                z: plane.y,
+            };
+            let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
+
+            let info = self.squadron_info.get(plane_id);
+            let is_enemy = info
+                .and_then(|i| self.player_relations.get(&i.owner_id))
+                .map(|r| r.is_enemy())
+                .unwrap_or(false);
+
+            let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
+            let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
+            let suffix = if is_enemy { "enemy" } else { "ally" };
+            let icon_key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
+
+            let fallback_color = if is_enemy {
+                [254, 77, 42]
+            } else {
+                [76, 232, 170]
+            };
+
+            commands.push(DrawCommand::Plane {
+                pos: px,
+                icon_key,
+                fallback_color,
+            });
+        }
+
+        // 8. Kill feed
+        let kills = controller.kills();
+        let mut recent_kills = Vec::new();
+        for kill in kills.iter().rev() {
+            if clock >= kill.clock && clock <= kill.clock + KILL_FEED_DURATION {
                 let killer_name = self
                     .player_names
-                    .get(&kill.killer_entity)
+                    .get(&kill.killer)
                     .cloned()
-                    .unwrap_or_else(|| format!("#{}", kill.killer_entity));
+                    .unwrap_or_else(|| format!("#{}", kill.killer));
                 let victim_name = self
                     .player_names
-                    .get(&kill.victim_entity)
+                    .get(&kill.victim)
                     .cloned()
-                    .unwrap_or_else(|| format!("#{}", kill.victim_entity));
-                result.push((killer_name, victim_name));
-                if result.len() >= 5 {
+                    .unwrap_or_else(|| format!("#{}", kill.victim));
+                recent_kills.push((killer_name, victim_name));
+                if recent_kills.len() >= 5 {
                     break;
                 }
             }
         }
-        result.reverse();
-        result
-    }
-}
-
-impl AnalyzerMut for MinimapRenderer {
-    fn process_mut(&mut self, packet: &wows_replays::packet2::Packet<'_, '_>) {
-        let decoded = DecodedPacket::from(&self.version, false, packet);
-        if decoded.clock > self.last_clock {
-            self.last_clock = decoded.clock;
+        if !recent_kills.is_empty() {
+            recent_kills.reverse();
+            commands.push(DrawCommand::KillFeed {
+                entries: recent_kills,
+            });
         }
 
-        match decoded.payload {
-            DecodedPacketPayload::Position(pos) => {
-                let eid = EntityId::from(pos.pid);
-                self.positions.entry(eid).or_default().push((
-                    decoded.clock,
-                    ShipSnapshot {
-                        pos: WorldPos {
-                            x: pos.position.x,
-                            y: pos.position.y,
-                            z: pos.position.z,
-                        },
-                    },
-                ));
-            }
+        // 9. Timer
+        commands.push(DrawCommand::Timer {
+            seconds: clock.seconds(),
+        });
 
-            DecodedPacketPayload::PlayerOrientation(ref orient) => {
-                // When parent_id is 0, this is the ship's absolute world position
-                if orient.parent_id == EntityId::from(0u32) {
-                    let eid = EntityId::from(orient.pid);
-                    self.positions.entry(eid).or_default().push((
-                        decoded.clock,
-                        ShipSnapshot {
-                            pos: WorldPos {
-                                x: orient.position.x,
-                                y: orient.position.y,
-                                z: orient.position.z,
-                            },
-                        },
-                    ));
-                }
-            }
-
-            DecodedPacketPayload::OnArenaStateReceived { player_states, .. } => {
-                for player in &player_states {
-                    let entity_id = EntityId::from(player.entity_id());
-                    let name = player.username().to_string();
-                    self.player_names.insert(entity_id, name.clone());
-
-                    if let Some(relation) = self.relations_by_name.get(&name) {
-                        self.player_relations.insert(entity_id, *relation);
-                    }
-                    if let Some(species) = self.species_by_name.get(&name) {
-                        self.player_species.insert(entity_id, species.clone());
-                    }
-                }
-            }
-
-            DecodedPacketPayload::MinimapUpdate { ref updates, .. } => {
-                for u in updates {
-                    let eid = EntityId::from(u.entity_id);
-                    // Minimap heading: 0=north, 90=east (degrees, CW).
-                    // Convert to math convention: 0=east, PI/2=north (radians, CCW).
-                    let yaw = std::f32::consts::FRAC_PI_2 - u.heading.to_radians();
-                    self.minimap_updates.push(MinimapShipUpdate {
-                        entity_id: eid,
-                        pos: NormalizedPos {
-                            x: u.position.x,
-                            y: u.position.y,
-                        },
-                        heading: yaw,
-                        disappearing: u.disappearing,
-                        clock: decoded.clock,
-                    });
-                    if !u.disappearing {
-                        self.yaw_timeline
-                            .entry(eid)
-                            .or_default()
-                            .push((decoded.clock, yaw));
-                    }
-                }
-            }
-
-            DecodedPacketPayload::ArtilleryShots {
-                entity_id: _,
-                ref salvos,
-            } => {
-                for salvo in salvos {
-                    for shot in &salvo.shots {
-                        let origin = WorldPos {
-                            x: shot.origin.0,
-                            y: shot.origin.1,
-                            z: shot.origin.2,
-                        };
-                        let target = WorldPos {
-                            x: shot.target.0,
-                            y: shot.target.1,
-                            z: shot.target.2,
-                        };
-                        let dx = target.x - origin.x;
-                        let dz = target.z - origin.z;
-                        let distance = (dx * dx + dz * dz).sqrt();
-                        let flight_duration = if shot.speed > 0.0 {
-                            distance / shot.speed
-                        } else {
-                            SHOT_DURATION
-                        };
-                        self.shots.push(ShotTrail {
-                            origin,
-                            target,
-                            flight_duration,
-                            clock: decoded.clock,
-                        });
-                    }
-                }
-            }
-
-            DecodedPacketPayload::TorpedoesReceived {
-                entity_id: _,
-                ref torpedoes,
-            } => {
-                for torp in torpedoes {
-                    let composite_id = format!("{}{}", torp.owner_id, torp.shot_id)
-                        .parse::<u64>()
-                        .unwrap_or(0);
-                    self.torpedoes.push(TorpedoSnapshot {
-                        composite_id,
-                        owner_id: EntityId::from(torp.owner_id),
-                        origin: WorldPos {
-                            x: torp.origin.0,
-                            y: torp.origin.1,
-                            z: torp.origin.2,
-                        },
-                        velocity: WorldPos {
-                            x: torp.direction.0,
-                            y: torp.direction.1,
-                            z: torp.direction.2,
-                        },
-                        clock: decoded.clock,
-                    });
-                }
-            }
-
-            DecodedPacketPayload::ShotKills {
-                entity_id: _,
-                ref hits,
-            } => {
-                for hit in hits {
-                    let composite_id = format!("{}{}", hit.owner_id, hit.shot_id)
-                        .parse::<u64>()
-                        .unwrap_or(0);
-                    self.torpedo_hits
-                        .entry(composite_id)
-                        .or_insert(decoded.clock);
-                }
-            }
-
-            DecodedPacketPayload::PlanePosition { plane_id, x, y, .. } => {
-                self.planes
-                    .entry(plane_id)
-                    .or_default()
-                    .push((decoded.clock, WorldPos { x, y: 0.0, z: y }));
-            }
-
-            DecodedPacketPayload::PlaneAdded {
-                plane_id,
-                params_id,
-                x,
-                y,
-                ..
-            } => {
-                let owner_id = plane_id.owner_id();
-                let param = self.game_params.game_param_by_id(params_id.raw());
-                let aircraft = param.as_ref().and_then(|p| p.aircraft());
-                let category = aircraft
-                    .map(|a| a.category())
-                    .unwrap_or(&PlaneCategory::Controllable);
-                let is_consumable = matches!(
-                    category,
-                    PlaneCategory::Consumable | PlaneCategory::Airsupport
-                );
-                let ammo_type = aircraft.map(|a| a.ammo_type()).unwrap_or("");
-                let icon_base = param
-                    .as_ref()
-                    .and_then(|p| p.species())
-                    .map(|s| species_to_icon_base(s, is_consumable, ammo_type))
-                    .unwrap_or_else(|| "fighter".to_string());
-                let icon_dir = match category {
-                    PlaneCategory::Consumable => "consumables",
-                    PlaneCategory::Airsupport => "airsupport",
-                    PlaneCategory::Controllable => "controllable",
-                };
-                self.squadron_info.insert(
-                    plane_id,
-                    SquadronInfo {
-                        owner_id,
-                        icon_base,
-                        icon_dir,
-                    },
-                );
-                // Record initial position
-                self.planes
-                    .entry(plane_id)
-                    .or_default()
-                    .push((decoded.clock, WorldPos { x, y: 0.0, z: y }));
-            }
-
-            DecodedPacketPayload::PlaneRemoved { plane_id, .. } => {
-                self.planes.remove(&plane_id);
-            }
-
-            DecodedPacketPayload::ShipDestroyed { killer, victim, .. } => {
-                let killer_id = EntityId::from(killer);
-                let victim_id = EntityId::from(victim);
-                self.kills.push(KillEvent {
-                    clock: decoded.clock,
-                    killer_entity: killer_id,
-                    victim_entity: victim_id,
-                });
-
-                if let Some(ref info) = self.map_info {
-                    if let Some(positions) = self.positions.get(&victim_id) {
-                        if let Some(last) = positions.last() {
-                            let pos = info.world_to_minimap(last.1.pos, MINIMAP_SIZE);
-                            self.dead_ships.insert(victim_id, (decoded.clock, pos));
-                        }
-                    } else {
-                        for u in self.minimap_updates.iter().rev() {
-                            if u.entity_id == victim_id && !u.disappearing {
-                                let pos = u.pos.to_minimap(MINIMAP_SIZE);
-                                self.dead_ships.insert(victim_id, (decoded.clock, pos));
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            DecodedPacketPayload::PropertyUpdate(prop_update) => {
-                if prop_update.property == "state" {
-                    self.handle_property_update(prop_update, decoded.clock);
-                }
-                if prop_update.property == "points"
-                    && self.smoke_screens.contains_key(&prop_update.entity_id)
-                {
-                    use wows_replays::nested_property_path::UpdateAction;
-                    let event = match &prop_update.update_cmd.action {
-                        UpdateAction::SetRange { start, values, .. } => {
-                            let points: Vec<WorldPos> = values
-                                .iter()
-                                .filter_map(|v| match v {
-                                    wowsunpack::rpc::typedefs::ArgValue::Vector3((x, y, z)) => {
-                                        Some(WorldPos {
-                                            x: *x,
-                                            y: *y,
-                                            z: *z,
-                                        })
-                                    }
-                                    _ => None,
-                                })
-                                .collect();
-                            Some(SmokeEvent::SetRange {
-                                start: *start,
-                                points,
-                            })
-                        }
-                        UpdateAction::RemoveRange { start, stop } => {
-                            Some(SmokeEvent::RemoveRange {
-                                start: *start,
-                                count: stop - start,
-                            })
-                        }
-                        _ => None,
-                    };
-                    if let Some(event) = event {
-                        if let Some(smoke) = self.smoke_screens.get_mut(&prop_update.entity_id) {
-                            smoke.events.push((decoded.clock, event));
-                        }
-                    }
-                }
-            }
-
-            DecodedPacketPayload::EntityProperty(prop) => {
-                if prop.property == "health" {
-                    if let Some(&val) = prop.value.float_32_ref() {
-                        self.health_timeline
-                            .entry(prop.entity_id)
-                            .or_default()
-                            .push((decoded.clock, val));
-                    }
-                }
-            }
-
-            DecodedPacketPayload::EntityCreate(create) => {
-                if create.entity_type == "Vehicle" {
-                    let mh = create
-                        .props
-                        .get("maxHealth")
-                        .and_then(|v| v.float_32_ref().copied());
-                    let hp = create
-                        .props
-                        .get("health")
-                        .and_then(|v| v.float_32_ref().copied());
-                    if let Some(mh) = mh {
-                        self.max_health.insert(create.entity_id, mh);
-                    }
-                    if let Some(hp) = hp {
-                        self.health_timeline
-                            .entry(create.entity_id)
-                            .or_default()
-                            .push((decoded.clock, hp));
-                    }
-                } else if create.entity_type == "BattleLogic" {
-                    self.extract_initial_scores(&create.props, decoded.clock);
-                } else if create.entity_type == "SmokeScreen" {
-                    let radius = create
-                        .props
-                        .get("radius")
-                        .and_then(|v| v.float_32_ref().copied())
-                        .unwrap_or(0.0);
-                    self.smoke_screens.insert(
-                        create.entity_id,
-                        SmokeCloud {
-                            radius,
-                            created: decoded.clock,
-                            destroyed: None,
-                            initial_point: WorldPos {
-                                x: create.position.x,
-                                y: create.position.y,
-                                z: create.position.z,
-                            },
-                            events: Vec::new(),
-                        },
-                    );
-                }
-            }
-
-            DecodedPacketPayload::EntityLeave(leave) => {
-                if let Some(smoke) = self.smoke_screens.get_mut(&leave.entity_id) {
-                    smoke.destroyed = Some(decoded.clock);
-                }
-            }
-
-            _ => {}
-        }
+        commands
     }
 
-    fn finish(&mut self) {
-        println!(
-            "Data collected: {} entities with positions, {} minimap updates, {} shots, {} torpedoes ({} hits), {} kills, {} smoke screens, {} plane squadrons, last_clock={}",
-            self.positions.len(),
-            self.minimap_updates.len(),
-            self.shots.len(),
-            self.torpedoes.len(),
-            self.torpedo_hits.len(),
-            self.kills.len(),
-            self.smoke_screens.len(),
-            self.planes.len(),
-            self.last_clock,
-        );
-
-        // Summarize squadron types
-        let mut icon_counts: HashMap<String, usize> = HashMap::new();
-        for info in self.squadron_info.values() {
-            *icon_counts.entry(info.icon_base.clone()).or_default() += 1;
+    /// Populate player info from controller state (once).
+    fn populate_players(&mut self, controller: &dyn BattleControllerState) {
+        if self.players_populated {
+            return;
         }
-        println!("Squadron icon types (active at end): {:?}", icon_counts);
-        // Count all PlaneAdded events by looking at planes map
-        println!("Total unique squadron IDs: {}", self.planes.len());
+        let players = controller.player_entities();
+        if players.is_empty() {
+            return;
+        }
+        for (entity_id, player) in players {
+            self.player_names
+                .insert(*entity_id, player.initial_state().username().to_string());
+            self.player_relations.insert(*entity_id, player.relation());
+            if let Some(species) = player.vehicle().species() {
+                let species_name = format!("{:?}", species);
+                self.player_species.insert(*entity_id, species_name);
+            }
+        }
+        self.players_populated = true;
+    }
 
-        if let Some(dump_mode) = self.dump_mode.clone() {
-            let frame_idx = match dump_mode {
-                DumpMode::Frame(n) => n,
-                DumpMode::Midpoint => TOTAL_FRAMES / 2,
+    /// Update squadron info for any new planes in the controller.
+    fn update_squadron_info(&mut self, controller: &dyn BattleControllerState) {
+        for (plane_id, plane) in controller.active_planes() {
+            if self.squadron_info.contains_key(plane_id) {
+                continue;
+            }
+            let param = self.game_params.game_param_by_id(plane.params_id.raw());
+            let aircraft = param.as_ref().and_then(|p| p.aircraft());
+            let category = aircraft
+                .map(|a| a.category())
+                .unwrap_or(&PlaneCategory::Controllable);
+            let is_consumable = matches!(
+                category,
+                PlaneCategory::Consumable | PlaneCategory::Airsupport
+            );
+            let ammo_type = aircraft.map(|a| a.ammo_type()).unwrap_or("");
+            let icon_base = param
+                .as_ref()
+                .and_then(|p| p.species())
+                .map(|sp| species_to_icon_base(sp, is_consumable, ammo_type))
+                .unwrap_or_else(|| "fighter".to_string());
+            let icon_dir = match category {
+                PlaneCategory::Consumable => "consumables",
+                PlaneCategory::Airsupport => "airsupport",
+                PlaneCategory::Controllable => "controllable",
             };
-            match self.render_single_frame(frame_idx) {
-                Ok(frame) => {
-                    let png_path = self.output_path.replace(".mp4", ".png");
-                    let png_path = if png_path == self.output_path {
-                        format!("{}.png", self.output_path)
-                    } else {
-                        png_path
-                    };
-                    if let Err(e) = frame.save(&png_path) {
-                        eprintln!("Error saving frame: {}", e);
-                    } else {
-                        println!(
-                            "Frame {} saved to {} ({}x{})",
-                            frame_idx,
-                            png_path,
-                            frame.width(),
-                            frame.height()
-                        );
-                    }
-                }
-                Err(e) => eprintln!("Error rendering frame: {}", e),
-            }
-        } else {
-            if let Err(e) = self.render_frames() {
-                eprintln!("Error rendering video: {}", e);
-            }
+            self.squadron_info.insert(
+                *plane_id,
+                SquadronInfo {
+                    owner_id: plane.owner_id,
+                    icon_base,
+                    icon_dir,
+                },
+            );
         }
     }
 }
 
-impl MinimapRenderer {
-    /// Get the health fraction (0.0–1.0) for an entity at a given time.
-    fn health_fraction(&self, entity_id: EntityId, game_time: GameClock) -> Option<f32> {
-        let max = *self.max_health.get(&entity_id)?;
-        if max <= 0.0 {
-            return None;
-        }
-        let timeline = self.health_timeline.get(&entity_id)?;
-        if timeline.is_empty() {
-            return None;
-        }
-        let idx = timeline.partition_point(|(t, _)| *t <= game_time);
-        let hp = if idx > 0 {
-            timeline[idx - 1].1
-        } else {
-            return None;
-        };
-        Some((hp / max).clamp(0.0, 1.0))
+/// Get the ship color as an RGB array based on relation.
+fn ship_color_rgb(relation: Relation) -> [u8; 3] {
+    if relation.is_self() {
+        [255, 255, 255]
+    } else if relation.is_ally() {
+        [76, 232, 170]
+    } else {
+        [254, 77, 42]
     }
+}
 
-    /// Draw a ship using its species icon if available, otherwise fall back to a circle.
-    /// Also draws a health bar below the ship when health data is available.
-    fn draw_ship_or_icon(
-        &self,
-        frame: &mut RgbImage,
-        entity_id: EntityId,
-        x: i32,
-        y: i32,
-        yaw: f32,
-        color: Rgb<u8>,
-        visibility: drawing::ShipVisibility,
-        game_time: GameClock,
-    ) {
-        if let Some(species) = self.player_species.get(&entity_id) {
-            if let Some(icon) = self.ship_icons.get(species) {
-                drawing::draw_ship_icon(frame, icon, x, y, yaw, color, visibility);
-                if let Some(frac) = self.health_fraction(entity_id, game_time) {
-                    drawing::draw_health_bar(frame, x, y, frac);
-                }
-                return;
+/// Build the icon base name from species, consumable flag, and ammo type.
+fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) -> String {
+    use convert_case::{Case, Casing};
+
+    let normalized = match ammo_type {
+        "depthcharge" => "depth_charge",
+        other => other,
+    };
+    let ammo = normalized.to_case(Case::Snake);
+    if is_consumable {
+        match species {
+            Species::Dive => format!("bomber_{ammo}"),
+            _ => {
+                let species_name: &str = (&species).into();
+                species_name.to_case(Case::Snake)
             }
         }
-        // Fallback: circle-based rendering
-        match visibility {
-            drawing::ShipVisibility::Visible => {
-                drawing::draw_ship(frame, x, y, yaw, color, 5);
-            }
-            drawing::ShipVisibility::MinimapOnly => {
-                drawing::draw_ship_outline(frame, x, y, yaw, color, 5);
-            }
-            drawing::ShipVisibility::Undetected => {
-                drawing::draw_ship_undetected(frame, x, y, yaw, 5);
-            }
-        }
-        if let Some(frac) = self.health_fraction(entity_id, game_time) {
-            drawing::draw_health_bar(frame, x, y, frac);
-        }
-    }
-
-    fn handle_property_update(
-        &mut self,
-        prop_update: &wows_replays::packet2::PropertyUpdatePacket<'_>,
-        clock: GameClock,
-    ) {
-        use wows_replays::nested_property_path::{PropertyNestLevel, UpdateAction};
-
-        let levels = &prop_update.update_cmd.levels;
-        let action = &prop_update.update_cmd.action;
-
-        // Team scores: state -> missions -> teamsScore -> [N] -> SetKey{score}
-        if levels.len() >= 3 {
-            if let (
-                PropertyNestLevel::DictKey("missions"),
-                PropertyNestLevel::DictKey("teamsScore"),
-                PropertyNestLevel::ArrayIndex(team_idx),
-            ) = (&levels[0], &levels[1], &levels[2])
-            {
-                if let UpdateAction::SetKey {
-                    key: "score",
-                    value,
-                } = action
-                {
-                    if let Ok(score) = TryInto::<i32>::try_into(value) {
-                        let (mut s0, mut s1) = self
-                            .scores
-                            .last()
-                            .map(|&(_, a, b)| (a, b))
-                            .unwrap_or((0, 0));
-                        match team_idx {
-                            0 => s0 = score,
-                            1 => s1 = score,
-                            _ => {}
-                        }
-                        self.scores.push((clock, s0, s1));
-                    }
-                }
-            }
-        }
-    }
-
-    fn extract_initial_scores(
-        &mut self,
-        props: &HashMap<&str, wowsunpack::rpc::typedefs::ArgValue<'_>>,
-        clock: GameClock,
-    ) {
-        use wowsunpack::rpc::typedefs::ArgValue;
-
-        let state = match props.get("state") {
-            Some(ArgValue::FixedDict(d)) => d,
-            _ => return,
-        };
-        let missions = match state.get("missions") {
-            Some(ArgValue::FixedDict(d)) => d,
-            _ => return,
-        };
-        let teams_score = match missions.get("teamsScore") {
-            Some(ArgValue::Array(a)) => a,
-            _ => return,
-        };
-
-        let mut s0 = 0i32;
-        let mut s1 = 0i32;
-        for (i, entry) in teams_score.iter().enumerate() {
-            if let ArgValue::FixedDict(d) = entry {
-                if let Some(score_val) = d.get("score") {
-                    if let Ok(score) = TryInto::<i32>::try_into(score_val) {
-                        match i {
-                            0 => s0 = score,
-                            1 => s1 = score,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-        if s0 != 0 || s1 != 0 {
-            self.scores.push((clock, s0, s1));
+    } else {
+        match species {
+            Species::Fighter => format!("fighter_{ammo}"),
+            Species::Dive => format!("bomber_{ammo}"),
+            Species::Bomber => match ammo.as_str() {
+                "torpedo_deepwater" => "torpedo_deepwater".to_string(),
+                _ => "torpedo_regular".to_string(),
+            },
+            Species::Skip => format!("skip_{ammo}"),
+            Species::Airship => "auxiliary".to_string(),
+            _ => format!("fighter_{ammo}"),
         }
     }
 }
@@ -1429,7 +722,6 @@ fn parse_annexb_nals(data: &[u8]) -> Vec<&[u8]> {
     let mut nals = Vec::new();
     let mut i = 0;
     while i < data.len() {
-        // Find start code: 0x000001 or 0x00000001
         if i + 2 < data.len() && data[i] == 0 && data[i + 1] == 0 {
             let (start, _) = if i + 3 < data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
                 (i + 4, 4)
@@ -1439,7 +731,6 @@ fn parse_annexb_nals(data: &[u8]) -> Vec<&[u8]> {
                 i += 1;
                 continue;
             };
-            // Find the end: next start code or end of data
             let mut end = start;
             while end < data.len() {
                 if end + 2 < data.len()

@@ -21,10 +21,8 @@ impl DamageTrailsBuilder {
             output: output.to_string(),
         }
     }
-}
 
-impl AnalyzerMutBuilder for DamageTrailsBuilder {
-    fn build(self, meta: &ReplayMeta) -> Box<dyn AnalyzerMut> {
+    pub fn build(self, meta: &ReplayMeta) -> Box<dyn Analyzer> {
         Box::new(DamageMonitor {
             version: Version::from_client_exe(&meta.clientVersionFromExe),
             username: meta.playerName.clone(),
@@ -65,7 +63,7 @@ struct DamageMonitor {
     damages: Vec<DamageVector>,
 }
 
-impl AnalyzerMut for DamageMonitor {
+impl Analyzer for DamageMonitor {
     fn finish(&mut self) {
         let start = std::time::Instant::now();
 
@@ -224,7 +222,7 @@ impl AnalyzerMut for DamageMonitor {
         println!("Trail render time = {:?}", start.elapsed());
     }
 
-    fn process_mut(&mut self, packet: &Packet<'_, '_>) {
+    fn process(&mut self, packet: &Packet<'_, '_>) {
         let secs = packet.clock.seconds();
         let minutes = (secs / 60.0).floor() as i32;
         let seconds = (secs - minutes as f32 * 60.0).floor() as i32;
