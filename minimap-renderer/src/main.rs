@@ -155,7 +155,7 @@ fn main() -> anyhow::Result<()> {
     let mut target = ImageTarget::new(map_image, ship_icons, plane_icons);
 
     let mut renderer =
-        MinimapRenderer::new(map_info.clone(), game_params, RenderOptions::default());
+        MinimapRenderer::new(map_info.clone(), &game_params, RenderOptions::default());
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);
 
     let mut controller = BattleController::new(&replay_file.meta, &controller_game_params);

@@ -67,11 +67,11 @@ struct SquadronInfo {
 ///
 /// Reads live state from `BattleControllerState` at each frame boundary
 /// and emits `DrawCommand`s to a `RenderTarget`. No timelines are stored.
-pub struct MinimapRenderer {
+pub struct MinimapRenderer<'a> {
     // Config (immutable after construction)
     map_info: Option<map_data::MapInfo>,
-    game_params: GameMetadataProvider,
-    options: RenderOptions,
+    game_params: &'a GameMetadataProvider,
+    pub options: RenderOptions,
 
     // Caches populated lazily from controller state
     squadron_info: HashMap<PlaneId, SquadronInfo>,
@@ -81,10 +81,10 @@ pub struct MinimapRenderer {
     players_populated: bool,
 }
 
-impl MinimapRenderer {
+impl<'a> MinimapRenderer<'a> {
     pub fn new(
         map_info: Option<map_data::MapInfo>,
-        game_params: GameMetadataProvider,
+        game_params: &'a GameMetadataProvider,
         options: RenderOptions,
     ) -> Self {
         Self {
@@ -97,6 +97,15 @@ impl MinimapRenderer {
             player_relations: HashMap::new(),
             players_populated: false,
         }
+    }
+
+    /// Reset all cached state, allowing the renderer to be reused after a seek.
+    pub fn reset(&mut self) {
+        self.squadron_info.clear();
+        self.player_species.clear();
+        self.player_names.clear();
+        self.player_relations.clear();
+        self.players_populated = false;
     }
 
     /// Populate player info from controller state (once).
