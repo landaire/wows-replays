@@ -2168,12 +2168,22 @@ where
             } => {
                 for update in updates {
                     let visible = !update.disappearing;
+                    // When a ship disappears, preserve the last known heading
+                    // (disappearing updates often have unreliable heading=0)
+                    let heading = if update.disappearing {
+                        self.minimap_positions
+                            .get(&update.entity_id)
+                            .map(|prev| prev.heading)
+                            .unwrap_or(update.heading)
+                    } else {
+                        update.heading
+                    };
                     self.minimap_positions.insert(
                         update.entity_id,
                         MinimapPosition {
                             entity_id: update.entity_id,
                             position: update.position,
-                            heading: update.heading,
+                            heading,
                             visible,
                             last_updated: packet.clock,
                         },

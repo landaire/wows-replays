@@ -512,8 +512,8 @@ impl MinimapRenderer {
                     });
                 }
             } else {
-                // Undetected — show at last known position with world yaw
-                let yaw = world_yaw.or(minimap_yaw).unwrap_or(0.0);
+                // Undetected — prefer minimap heading (more reliable than stale world_yaw=0.0)
+                let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
                 if let Some(ship_pos) = world {
                     let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
                     commands.push(DrawCommand::Ship {
