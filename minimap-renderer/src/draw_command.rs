@@ -48,6 +48,10 @@ pub enum DrawCommand {
         opacity: f32,
         /// Whether this is the player's own ship (uses `_self` icon variant)
         is_self: bool,
+        /// Player name to render above the icon
+        player_name: Option<String>,
+        /// Localized ship name to render above the icon (below player name)
+        ship_name: Option<String>,
     },
     /// Health bar above a ship
     HealthBar {
@@ -57,7 +61,7 @@ pub enum DrawCommand {
         background_color: [u8; 3],
         background_alpha: f32,
     },
-    /// Dead ship marker (icon or X fallback)
+    /// Dead ship marker
     DeadShip {
         pos: MinimapPos,
         yaw: f32,
@@ -65,6 +69,10 @@ pub enum DrawCommand {
         /// Tint color. None = use the icon's native colors
         color: Option<[u8; 3]>,
         is_self: bool,
+        /// Player name to render above the icon
+        player_name: Option<String>,
+        /// Localized ship name to render above the icon (below player name)
+        ship_name: Option<String>,
     },
     /// Plane icon
     Plane {

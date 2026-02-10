@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use wowsunpack::data::ResourceLoader as _;
 use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::game_params::types::{GameParamProvider, PlaneCategory, Species};
 
@@ -41,6 +42,8 @@ pub struct RenderOptions {
     pub show_score: bool,
     pub show_timer: bool,
     pub show_kill_feed: bool,
+    pub show_player_names: bool,
+    pub show_ship_names: bool,
 }
 
 impl Default for RenderOptions {
@@ -54,6 +57,8 @@ impl Default for RenderOptions {
             show_score: true,
             show_timer: true,
             show_kill_feed: true,
+            show_player_names: true,
+            show_ship_names: true,
         }
     }
 }
@@ -77,6 +82,7 @@ pub struct MinimapRenderer<'a> {
     squadron_info: HashMap<PlaneId, SquadronInfo>,
     player_species: HashMap<EntityId, String>,
     player_names: HashMap<EntityId, String>,
+    ship_display_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
     players_populated: bool,
 }
@@ -94,6 +100,7 @@ impl<'a> MinimapRenderer<'a> {
             squadron_info: HashMap::new(),
             player_species: HashMap::new(),
             player_names: HashMap::new(),
+            ship_display_names: HashMap::new(),
             player_relations: HashMap::new(),
             players_populated: false,
         }
@@ -104,6 +111,7 @@ impl<'a> MinimapRenderer<'a> {
         self.squadron_info.clear();
         self.player_species.clear();
         self.player_names.clear();
+        self.ship_display_names.clear();
         self.player_relations.clear();
         self.players_populated = false;
     }
@@ -125,6 +133,9 @@ impl<'a> MinimapRenderer<'a> {
                 let species_name = format!("{:?}", species);
                 self.player_species.insert(*entity_id, species_name);
             }
+            if let Some(name) = self.game_params.localized_name_from_param(player.vehicle()) {
+                self.ship_display_names.insert(*entity_id, name.to_string());
+            }
         }
         self.players_populated = true;
     }
@@ -135,7 +146,8 @@ impl<'a> MinimapRenderer<'a> {
             if self.squadron_info.contains_key(plane_id) {
                 continue;
             }
-            let param = self.game_params.game_param_by_id(plane.params_id.raw());
+            let param =
+                GameParamProvider::game_param_by_id(self.game_params, plane.params_id.raw());
             let aircraft = param.as_ref().and_then(|p| p.aircraft());
             let category = aircraft
                 .map(|a| a.category())
@@ -310,6 +322,16 @@ impl<'a> MinimapRenderer<'a> {
                 .unwrap_or(Relation::new(2));
             let color = ship_color_rgb(relation);
             let species = self.player_species.get(entity_id).cloned();
+            let player_name = if self.options.show_player_names {
+                self.player_names.get(entity_id).cloned()
+            } else {
+                None
+            };
+            let ship_name = if self.options.show_ship_names {
+                self.ship_display_names.get(entity_id).cloned()
+            } else {
+                None
+            };
 
             let minimap = minimap_positions.get(entity_id);
             let world = ship_positions.get(entity_id);
@@ -349,6 +371,8 @@ impl<'a> MinimapRenderer<'a> {
                         visibility: ShipVisibility::Visible,
                         opacity: 1.0,
                         is_self: relation.is_self(),
+                        player_name: player_name.clone(),
+                        ship_name: ship_name.clone(),
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -373,6 +397,8 @@ impl<'a> MinimapRenderer<'a> {
                         visibility: ShipVisibility::MinimapOnly,
                         opacity: 1.0,
                         is_self: relation.is_self(),
+                        player_name: player_name.clone(),
+                        ship_name: ship_name.clone(),
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -405,6 +431,8 @@ impl<'a> MinimapRenderer<'a> {
                     visibility: ShipVisibility::Undetected,
                     opacity: UNDETECTED_OPACITY,
                     is_self: relation.is_self(),
+                    player_name: player_name.clone(),
+                    ship_name: ship_name.clone(),
                 });
             }
         }
@@ -425,12 +453,24 @@ impl<'a> MinimapRenderer<'a> {
                     .get(entity_id)
                     .copied()
                     .unwrap_or(Relation::new(2));
+                let player_name = if self.options.show_player_names {
+                    self.player_names.get(entity_id).cloned()
+                } else {
+                    None
+                };
+                let ship_name = if self.options.show_ship_names {
+                    self.ship_display_names.get(entity_id).cloned()
+                } else {
+                    None
+                };
                 commands.push(DrawCommand::DeadShip {
                     pos: px,
                     yaw,
                     species,
                     color: None,
                     is_self: relation.is_self(),
+                    player_name,
+                    ship_name,
                 });
             }
         }

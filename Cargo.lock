@@ -1431,6 +1431,7 @@ dependencies = [
  "bytes",
  "clap",
  "convert_case 0.6.0",
+ "gettext",
  "image 0.25.9",
  "imageproc",
  "mp4",

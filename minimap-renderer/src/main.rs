@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
 use clap::{App, Arg};
 use std::borrow::Cow;
-use std::fs::read_dir;
+use std::fs::{read_dir, File};
 use std::io::Cursor;
 use std::path::Path;
 use wowsunpack::data::idx::{self, FileNode};
@@ -19,14 +19,9 @@ use minimap_renderer::drawing::ImageTarget;
 use minimap_renderer::renderer::{MinimapRenderer, RenderOptions};
 use minimap_renderer::video::{DumpMode, VideoEncoder};
 
-fn load_game_resources(
-    game_dir: &str,
-) -> anyhow::Result<(Vec<EntitySpec>, FileNode, PkgFileLoader)> {
-    let wows_directory = Path::new(game_dir);
-
-    let mut idx_files = Vec::new();
+fn find_latest_build(game_dir: &Path) -> anyhow::Result<usize> {
     let mut latest_build: Option<usize> = None;
-    for file in read_dir(wows_directory.join("bin"))? {
+    for file in read_dir(game_dir.join("bin"))? {
         let file = file?;
         if file.file_type()?.is_file() {
             continue;
@@ -41,9 +36,16 @@ fn load_game_resources(
             }
         }
     }
+    latest_build.ok_or_else(|| anyhow!("Could not determine latest WoWs build"))
+}
 
-    let latest_build =
-        latest_build.ok_or_else(|| anyhow!("Could not determine latest WoWs build"))?;
+fn load_game_resources(
+    game_dir: &str,
+) -> anyhow::Result<(Vec<EntitySpec>, FileNode, PkgFileLoader)> {
+    let wows_directory = Path::new(game_dir);
+
+    let mut idx_files = Vec::new();
+    let latest_build = find_latest_build(wows_directory)?;
 
     for file in read_dir(
         wows_directory
@@ -110,6 +112,16 @@ fn main() -> anyhow::Result<()> {
                 .takes_value(true),
         )
         .arg(
+            Arg::with_name("NO_PLAYER_NAMES")
+                .help("Hide player names above ship icons")
+                .long("no-player-names"),
+        )
+        .arg(
+            Arg::with_name("NO_SHIP_NAMES")
+                .help("Hide ship names above ship icons")
+                .long("no-ship-names"),
+        )
+        .arg(
             Arg::with_name("REPLAY")
                 .help("The replay file to process")
                 .required(true)
@@ -133,10 +145,28 @@ fn main() -> anyhow::Result<()> {
     let (specs, file_tree, pkg_loader) = load_game_resources(game_dir)?;
 
     println!("Loading game params...");
-    let game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
+    let mut game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
         .map_err(|e| anyhow!("Failed to load GameParams: {:?}", e))?;
     let controller_game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
         .map_err(|e| anyhow!("Failed to load GameParams for controller: {:?}", e))?;
+
+    // Load translations for ship name localization
+    let wows_dir = Path::new(game_dir);
+    let latest_build = find_latest_build(wows_dir)?;
+    let mo_path = wows_dir
+        .join("bin")
+        .join(latest_build.to_string())
+        .join("res/texts/en/LC_MESSAGES/global.mo");
+    if mo_path.exists() {
+        let catalog = gettext::Catalog::parse(File::open(&mo_path)?)
+            .map_err(|e| anyhow!("Failed to parse global.mo: {:?}", e))?;
+        game_params.set_translations(catalog);
+    } else {
+        eprintln!(
+            "Warning: translations not found at {:?}, ship names will be unavailable",
+            mo_path
+        );
+    }
 
     println!("Loading ship icons...");
     let ship_icons = load_ship_icons(&file_tree, &pkg_loader);
@@ -154,8 +184,11 @@ fn main() -> anyhow::Result<()> {
 
     let mut target = ImageTarget::new(map_image, ship_icons, plane_icons);
 
-    let mut renderer =
-        MinimapRenderer::new(map_info.clone(), &game_params, RenderOptions::default());
+    let mut options = RenderOptions::default();
+    options.show_player_names = !matches.is_present("NO_PLAYER_NAMES");
+    options.show_ship_names = !matches.is_present("NO_SHIP_NAMES");
+
+    let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, options);
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);
 
     let mut controller = BattleController::new(&replay_file.meta, &controller_game_params);

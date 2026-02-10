@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use ab_glyph::{FontRef, PxScale};
 use image::{Rgb, RgbImage, RgbaImage};
 use imageproc::drawing::{
-    draw_filled_circle_mut, draw_filled_rect_mut, draw_line_segment_mut, draw_text_mut,
+    draw_filled_circle_mut, draw_filled_rect_mut, draw_line_segment_mut, draw_text_mut, text_size,
 };
 use imageproc::rect::Rect;
 
@@ -86,6 +86,60 @@ fn draw_plane_icon(image: &mut RgbImage, icon: &RgbaImage, x: i32, y: i32) {
             ]);
             image.put_pixel(dest_x as u32, dest_y as u32, blended);
         }
+    }
+}
+
+/// Draw player name and/or ship name labels centered above a ship icon.
+///
+/// When both are present, player name is on top, ship name below it.
+/// When only one is present, it occupies the single line closest to the icon.
+fn draw_ship_labels(
+    image: &mut RgbImage,
+    x: i32,
+    y: i32,
+    player_name: Option<&str>,
+    ship_name: Option<&str>,
+    font: &FontRef,
+) {
+    let scale = PxScale::from(10.0);
+    let line_height = 12i32;
+    let line_count = player_name.is_some() as i32 + ship_name.is_some() as i32;
+    if line_count == 0 {
+        return;
+    }
+
+    // Position lines above the icon (icon radius ~12px)
+    let base_y = y - 14 - line_count * line_height;
+    let mut cur_y = base_y;
+
+    if let Some(name) = player_name {
+        let (w, _) = text_size(scale, font, name);
+        let tx = x - w as i32 / 2;
+        draw_text_mut(
+            image,
+            COLOR_TEXT_SHADOW,
+            tx + 1,
+            cur_y + 1,
+            scale,
+            font,
+            name,
+        );
+        draw_text_mut(image, COLOR_TEXT, tx, cur_y, scale, font, name);
+        cur_y += line_height;
+    }
+    if let Some(name) = ship_name {
+        let (w, _) = text_size(scale, font, name);
+        let tx = x - w as i32 / 2;
+        draw_text_mut(
+            image,
+            COLOR_TEXT_SHADOW,
+            tx + 1,
+            cur_y + 1,
+            scale,
+            font,
+            name,
+        );
+        draw_text_mut(image, COLOR_TEXT, tx, cur_y, scale, font, name);
     }
 }
 
@@ -191,6 +245,8 @@ impl RenderTarget for ImageTarget {
                 visibility,
                 opacity,
                 is_self,
+                player_name,
+                ship_name,
             } => {
                 let rgb = color.map(Rgb);
                 let x = pos.x;
@@ -211,6 +267,14 @@ impl RenderTarget for ImageTarget {
                     .unwrap_or_else(|| panic!("missing ship icon for '{}'", variant_key));
 
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, *opacity);
+                draw_ship_labels(
+                    &mut self.canvas,
+                    x,
+                    y,
+                    player_name.as_deref(),
+                    ship_name.as_deref(),
+                    &self.font,
+                );
             }
             DrawCommand::HealthBar {
                 pos,
@@ -235,6 +299,8 @@ impl RenderTarget for ImageTarget {
                 species,
                 color,
                 is_self,
+                player_name,
+                ship_name,
             } => {
                 let x = pos.x;
                 let y = pos.y + y_off;
@@ -253,6 +319,14 @@ impl RenderTarget for ImageTarget {
                     .unwrap_or_else(|| panic!("missing ship icon for '{}'", variant_key));
 
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, 1.0);
+                draw_ship_labels(
+                    &mut self.canvas,
+                    x,
+                    y,
+                    player_name.as_deref(),
+                    ship_name.as_deref(),
+                    &self.font,
+                );
             }
             DrawCommand::Plane { pos, icon_key } => {
                 let icon = self
