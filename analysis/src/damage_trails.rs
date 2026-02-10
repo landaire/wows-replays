@@ -38,12 +38,14 @@ impl DamageTrailsBuilder {
     }
 }
 
+#[allow(dead_code)]
 struct ArtilleryShot {
     start_time: f32,
     start_pos: (f32, f32, f32),
     target: (f32, f32, f32),
 }
 
+#[allow(dead_code)]
 struct DamageVector {
     start: (f32, f32),
     target: (f32, f32),

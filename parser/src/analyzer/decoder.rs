@@ -1,8 +1,7 @@
 use crate::IResult;
 use crate::packet2::{EntityMethodPacket, Packet, PacketType};
-use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, PlaneId, WorldPos};
+use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, PlaneId};
 use kinded::Kinded;
-use modular_bitfield::prelude::*;
 use nom::number::complete::{le_f32, le_u8, le_u16, le_u64};
 use pickled::Value;
 use serde::{Deserialize, Serialize};
@@ -2117,14 +2116,20 @@ impl Decoder {
     }
 }
 
-#[bitfield]
-struct RawMinimapUpdate {
-    x: B11,
-    y: B11,
-    heading: B8,
-    unknown: bool,
-    is_disappearing: bool,
+#[allow(dead_code)]
+mod minimap_update {
+    use modular_bitfield::prelude::*;
+
+    #[bitfield]
+    pub(super) struct RawMinimapUpdate {
+        pub x: B11,
+        pub y: B11,
+        pub heading: B8,
+        pub unknown: bool,
+        pub is_disappearing: bool,
+    }
 }
+use minimap_update::RawMinimapUpdate;
 
 impl Analyzer for Decoder {
     fn finish(&mut self) {}

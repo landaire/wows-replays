@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use serde::Serialize;
 
 use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, TorpedoData};

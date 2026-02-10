@@ -1,5 +1,4 @@
 use std::{
-    borrow::Borrow,
     cell::{RefCell, UnsafeCell},
     collections::HashMap,
     str::FromStr,
@@ -13,7 +12,7 @@ use tracing::{Level, debug, span, trace, warn};
 use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
-    game_params::types::{CrewSkill, Param, ParamType, Species},
+    game_params::types::{CrewSkill, Param, Species},
     rpc::typedefs::ArgValue,
 };
 
@@ -26,10 +25,8 @@ use crate::{
         decoder::{ChatMessageExtra, DeathCause, DecodedPacket, PlayerStateData},
     },
     nested_property_path::{PropertyNestLevel, UpdateAction},
-    packet2::{EntityCreatePacket, Packet, PacketType},
-    types::{
-        AccountId, EntityId, GameClock, GameParamId, NormalizedPos, PlaneId, Relation, WorldPos,
-    },
+    packet2::{EntityCreatePacket, Packet},
+    types::{AccountId, EntityId, GameClock, GameParamId, PlaneId, Relation, WorldPos},
 };
 
 use super::listener::BattleControllerState;
@@ -341,6 +338,7 @@ impl MetadataPlayer {
 }
 
 pub type SharedPlayer = Rc<MetadataPlayer>;
+#[allow(dead_code)]
 type MethodName = String;
 
 #[derive(Debug, Clone, Copy, EnumString)]
@@ -446,6 +444,7 @@ impl BattleReport {
     }
 }
 
+#[allow(dead_code)]
 struct DamageEvent {
     amount: f32,
     victim: EntityId,
@@ -457,8 +456,6 @@ pub struct BattleController<'res, 'replay, G> {
     metadata_players: Vec<SharedPlayer>,
     player_entities: HashMap<EntityId, Rc<Player>>,
     entities_by_id: HashMap<EntityId, Entity>,
-    method_callbacks: HashMap<(ParamType, String), fn(&PacketType<'_, '_>)>,
-    property_callbacks: HashMap<(ParamType, String), fn(&ArgValue<'_>)>,
     damage_dealt: HashMap<EntityId, Vec<DamageEvent>>,
     frags: HashMap<EntityId, Vec<Death>>,
     game_chat: Vec<GameMessage>,
@@ -509,8 +506,7 @@ where
             metadata_players: players,
             player_entities: HashMap::default(),
             entities_by_id: Default::default(),
-            method_callbacks: Default::default(),
-            property_callbacks: Default::default(),
+
             game_chat: Default::default(),
             version: Version::from_client_exe(&game_meta.clientVersionFromExe),
             damage_dealt: Default::default(),
@@ -603,7 +599,7 @@ where
         sender_id: AccountId,
         audience: &str,
         message: &str,
-        extra_data: Option<ChatMessageExtra>,
+        _extra_data: Option<ChatMessageExtra>,
         clock: GameClock,
     ) {
         // System messages
@@ -795,7 +791,7 @@ where
 
     fn handle_property_update(
         &mut self,
-        clock: GameClock,
+        _clock: GameClock,
         update: &crate::packet2::PropertyUpdatePacket<'_>,
     ) {
         if update.property != "state" {
@@ -817,24 +813,16 @@ where
                         });
                     }
 
-                    let mut evt_team_id = None;
-                    let mut evt_invader_team = None;
-                    let mut evt_progress = None;
-                    let mut evt_has_invaders = None;
-                    let mut evt_both_inside = None;
-
                     if let UpdateAction::SetKey { key, value } = action {
                         match *key {
                             "hasInvaders" => {
                                 if let Some(v) = value.try_into().ok().map(|v: i32| v != 0) {
                                     self.capture_points[*point_idx].has_invaders = v;
-                                    evt_has_invaders = Some(v);
                                 }
                             }
                             "invaderTeam" => {
                                 if let Some(v) = TryInto::<i32>::try_into(value).ok() {
                                     self.capture_points[*point_idx].invader_team = v as i64;
-                                    evt_invader_team = Some(v as i64);
                                 }
                             }
                             "progress" => {
@@ -846,20 +834,17 @@ where
                                             (&arr[1]).try_into().unwrap_or(0.0);
                                         self.capture_points[*point_idx].progress =
                                             (fraction, time_remaining);
-                                        evt_progress = Some((fraction, time_remaining));
                                     }
                                 }
                             }
                             "bothInside" => {
                                 if let Some(v) = value.try_into().ok().map(|v: i32| v != 0) {
                                     self.capture_points[*point_idx].both_inside = v;
-                                    evt_both_inside = Some(v);
                                 }
                             }
                             "teamId" => {
                                 if let Some(v) = TryInto::<i32>::try_into(value).ok() {
                                     self.capture_points[*point_idx].team_id = v as i64;
-                                    evt_team_id = Some(v as i64);
                                 }
                             }
                             _ => {}
@@ -897,7 +882,7 @@ where
 
     fn handle_entity_create_with_clock(
         &mut self,
-        clock: GameClock,
+        _clock: GameClock,
         packet: &EntityCreatePacket<'_>,
     ) {
         let entity_type = EntityType::from_str(packet.entity_type).unwrap_or_else(|_| {
@@ -1016,7 +1001,7 @@ fn parse_ship_config(blob: &[u8], version: Version) -> IResult<&[u8], ShipConfig
     let i = blob;
     let (i, _unk) = le_u32(i)?;
 
-    let (i, ship_params_id) = le_u32(i)?;
+    let (i, _ship_params_id) = le_u32(i)?;
     let (i, _unk2) = le_u32(i)?;
 
     let (i, unit_count) = le_u32(i)?;
@@ -1206,7 +1191,7 @@ macro_rules! arg_value_to_type {
 }
 
 impl UpdateFromReplayArgs for CrewModifiersCompactParams {
-    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version) {
+    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, _version: Version) {
         const PARAMS_ID_KEY: &str = "paramsId";
         const IS_IN_ADAPTION_KEY: &str = "isInAdaption";
         const LEARNED_SKILLS_KEY: &str = "learnedSkills";
@@ -1545,14 +1530,14 @@ impl UpdateFromReplayArgs for VehicleProps {
         const EFFECTS_KEY: &str = "effects";
         const CREW_MODIFIERS_COMPACT_PARAMS_KEY: &str = "crewModifiersCompactParams";
         const LASER_TARGET_LOCAL_POS_KEY: &str = "laserTargetLocalPos";
-        const ANTI_AIR_AUROS_KEY: &str = "antiAirAuras";
+
         const SELECTED_WEAPON_KEY: &str = "selectedWeapon";
-        const REGENERATION_HEALTH_KEY: &str = "regenerationHealth";
+
         const IS_ON_FORSAGE_KEY: &str = "isOnForsage";
         const IS_IN_RAGE_MODE_KEY: &str = "isInRageMode";
         const HAS_AIR_TARGETS_IN_RANGE_KEY: &str = "hasAirTargetsInRange";
         const TORPEDO_LOCAL_POS_KEY: &str = "torpedoLocalPos";
-        const AIR_DEFENSE_TARGET_IDS_KEY: &str = "airDefenseTargetIds";
+
         const BUOYANCY_KEY: &str = "buoyancy";
         const MAX_HEALTH_KEY: &str = "maxHealth";
         const DRAUGHT_KEY: &str = "draught";
@@ -1565,26 +1550,26 @@ impl UpdateFromReplayArgs for VehicleProps {
         const IS_FOG_HORN_ON_KEY: &str = "isFogHornOn";
         const SERVER_SPEED_RAW_KEY: &str = "serverSpeedRaw";
         const REGEN_CREW_HP_LIMIT_KEY: &str = "regenCrewHpLimit";
-        const MISCS_PRESETS_STATUS_KEY: &str = "miscsPresetsStatus";
+
         const BUOYANCY_CURRENT_WATERLINE_KEY: &str = "buoyancyCurrentWaterline";
         const IS_ALIVE_KEY: &str = "isAlive";
         const IS_BOT_KEY: &str = "isBot";
         const VISIBILITY_FLAGS_KEY: &str = "visibilityFlags";
-        const HEAT_INFOS_KEY: &str = "heatInfos";
+
         const BUOYANCY_RUDDER_INDEX_KEY: &str = "buoyancyRudderIndex";
         const IS_ANTI_AIR_MODE_KEY: &str = "isAntiAirMode";
         const SPEED_SIGN_DIR_KEY: &str = "speedSignDir";
         const OIL_LEAK_STATE_KEY: &str = "oilLeakState";
-        const SOUNDS_KEY: &str = "sounds";
+
         const SHIP_CONFIG_KEY: &str = "shipConfig";
         const WAVE_LOCAL_POS_KEY: &str = "waveLocalPos";
         const HAS_ACTIVE_MAIN_SQUADRON_KEY: &str = "hasActiveMainSquadron";
         const WEAPON_LOCK_FLAGS_KEY: &str = "weaponLockFlags";
         const DEEP_RUDDERS_ANGLE_KEY: &str = "deepRuddersAngle";
-        const DEBUG_TEXT_KEY: &str = "debugText";
+
         const HEALTH_KEY: &str = "health";
         const ENGINE_DIR_KEY: &str = "engineDir";
-        const STATE_KEY: &str = "state";
+
         const TEAM_ID_KEY: &str = "teamId";
         const BUOYANCY_CURRENT_STATE_KEY: &str = "buoyancyCurrentState";
         const UI_ENABLED_KEY: &str = "uiEnabled";
@@ -2005,11 +1990,7 @@ where
                     packet.clock,
                 );
             }
-            crate::analyzer::decoder::DecodedPacketPayload::VoiceLine {
-                sender_id,
-                is_global,
-                message,
-            } => {
+            crate::analyzer::decoder::DecodedPacketPayload::VoiceLine { .. } => {
                 trace!("HANDLE VOICE LINE");
             }
             crate::analyzer::decoder::DecodedPacketPayload::Ribbon(_ribbon) => {}
@@ -2082,7 +2063,6 @@ where
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityProperty(prop) => {
                 let entity_id = prop.entity_id;
-                let property = prop.property.to_string();
                 if let Some(entity) = self.entities_by_id.get(&entity_id) {
                     if let Some(vehicle) = entity.vehicle_ref() {
                         let mut vehicle = RefCell::borrow_mut(vehicle);
@@ -2201,7 +2181,7 @@ where
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::PropertyUpdate(update) => {
-                if let Some(entity) = self.entities_by_id.get(&update.entity_id) {
+                if self.entities_by_id.contains_key(&update.entity_id) {
                     debug!("PROPERTY UPDATE: {:#?}", update);
                 }
                 // Handle smoke screen point mutations

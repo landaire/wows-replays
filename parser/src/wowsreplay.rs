@@ -49,6 +49,7 @@ pub struct ReplayMeta {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Replay<'a> {
     meta: ReplayMeta,
     raw_meta: &'a str,
@@ -80,8 +81,8 @@ fn block(i: &[u8]) -> IResult<&[u8], &[u8]> {
     take(block_size)(i)
 }
 
-fn replay_format(i: &[u8]) -> IResult<&[u8], Replay> {
-    let (i, magic) = le_u32(i)?;
+fn replay_format<'a>(i: &'a [u8]) -> IResult<&'a [u8], Replay<'a>> {
+    let (i, _magic) = le_u32(i)?;
     let (i, block_count) = le_u32(i)?;
     let (i, (raw_meta, meta)) = parse_meta(i)?;
 

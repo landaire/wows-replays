@@ -5,14 +5,12 @@ use nom::{
     number::complete::le_u32,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::fmt;
-use std::time::Duration;
 
 use crate::error::*;
-use crate::types::{AccountId, EntityId, GameClock, GameParamId};
+use crate::types::{EntityId, GameClock, GameParamId};
 use wowsunpack::rpc::entitydefs::*;
 use wowsunpack::rpc::typedefs::ArgValue;
 
@@ -228,7 +226,7 @@ pub struct Parser<'argtype> {
 }
 
 impl<'argtype> Parser<'argtype> {
-    pub fn new(entities: &'argtype [EntitySpec]) -> Parser {
+    pub fn new(entities: &'argtype [EntitySpec]) -> Parser<'argtype> {
         Parser {
             specs: entities,
             entities: HashMap::new(),
@@ -499,7 +497,6 @@ impl<'argtype> Parser<'argtype> {
             let (new_i, value) = match spec.prop_type.parse_value(i) {
                 Ok(x) => x,
                 Err(e) => {
-                    panic!("ERROR");
                     return Err(failure_from_kind(crate::ErrorKind::UnableToParseRpcValue {
                         method: format!("BasePlayerCreate::{}", spec.name),
                         argnum: prop_id,
@@ -609,7 +606,7 @@ impl<'argtype> Parser<'argtype> {
         let (i, position) = Vec3::parse(i)?;
         let (i, rotation) = Rot3::parse(i)?;
         let (i, props_len) = le_u32(i)?;
-        let (i, props_data) = take(props_len)(i)?;
+        let (_i, props_data) = take(props_len)(i)?;
 
         if !self.entities.contains_key(&entity_id) {
             panic!(
@@ -644,7 +641,6 @@ impl<'argtype> Parser<'argtype> {
             let (new_i, value) = match spec.prop_type.parse_value(i) {
                 Ok(x) => x,
                 Err(e) => {
-                    panic!("ERROR");
                     return Err(failure_from_kind(crate::ErrorKind::UnableToParseRpcValue {
                         method: format!("CellPlayerCreate::{}", spec.name),
                         argnum: prop_id,
