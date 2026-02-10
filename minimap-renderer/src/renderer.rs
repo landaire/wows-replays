@@ -7,15 +7,7 @@ use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::types::{EntityId, PlaneId, Relation};
 
 use crate::draw_command::{DrawCommand, ShipVisibility};
-use crate::map_data::{self, MinimapPos, WorldPos};
-
-/// Convert a parser NormalizedPos to a minimap pixel position.
-fn normalized_to_minimap(pos: &wows_replays::types::NormalizedPos, output_size: u32) -> MinimapPos {
-    MinimapPos {
-        x: (pos.x * output_size as f32) as i32,
-        y: ((1.0 - pos.y) * output_size as f32) as i32,
-    }
-}
+use crate::map_data::{self, WorldPos};
 
 // Use 768 (multiple of 16) for H.264 macroblock alignment
 const MINIMAP_SIZE: u32 = 768;
@@ -69,7 +61,6 @@ impl Default for RenderOptions {
 }
 
 struct SquadronInfo {
-    owner_id: EntityId,
     icon_base: String,
     icon_dir: &'static str,
 }
@@ -160,7 +151,6 @@ impl MinimapRenderer {
             self.squadron_info.insert(
                 *plane_id,
                 SquadronInfo {
-                    owner_id: plane.owner_id,
                     icon_base,
                     icon_dir,
                 },
@@ -334,9 +324,7 @@ impl MinimapRenderer {
                 })
                 .flatten();
 
-            // Compute yaw based on visibility:
-            // - Detected: use minimap heading (most accurate for icon rotation)
-            // - Undetected: prefer minimap heading (more reliable than stale world_yaw=0.0)
+            // Compute yaw: prefer minimap heading (more accurate for icon rotation)
             let minimap_yaw =
                 minimap.map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.to_radians());
             let world_yaw = world.map(|sp| sp.yaw);
@@ -344,7 +332,7 @@ impl MinimapRenderer {
             if detected {
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
                 if let Some(ship_pos) = world {
-                    // Have world position — use it for location, minimap heading for yaw
+                    // Have world position — use it (higher precision than minimap)
                     let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
                     commands.push(DrawCommand::Ship {
                         pos: px,
@@ -369,7 +357,7 @@ impl MinimapRenderer {
                     }
                 } else if let Some(mm) = minimap {
                     // Minimap-only position
-                    let px = normalized_to_minimap(&mm.position, MINIMAP_SIZE);
+                    let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
@@ -393,31 +381,24 @@ impl MinimapRenderer {
                     }
                 }
             } else {
-                // Undetected — prefer minimap heading (more reliable than stale world_yaw=0.0)
+                // Undetected — prefer world position, fall back to minimap
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
-                if let Some(ship_pos) = world {
-                    let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
-                    commands.push(DrawCommand::Ship {
-                        pos: px,
-                        yaw,
-                        species: species.clone(),
-                        color,
-                        visibility: ShipVisibility::Undetected,
-                        opacity: UNDETECTED_OPACITY,
-                        is_self: relation.is_self(),
-                    });
+                let px = if let Some(ship_pos) = world {
+                    map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE)
                 } else if let Some(mm) = minimap {
-                    let px = normalized_to_minimap(&mm.position, MINIMAP_SIZE);
-                    commands.push(DrawCommand::Ship {
-                        pos: px,
-                        yaw,
-                        species: species.clone(),
-                        color,
-                        visibility: ShipVisibility::Undetected,
-                        opacity: UNDETECTED_OPACITY,
-                        is_self: relation.is_self(),
-                    });
-                }
+                    map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
+                } else {
+                    continue;
+                };
+                commands.push(DrawCommand::Ship {
+                    pos: px,
+                    yaw,
+                    species: species.clone(),
+                    color,
+                    visibility: ShipVisibility::Undetected,
+                    opacity: UNDETECTED_OPACITY,
+                    is_self: relation.is_self(),
+                });
             }
         }
 
@@ -458,10 +439,8 @@ impl MinimapRenderer {
                 let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
 
                 let info = self.squadron_info.get(plane_id);
-                let is_enemy = info
-                    .and_then(|i| self.player_relations.get(&i.owner_id))
-                    .map(|r| r.is_enemy())
-                    .unwrap_or(false);
+                // team_id: 0 = recording player's team, 1 = enemy team
+                let is_enemy = plane.team_id == 1;
 
                 let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
                 let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
