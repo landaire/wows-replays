@@ -1,5 +1,5 @@
 [package]
-name = "minimap-renderer"
+name = "minimap_renderer"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -8,7 +8,7 @@ publish = false
 name = "minimap_renderer"
 
 [[bin]]
-name = "minimap-renderer"
+name = "minimap_renderer"
 path = "src/main.rs"
 
 [dependencies]

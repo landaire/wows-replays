@@ -174,6 +174,13 @@ pub fn load_map_info(
 
 /// Load and rasterize ship SVG icons from game files.
 /// Returns a map from species name to RGBA image.
+///
+/// Loads 5 variants per species:
+/// - `"{Species}"` — base icon (visible ally/enemy)
+/// - `"{Species}_self"` — player's own ship
+/// - `"{Species}_dead"` — destroyed ship
+/// - `"{Species}_invisible"` — not currently detected
+/// - `"{Species}_last_visible"` — last known position (minimap-only)
 pub fn load_ship_icons(
     file_tree: &FileNode,
     pkg_loader: &PkgFileLoader,
@@ -186,13 +193,16 @@ pub fn load_ship_icons(
         "Submarine",
         "Auxiliary",
     ];
+    // (file suffix, key suffix) — all in gui/fla/minimap/ship_icons/
+    let variants: &[(&str, &str)] = &[
+        ("", ""),
+        ("_dead", "_dead"),
+        ("_invisible", "_invisible"),
+        ("_last_visible", "_last_visible"),
+    ];
     let mut icons = HashMap::new();
-    for name in &species_names {
-        let path = format!(
-            "gui/fla/minimap/ship_icons/minimap_{}.svg",
-            name.to_ascii_lowercase()
-        );
-        let file_path = Path::new(&path);
+    let load_svg = |path: &str, key: &str, icons: &mut HashMap<String, RgbaImage>| {
+        let file_path = Path::new(path);
         let mut buf = Vec::new();
         if file_tree
             .read_file_at_path(file_path, pkg_loader, &mut buf)
@@ -200,11 +210,53 @@ pub fn load_ship_icons(
             && !buf.is_empty()
         {
             if let Some(img) = rasterize_svg(&buf, ICON_SIZE) {
-                println!("Loaded ship icon: {}", name);
-                icons.insert(name.to_string(), img);
+                icons.insert(key.to_string(), img);
+                return true;
+            }
+        }
+        false
+    };
+    for name in &species_names {
+        let lower = name.to_ascii_lowercase();
+        for &(file_suffix, key_suffix) in variants {
+            let path = format!(
+                "gui/fla/minimap/ship_icons/minimap_{}{}.svg",
+                lower, file_suffix
+            );
+            let key = format!("{}{}", name, key_suffix);
+            load_svg(&path, &key, &mut icons);
+        }
+        // Self icons from ship_icons_self/ directory
+        // Try species-specific first, then generic fallback
+        let self_key = format!("{}_self", name);
+        let self_paths = [
+            format!(
+                "gui/fla/minimap/ship_icons_self/minimap_self_alive_{}.svg",
+                lower
+            ),
+            "gui/fla/minimap/ship_icons_self/minimap_self_alive.svg".to_string(),
+        ];
+        for path in &self_paths {
+            if load_svg(path, &self_key, &mut icons) {
+                break;
+            }
+        }
+        // Dead-self variant
+        let dead_self_key = format!("{}_dead_self", name);
+        let dead_self_paths = [
+            format!(
+                "gui/fla/minimap/ship_icons_self/minimap_self_dead_{}.svg",
+                lower
+            ),
+            "gui/fla/minimap/ship_icons_self/minimap_self_dead.svg".to_string(),
+        ];
+        for path in &dead_self_paths {
+            if load_svg(path, &dead_self_key, &mut icons) {
+                break;
             }
         }
     }
+    println!("Loaded {} ship icon variants", icons.len());
     if icons.is_empty() {
         println!("Warning: No ship icons loaded, using fallback circles");
     }

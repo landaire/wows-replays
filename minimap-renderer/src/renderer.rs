@@ -353,6 +353,7 @@ impl MinimapRenderer {
                         color,
                         visibility: ShipVisibility::Visible,
                         opacity: 1.0,
+                        is_self: relation.is_self(),
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -376,6 +377,7 @@ impl MinimapRenderer {
                         color,
                         visibility: ShipVisibility::MinimapOnly,
                         opacity: 1.0,
+                        is_self: relation.is_self(),
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -402,6 +404,7 @@ impl MinimapRenderer {
                         color,
                         visibility: ShipVisibility::Undetected,
                         opacity: UNDETECTED_OPACITY,
+                        is_self: relation.is_self(),
                     });
                 } else if let Some(mm) = minimap {
                     let px = normalized_to_minimap(&mm.position, MINIMAP_SIZE);
@@ -412,18 +415,34 @@ impl MinimapRenderer {
                         color,
                         visibility: ShipVisibility::Undetected,
                         opacity: UNDETECTED_OPACITY,
+                        is_self: relation.is_self(),
                     });
                 }
             }
         }
 
         // 6. Dead ship markers
-        for (_, dead) in dead_ships {
+        for (entity_id, dead) in dead_ships {
             if clock >= dead.clock {
                 let px = map_info.world_to_minimap(dead.position, MINIMAP_SIZE);
+                let species = self.player_species.get(entity_id).cloned();
+                // Use last known heading from minimap positions
+                let yaw = minimap_positions
+                    .get(entity_id)
+                    .map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.to_radians())
+                    .or_else(|| ship_positions.get(entity_id).map(|sp| sp.yaw))
+                    .unwrap_or(0.0);
+                let relation = self
+                    .player_relations
+                    .get(entity_id)
+                    .copied()
+                    .unwrap_or(Relation::new(2));
                 commands.push(DrawCommand::DeadShip {
                     pos: px,
+                    yaw,
+                    species,
                     color: DEAD_SHIP_COLOR,
+                    is_self: relation.is_self(),
                 });
             }
         }

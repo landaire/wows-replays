@@ -45,6 +45,8 @@ pub enum DrawCommand {
         color: [u8; 3],
         visibility: ShipVisibility,
         opacity: f32,
+        /// Whether this is the player's own ship (uses `_self` icon variant)
+        is_self: bool,
     },
     /// Health bar above a ship
     HealthBar {
@@ -54,8 +56,14 @@ pub enum DrawCommand {
         background_color: [u8; 3],
         background_alpha: f32,
     },
-    /// Dead ship X marker
-    DeadShip { pos: MinimapPos, color: [u8; 3] },
+    /// Dead ship marker (icon or X fallback)
+    DeadShip {
+        pos: MinimapPos,
+        yaw: f32,
+        species: Option<String>,
+        color: [u8; 3],
+        is_self: bool,
+    },
     /// Plane icon
     Plane {
         pos: MinimapPos,

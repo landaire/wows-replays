@@ -115,7 +115,7 @@ cargo run -p replayshark -- -g <game_dir> investigate --filter-method <name> <re
 cargo run -p replayshark -- -g <game_dir> investigate --filter-packet 0x8 <replay>     # Inspect packet type
 ```
 
-Game directory example: `E:\WoWs\World_of_Warships\`
+Game directory example: `E:\WoWsStable\World_of_Warships\`
 
 ## Feature: `arc`
 

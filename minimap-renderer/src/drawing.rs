@@ -299,33 +299,28 @@ impl RenderTarget for ImageTarget {
                 color,
                 visibility,
                 opacity,
+                is_self,
             } => {
                 let rgb = Rgb(*color);
                 let x = pos.x;
                 let y = pos.y + y_off;
 
-                // Try icon first, then fallback to circle
-                let drew_icon = if let Some(species_name) = species {
-                    if let Some(icon) = self.ship_icons.get(species_name) {
-                        draw_ship_icon(
-                            &mut self.canvas,
-                            icon,
-                            x,
-                            y,
-                            *yaw,
-                            rgb,
-                            *visibility,
-                            *opacity,
-                        );
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
+                // Pick the right icon variant based on visibility and self status
+                let icon = species.as_ref().and_then(|sp| {
+                    let variant_key = match (*visibility, *is_self) {
+                        (ShipVisibility::Visible, true) => format!("{}_self", sp),
+                        (ShipVisibility::Visible, false) => sp.clone(),
+                        (ShipVisibility::MinimapOnly, _) => format!("{}_last_visible", sp),
+                        (ShipVisibility::Undetected, _) => format!("{}_invisible", sp),
+                    };
+                    self.ship_icons
+                        .get(&variant_key)
+                        .or_else(|| self.ship_icons.get(sp))
+                });
 
-                if !drew_icon {
+                if let Some(icon) = icon {
+                    draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, *opacity);
+                } else {
                     match visibility {
                         ShipVisibility::Visible => {
                             draw_ship(&mut self.canvas, x, y, *yaw, rgb, 5);
@@ -356,8 +351,34 @@ impl RenderTarget for ImageTarget {
                     *background_alpha,
                 );
             }
-            DrawCommand::DeadShip { pos, color } => {
-                draw_dead_ship(&mut self.canvas, pos.x, pos.y + y_off, Rgb(*color));
+            DrawCommand::DeadShip {
+                pos,
+                yaw,
+                species,
+                color,
+                is_self,
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off;
+                let rgb = Rgb(*color);
+
+                // Try dead icon variant, with dead_self for player's own ship
+                let icon = species.as_ref().and_then(|sp| {
+                    let variant_key = if *is_self {
+                        format!("{}_dead_self", sp)
+                    } else {
+                        format!("{}_dead", sp)
+                    };
+                    self.ship_icons
+                        .get(&variant_key)
+                        .or_else(|| self.ship_icons.get(sp))
+                });
+
+                if let Some(icon) = icon {
+                    draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, 1.0);
+                } else {
+                    draw_dead_ship(&mut self.canvas, x, y, rgb);
+                }
             }
             DrawCommand::Plane {
                 pos,
@@ -615,7 +636,8 @@ fn draw_health_bar(
 ///
 /// The icon is expected to be a white/alpha mask -- non-transparent pixels are tinted to `color`.
 /// The icon is rotated about its center by `yaw` radians (game convention: 0=east, CCW positive).
-/// The `visibility` parameter controls the rendering style.
+/// The caller selects the correct icon variant (base, `_dead`, `_invisible`, `_last_visible`,
+/// `_self`), so this function applies uniform tinting and alpha blending to all variants.
 fn draw_ship_icon(
     image: &mut RgbImage,
     icon: &RgbaImage,
@@ -623,7 +645,6 @@ fn draw_ship_icon(
     y: i32,
     yaw: f32,
     color: Rgb<u8>,
-    visibility: ShipVisibility,
     opacity: f32,
 ) {
     let iw = icon.width() as i32;
@@ -670,21 +691,6 @@ fn draw_ship_icon(
             let luminance =
                 (pixel[0] as f32 * 0.299 + pixel[1] as f32 * 0.587 + pixel[2] as f32 * 0.114)
                     / 255.0;
-
-            // For outline mode, only draw edge pixels (high alpha neighbors indicate interior)
-            if visibility == ShipVisibility::MinimapOnly {
-                let is_edge = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(ox, oy)| {
-                    let nx = sx + ox;
-                    let ny = sy + oy;
-                    if nx < 0 || nx >= iw || ny < 0 || ny >= ih {
-                        return true;
-                    }
-                    icon.get_pixel(nx as u32, ny as u32)[3] < 128
-                });
-                if !is_edge {
-                    continue;
-                }
-            }
 
             let tinted = Rgb([
                 (color[0] as f32 * luminance) as u8,
