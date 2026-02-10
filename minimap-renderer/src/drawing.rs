@@ -297,6 +297,84 @@ pub fn draw_kill_feed(
     }
 }
 
+/// Draw A-J / 1-10 grid lines and labels over the minimap area.
+///
+/// `y_off` is the vertical offset from the top of the canvas to the start of the map.
+pub fn draw_grid(image: &mut RgbImage, minimap_size: u32, y_off: u32, font: &FontRef) {
+    let grid_color = Rgb([255u8, 255, 255]);
+    let alpha = 0.25f32;
+    let cell = minimap_size as f32 / 10.0;
+    let label_scale = PxScale::from(11.0);
+
+    // Draw 9 vertical and 9 horizontal interior lines (blended for transparency)
+    for i in 1..10 {
+        let pos = (i as f32 * cell).round() as i32;
+
+        // Vertical line
+        for y in 0..minimap_size as i32 {
+            let px = pos;
+            let py = y + y_off as i32;
+            if px >= 0 && (px as u32) < minimap_size {
+                let bg = image.get_pixel(px as u32, py as u32).0;
+                let blended = Rgb([
+                    (grid_color[0] as f32 * alpha + bg[0] as f32 * (1.0 - alpha)) as u8,
+                    (grid_color[1] as f32 * alpha + bg[1] as f32 * (1.0 - alpha)) as u8,
+                    (grid_color[2] as f32 * alpha + bg[2] as f32 * (1.0 - alpha)) as u8,
+                ]);
+                image.put_pixel(px as u32, py as u32, blended);
+            }
+        }
+
+        // Horizontal line
+        for x in 0..minimap_size as i32 {
+            let px = x;
+            let py = pos + y_off as i32;
+            if py >= 0 && (py as u32) < image.height() {
+                let bg = image.get_pixel(px as u32, py as u32).0;
+                let blended = Rgb([
+                    (grid_color[0] as f32 * alpha + bg[0] as f32 * (1.0 - alpha)) as u8,
+                    (grid_color[1] as f32 * alpha + bg[1] as f32 * (1.0 - alpha)) as u8,
+                    (grid_color[2] as f32 * alpha + bg[2] as f32 * (1.0 - alpha)) as u8,
+                ]);
+                image.put_pixel(px as u32, py as u32, blended);
+            }
+        }
+    }
+
+    // Labels: numbers 1-10 across the top, letters A-J down the left
+    for i in 0..10 {
+        let label = format!("{}", i + 1);
+        let x = (i as f32 * cell + cell / 2.0 - 3.0) as i32;
+        let y = y_off as i32 + 2;
+        draw_text_mut(
+            image,
+            COLOR_TEXT_SHADOW,
+            x + 1,
+            y + 1,
+            label_scale,
+            font,
+            &label,
+        );
+        draw_text_mut(image, COLOR_TEXT, x, y, label_scale, font, &label);
+    }
+    let labels_row = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    for (i, &ch) in labels_row.iter().enumerate() {
+        let label = ch.to_string();
+        let x = 3i32;
+        let y = y_off as i32 + (i as f32 * cell + cell / 2.0 - 5.0) as i32;
+        draw_text_mut(
+            image,
+            COLOR_TEXT_SHADOW,
+            x + 1,
+            y + 1,
+            label_scale,
+            font,
+            &label,
+        );
+        draw_text_mut(image, COLOR_TEXT, x, y, label_scale, font, &label);
+    }
+}
+
 /// Get the ship color based on relation to the recording player.
 pub fn ship_color(relation: Relation) -> Rgb<u8> {
     if relation.is_self() {

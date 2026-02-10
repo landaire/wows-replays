@@ -364,7 +364,7 @@ impl MinimapRenderer {
     }
 
     /// Build a full canvas (MINIMAP_SIZE x CANVAS_HEIGHT) with the map placed below the HUD area.
-    fn build_canvas(&self, map_image: &RgbImage) -> RgbImage {
+    fn build_canvas(&self, map_image: &RgbImage, font: &ab_glyph::FontRef) -> RgbImage {
         let mut canvas = RgbImage::from_pixel(MINIMAP_SIZE, CANVAS_HEIGHT, Rgb([20, 25, 35]));
         // Paste map image at y=HUD_HEIGHT
         for y in 0..map_image.height().min(MINIMAP_SIZE) {
@@ -372,6 +372,8 @@ impl MinimapRenderer {
                 canvas.put_pixel(x, y + HUD_HEIGHT, *map_image.get_pixel(x, y));
             }
         }
+        // Draw grid overlay
+        drawing::draw_grid(&mut canvas, MINIMAP_SIZE, HUD_HEIGHT, font);
         canvas
     }
 
@@ -392,7 +394,7 @@ impl MinimapRenderer {
         }
 
         let game_time = GameClock(frame_idx as f32 * game_duration.seconds() / TOTAL_FRAMES as f32);
-        let mut frame = self.build_canvas(&map_image);
+        let mut frame = self.build_canvas(&map_image, &font);
         self.draw_frame(&mut frame, game_time, &map_info, &font);
         Ok(frame)
     }
@@ -714,11 +716,15 @@ impl MinimapRenderer {
             TOTAL_FRAMES, MINIMAP_SIZE, CANVAS_HEIGHT, game_duration, FPS
         );
 
-        // Setup H.264 encoder with quality settings
+        // Setup H.264 encoder — screen content mode for sharp graphics, low QP for quality
         let config = EncoderConfig::new()
             .max_frame_rate(FrameRate::from_hz(FPS as f32))
-            .rate_control_mode(openh264::encoder::RateControlMode::Quality)
-            .bitrate(openh264::encoder::BitRate::from_bps(2_000_000)); // 2 Mbps
+            .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
+            .rate_control_mode(openh264::encoder::RateControlMode::Bitrate)
+            .bitrate(openh264::encoder::BitRate::from_bps(20_000_000))
+            .qp(openh264::encoder::QpRange::new(0, 24))
+            .adaptive_quantization(false)
+            .background_detection(false);
         let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
             .context("Failed to create H.264 encoder")?;
 
@@ -728,7 +734,7 @@ impl MinimapRenderer {
             let game_time =
                 GameClock(frame_idx as f32 * game_duration.seconds() / TOTAL_FRAMES as f32);
 
-            let mut frame = self.build_canvas(&map_image);
+            let mut frame = self.build_canvas(&map_image, &font);
             self.draw_frame(&mut frame, game_time, &map_info, &font);
 
             let rgb_data = frame.into_raw();
