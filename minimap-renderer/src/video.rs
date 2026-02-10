@@ -57,9 +57,8 @@ impl VideoEncoder {
         let config = EncoderConfig::new()
             .max_frame_rate(FrameRate::from_hz(FPS as f32))
             .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
-            .rate_control_mode(openh264::encoder::RateControlMode::Bitrate)
-            .bitrate(openh264::encoder::BitRate::from_bps(20_000_000))
-            .qp(openh264::encoder::QpRange::new(0, 24))
+            .rate_control_mode(openh264::encoder::RateControlMode::Off)
+            .qp(openh264::encoder::QpRange::new(0, 0))
             .adaptive_quantization(false)
             .background_detection(false);
         self.encoder = Some(
