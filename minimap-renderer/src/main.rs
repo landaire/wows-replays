@@ -122,6 +122,16 @@ fn main() -> anyhow::Result<()> {
                 .long("no-ship-names"),
         )
         .arg(
+            Arg::with_name("NO_CAPTURE_POINTS")
+                .help("Hide capture point zones")
+                .long("no-capture-points"),
+        )
+        .arg(
+            Arg::with_name("NO_BUILDINGS")
+                .help("Hide building markers")
+                .long("no-buildings"),
+        )
+        .arg(
             Arg::with_name("REPLAY")
                 .help("The replay file to process")
                 .required(true)
@@ -187,6 +197,8 @@ fn main() -> anyhow::Result<()> {
     let mut options = RenderOptions::default();
     options.show_player_names = !matches.is_present("NO_PLAYER_NAMES");
     options.show_ship_names = !matches.is_present("NO_SHIP_NAMES");
+    options.show_capture_points = !matches.is_present("NO_CAPTURE_POINTS");
+    options.show_buildings = !matches.is_present("NO_BUILDINGS");
 
     let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, options);
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);

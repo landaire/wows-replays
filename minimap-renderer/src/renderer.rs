@@ -44,6 +44,8 @@ pub struct RenderOptions {
     pub show_kill_feed: bool,
     pub show_player_names: bool,
     pub show_ship_names: bool,
+    pub show_capture_points: bool,
+    pub show_buildings: bool,
 }
 
 impl Default for RenderOptions {
@@ -59,6 +61,8 @@ impl Default for RenderOptions {
             show_kill_feed: true,
             show_player_names: true,
             show_ship_names: true,
+            show_capture_points: true,
+            show_buildings: true,
         }
     }
 }
@@ -200,7 +204,34 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 2. Artillery shot tracers
+        // 2. Capture points (drawn early so they're behind everything)
+        if self.options.show_capture_points {
+            for cp in controller.capture_points() {
+                let pos = match cp.position {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let px = map_info.world_to_minimap(pos, MINIMAP_SIZE);
+                let px_radius =
+                    (cp.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                let color = cap_point_color(cp.team_id);
+                let label = if cp.control_point_type == 5 {
+                    "\u{2691}".to_string() // flag character
+                } else {
+                    let letter = (b'A' + cp.index as u8) as char;
+                    letter.to_string()
+                };
+                commands.push(DrawCommand::CapturePoint {
+                    pos: px,
+                    radius: px_radius.max(5),
+                    color,
+                    alpha: 0.15,
+                    label,
+                });
+            }
+        }
+
+        // 3. Artillery shot tracers
         if self.options.show_tracers {
             for shot in controller.active_shots() {
                 for shot_data in &shot.salvo.shots {
@@ -292,7 +323,30 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 5. Ships
+        // 5. Buildings
+        if self.options.show_buildings {
+            for entity in controller.entities_by_id().values() {
+                if let Some(building_ref) = entity.building_ref() {
+                    let building = building_ref.borrow();
+                    if building.is_hidden {
+                        continue;
+                    }
+                    let px = map_info.world_to_minimap(building.position, MINIMAP_SIZE);
+                    let color = if building.is_alive {
+                        cap_point_color(building.team_id as i64)
+                    } else {
+                        [40, 40, 40]
+                    };
+                    commands.push(DrawCommand::Building {
+                        pos: px,
+                        color,
+                        is_alive: building.is_alive,
+                    });
+                }
+            }
+        }
+
+        // 6. Ships
         let ship_positions = controller.ship_positions();
         let minimap_positions = controller.minimap_positions();
 
@@ -536,6 +590,17 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         commands
+    }
+}
+
+/// Get the capture point / building color based on team_id.
+///
+/// Team 0 = recording player's team (green), team 1 = enemy (red), -1 = neutral (white).
+fn cap_point_color(team_id: i64) -> [u8; 3] {
+    match team_id {
+        0 => TEAM0_COLOR,
+        1 => TEAM1_COLOR,
+        _ => [255, 255, 255], // neutral
     }
 }
 

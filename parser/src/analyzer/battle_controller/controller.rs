@@ -471,6 +471,10 @@ pub struct BattleController<'res, 'replay, G> {
     ship_positions: HashMap<EntityId, ShipPosition>,
     minimap_positions: HashMap<EntityId, MinimapPosition>,
     capture_points: Vec<CapturePointState>,
+    /// InteractiveZone data indexed by control point index.
+    /// Populated from EntityCreate, consumed when PropertyUpdates fill capture_points.
+    /// Maps InteractiveZone entity_id -> index in capture_points vec
+    interactive_zone_indices: HashMap<EntityId, usize>,
     team_scores: Vec<TeamScore>,
     active_consumables: HashMap<EntityId, Vec<ActiveConsumable>>,
     active_shots: Vec<ActiveShot>,
@@ -520,6 +524,7 @@ where
             ship_positions: HashMap::default(),
             minimap_positions: HashMap::default(),
             capture_points: Vec::new(),
+            interactive_zone_indices: HashMap::default(),
             team_scores: Vec::new(),
             active_consumables: HashMap::default(),
             active_shots: Vec::new(),
@@ -547,6 +552,7 @@ where
         self.ship_positions.clear();
         self.minimap_positions.clear();
         self.capture_points.clear();
+        self.interactive_zone_indices.clear();
         self.team_scores.clear();
         self.active_consumables.clear();
         self.active_shots.clear();
@@ -801,59 +807,6 @@ where
         let levels = &update.update_cmd.levels;
         let action = &update.update_cmd.action;
 
-        // Match: state -> controlPoints -> [N] -> SetKey{...}
-        if levels.len() == 2 {
-            if let PropertyNestLevel::DictKey("controlPoints") = &levels[0] {
-                if let PropertyNestLevel::ArrayIndex(point_idx) = &levels[1] {
-                    // Ensure capture_points vec is large enough
-                    while self.capture_points.len() <= *point_idx {
-                        self.capture_points.push(CapturePointState {
-                            index: self.capture_points.len(),
-                            ..Default::default()
-                        });
-                    }
-
-                    if let UpdateAction::SetKey { key, value } = action {
-                        match *key {
-                            "hasInvaders" => {
-                                if let Some(v) = value.try_into().ok().map(|v: i32| v != 0) {
-                                    self.capture_points[*point_idx].has_invaders = v;
-                                }
-                            }
-                            "invaderTeam" => {
-                                if let Some(v) = TryInto::<i32>::try_into(value).ok() {
-                                    self.capture_points[*point_idx].invader_team = v as i64;
-                                }
-                            }
-                            "progress" => {
-                                // progress is a tuple: (fraction, time_remaining)
-                                if let ArgValue::Array(arr) = value {
-                                    if arr.len() >= 2 {
-                                        let fraction: f64 = (&arr[0]).try_into().unwrap_or(0.0);
-                                        let time_remaining: f64 =
-                                            (&arr[1]).try_into().unwrap_or(0.0);
-                                        self.capture_points[*point_idx].progress =
-                                            (fraction, time_remaining);
-                                    }
-                                }
-                            }
-                            "bothInside" => {
-                                if let Some(v) = value.try_into().ok().map(|v: i32| v != 0) {
-                                    self.capture_points[*point_idx].both_inside = v;
-                                }
-                            }
-                            "teamId" => {
-                                if let Some(v) = TryInto::<i32>::try_into(value).ok() {
-                                    self.capture_points[*point_idx].team_id = v as i64;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-
         // Match: state -> missions -> teamsScore -> [N] -> SetKey{score}
         if levels.len() == 3 {
             if let PropertyNestLevel::DictKey("missions") = &levels[0] {
@@ -947,6 +900,11 @@ where
 
                 let building = BuildingEntity {
                     id: packet.entity_id,
+                    position: WorldPos {
+                        x: packet.position.x,
+                        y: packet.position.y,
+                        z: packet.position.z,
+                    },
                     is_alive,
                     is_hidden,
                     is_suppressed,
@@ -984,8 +942,111 @@ where
                 );
             }
             EntityType::BattleLogic => debug!("BattleLogic create"),
-            EntityType::InteractiveZone => debug!("InteractiveZone create"),
+            EntityType::InteractiveZone => {
+                let position = WorldPos {
+                    x: packet.position.x,
+                    y: packet.position.y,
+                    z: packet.position.z,
+                };
+                let radius = packet
+                    .props
+                    .get("radius")
+                    .and_then(|v| v.float_32_ref().copied())
+                    .unwrap_or(0.0);
+                let team_id = packet
+                    .props
+                    .get("teamId")
+                    .and_then(|v| Self::arg_to_i64(v))
+                    .unwrap_or(-1);
+
+                // Extract index, type, and initial capture state from componentsState
+                // Note: inner dicts are NullableFixedDict, not FixedDict
+                let mut cp_index: Option<usize> = None;
+                let mut cp_type: i32 = 0;
+                let mut has_invaders = false;
+                let mut invader_team: i64 = -1;
+                let mut progress: f64 = 0.0;
+                let mut both_inside = false;
+
+                if let Some(cs) = packet.props.get("componentsState") {
+                    if let Some(cs_dict) = Self::as_dict(cs) {
+                        // Extract control point index and type
+                        if let Some(cp) = cs_dict.get("controlPoint") {
+                            if let Some(cp_dict) = Self::as_dict(cp) {
+                                if let Some(idx) = cp_dict.get("index") {
+                                    cp_index = Self::arg_to_i64(idx).map(|v| v as usize);
+                                }
+                                if let Some(t) = cp_dict.get("type") {
+                                    cp_type = Self::arg_to_i64(t).unwrap_or(0) as i32;
+                                }
+                            }
+                        }
+                        // Extract initial capture logic state
+                        if let Some(cl) = cs_dict.get("captureLogic") {
+                            if let Some(cl_dict) = Self::as_dict(cl) {
+                                if let Some(v) = cl_dict.get("hasInvaders") {
+                                    has_invaders = Self::arg_to_i64(v).unwrap_or(0) != 0;
+                                }
+                                if let Some(v) = cl_dict.get("invaderTeam") {
+                                    invader_team = Self::arg_to_i64(v).unwrap_or(-1);
+                                }
+                                if let Some(v) = cl_dict.get("progress") {
+                                    progress = v.float_32_ref().map(|f| *f as f64).unwrap_or(0.0);
+                                }
+                                if let Some(v) = cl_dict.get("bothInside") {
+                                    both_inside = Self::arg_to_i64(v).unwrap_or(0) != 0;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(idx) = cp_index {
+                    // Ensure capture_points vec is large enough
+                    while self.capture_points.len() <= idx {
+                        self.capture_points.push(CapturePointState::default());
+                    }
+                    self.capture_points[idx] = CapturePointState {
+                        index: idx,
+                        position: Some(position),
+                        radius,
+                        control_point_type: cp_type,
+                        team_id,
+                        invader_team,
+                        progress: (progress, 0.0),
+                        has_invaders,
+                        both_inside,
+                    };
+                    self.interactive_zone_indices.insert(packet.entity_id, idx);
+                }
+            }
             EntityType::BattleEntity => debug!("BattleEntity create"),
+        }
+    }
+
+    /// Extract a dict reference from either FixedDict or NullableFixedDict(Some(...)).
+    fn as_dict<'a, 'b>(value: &'a ArgValue<'b>) -> Option<&'a HashMap<&'b str, ArgValue<'b>>> {
+        match value {
+            ArgValue::FixedDict(d) => Some(d),
+            ArgValue::NullableFixedDict(Some(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Convert any integer ArgValue variant to i64.
+    /// The TryInto impls on ArgValue only match exact types (e.g. Int8 -> i8),
+    /// so we need this to handle mixed-width integers from entity properties.
+    fn arg_to_i64(value: &ArgValue<'_>) -> Option<i64> {
+        match value {
+            ArgValue::Int8(v) => Some(*v as i64),
+            ArgValue::Int16(v) => Some(*v as i64),
+            ArgValue::Int32(v) => Some(*v as i64),
+            ArgValue::Int64(v) => Some(*v),
+            ArgValue::Uint8(v) => Some(*v as i64),
+            ArgValue::Uint16(v) => Some(*v as i64),
+            ArgValue::Uint32(v) => Some(*v as i64),
+            ArgValue::Uint64(v) => Some(*v as i64),
+            _ => None,
         }
     }
 }
@@ -2071,6 +2132,14 @@ where
                             .update_by_name(prop.property, &prop.value, self.version);
                     }
                 }
+                // Handle InteractiveZone teamId changes (packet type 0x7)
+                if prop.property == "teamId" {
+                    if let Some(&cp_idx) = self.interactive_zone_indices.get(&entity_id) {
+                        if let Some(v) = Self::arg_to_i64(&prop.value) {
+                            self.capture_points[cp_idx].team_id = v;
+                        }
+                    }
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::BasePlayerCreate(_base) => {
                 trace!("BASE PLAYER CREATE");
@@ -2224,6 +2293,48 @@ where
                         }
                     }
                 }
+                // Handle InteractiveZone (capture point) state updates
+                // PropertyUpdates arrive as: property="componentsState", levels=[captureLogic], action=SetKey{key, value}
+                if update.property == "componentsState" {
+                    if let Some(&cp_idx) = self.interactive_zone_indices.get(&update.entity_id) {
+                        if matches!(
+                            update.update_cmd.levels.first(),
+                            Some(PropertyNestLevel::DictKey("captureLogic"))
+                        ) {
+                            if let UpdateAction::SetKey { key, value } = &update.update_cmd.action {
+                                match *key {
+                                    "hasInvaders" => {
+                                        if let Some(v) = Self::arg_to_i64(value) {
+                                            self.capture_points[cp_idx].has_invaders = v != 0;
+                                        }
+                                    }
+                                    "invaderTeam" => {
+                                        if let Some(v) = Self::arg_to_i64(value) {
+                                            self.capture_points[cp_idx].invader_team = v;
+                                        }
+                                    }
+                                    "progress" => {
+                                        if let Some(f) = value.float_32_ref() {
+                                            self.capture_points[cp_idx].progress = (*f as f64, 0.0);
+                                        }
+                                    }
+                                    "bothInside" => {
+                                        if let Some(v) = Self::arg_to_i64(value) {
+                                            self.capture_points[cp_idx].both_inside = v != 0;
+                                        }
+                                    }
+                                    "teamId" | "invaderTeamId" => {
+                                        if let Some(v) = Self::arg_to_i64(value) {
+                                            self.capture_points[cp_idx].invader_team = v;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+
                 self.handle_property_update(packet.clock, update);
             }
             crate::analyzer::decoder::DecodedPacketPayload::BattleEnd {

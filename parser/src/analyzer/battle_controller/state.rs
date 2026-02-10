@@ -30,6 +30,12 @@ pub struct MinimapPosition {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CapturePointState {
     pub index: usize,
+    /// World position of the zone center (from InteractiveZone entity)
+    pub position: Option<WorldPos>,
+    /// Zone radius in world units (from InteractiveZone entity)
+    pub radius: f32,
+    /// Control point type: 5=flag, others=lettered (A, B, C...)
+    pub control_point_type: i32,
     pub team_id: i64,
     pub invader_team: i64,
     /// (fraction captured 0..1, time remaining)
@@ -57,6 +63,7 @@ pub struct ActiveConsumable {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct BuildingEntity {
     pub id: EntityId,
+    pub position: WorldPos,
     pub is_alive: bool,
     pub is_hidden: bool,
     pub is_suppressed: bool,

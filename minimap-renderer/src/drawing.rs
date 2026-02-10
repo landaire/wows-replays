@@ -89,6 +89,48 @@ fn draw_plane_icon(image: &mut RgbImage, icon: &RgbaImage, x: i32, y: i32) {
     }
 }
 
+/// Draw a capture point zone: filled circle + outline + centered label.
+fn draw_capture_point(
+    image: &mut RgbImage,
+    x: i32,
+    y: i32,
+    radius: i32,
+    color: [u8; 3],
+    alpha: f32,
+    label: &str,
+    font: &FontRef,
+) {
+    // Filled circle with low alpha
+    draw_smoke(image, x, y, radius, color, alpha);
+
+    // Circle outline at higher alpha
+    let img_w = image.width() as i32;
+    let img_h = image.height() as i32;
+    let outline_alpha = 0.6f32;
+    for angle_step in 0..360 {
+        let angle = (angle_step as f32).to_radians();
+        let px = x + (radius as f32 * angle.cos()).round() as i32;
+        let py = y + (radius as f32 * angle.sin()).round() as i32;
+        if px >= 0 && px < img_w && py >= 0 && py < img_h {
+            let bg = image.get_pixel(px as u32, py as u32).0;
+            let blended = Rgb([
+                (color[0] as f32 * outline_alpha + bg[0] as f32 * (1.0 - outline_alpha)) as u8,
+                (color[1] as f32 * outline_alpha + bg[1] as f32 * (1.0 - outline_alpha)) as u8,
+                (color[2] as f32 * outline_alpha + bg[2] as f32 * (1.0 - outline_alpha)) as u8,
+            ]);
+            image.put_pixel(px as u32, py as u32, blended);
+        }
+    }
+
+    // Centered label
+    let scale = PxScale::from(16.0);
+    let (w, h) = text_size(scale, font, label);
+    let tx = x - w as i32 / 2;
+    let ty = y - h as i32 / 2;
+    draw_text_mut(image, COLOR_TEXT_SHADOW, tx + 1, ty + 1, scale, font, label);
+    draw_text_mut(image, COLOR_TEXT, tx, ty, scale, font, label);
+}
+
 /// Draw player name and/or ship name labels centered above a ship icon.
 ///
 /// When both are present, player name is on top, ship name below it.
@@ -236,6 +278,39 @@ impl RenderTarget for ImageTarget {
                     *color,
                     *alpha,
                 );
+            }
+            DrawCommand::CapturePoint {
+                pos,
+                radius,
+                color,
+                alpha,
+                label,
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off;
+                draw_capture_point(
+                    &mut self.canvas,
+                    x,
+                    y,
+                    *radius,
+                    *color,
+                    *alpha,
+                    label,
+                    &self.font,
+                );
+            }
+            DrawCommand::Building {
+                pos,
+                color,
+                is_alive,
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off;
+                if *is_alive {
+                    draw_filled_circle_mut(&mut self.canvas, (x, y), 2, Rgb(*color));
+                } else {
+                    draw_filled_circle_mut(&mut self.canvas, (x, y), 2, Rgb(*color));
+                }
             }
             DrawCommand::Ship {
                 pos,

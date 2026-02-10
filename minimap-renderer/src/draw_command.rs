@@ -74,6 +74,24 @@ pub enum DrawCommand {
         /// Localized ship name to render above the icon (below player name)
         ship_name: Option<String>,
     },
+    /// Capture zone circle with team coloring and letter label
+    CapturePoint {
+        pos: MinimapPos,
+        /// Zone radius in pixels
+        radius: i32,
+        /// Team color (green/red/white)
+        color: [u8; 3],
+        /// Fill transparency
+        alpha: f32,
+        /// Zone label (e.g. "A", "B", "C")
+        label: String,
+    },
+    /// Building dot on the minimap
+    Building {
+        pos: MinimapPos,
+        color: [u8; 3],
+        is_alive: bool,
+    },
     /// Plane icon
     Plane {
         pos: MinimapPos,
