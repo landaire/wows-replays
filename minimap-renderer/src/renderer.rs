@@ -785,6 +785,12 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_consumables {
             let all_consumables = controller.active_consumables();
             for (entity_id, consumables) in all_consumables {
+                // Skip dead ships
+                if let Some(dead) = dead_ships.get(entity_id) {
+                    if clock >= dead.clock {
+                        continue;
+                    }
+                }
                 // Get ship position (prefer world position, fall back to minimap)
                 let pos = if let Some(sp) = ship_positions.get(entity_id) {
                     Some(map_info.world_to_minimap(sp.position, MINIMAP_SIZE))
