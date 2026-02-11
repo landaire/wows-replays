@@ -73,6 +73,45 @@ fn draw_turret_line(image: &mut RgbImage, x1: i32, y1: i32, x2: i32, y2: i32, co
     }
 }
 
+/// Draw a circle outline with alpha blending.
+///
+/// Used for detected teammate highlight and consumable radius indicators.
+fn draw_circle_outline(
+    image: &mut RgbImage,
+    x: i32,
+    y: i32,
+    radius: i32,
+    color: [u8; 3],
+    alpha: f32,
+    thickness: i32,
+) {
+    let w = image.width() as i32;
+    let h = image.height() as i32;
+
+    // Draw multiple radius offsets for thickness
+    for r_off in 0..thickness {
+        let r = radius - r_off;
+        if r <= 0 {
+            continue;
+        }
+        // Use angle stepping for smooth circle
+        for angle_step in 0..720 {
+            let angle = (angle_step as f32 * 0.5).to_radians();
+            let px = x + (r as f32 * angle.cos()).round() as i32;
+            let py = y + (r as f32 * angle.sin()).round() as i32;
+            if px >= 0 && px < w && py >= 0 && py < h {
+                let bg = image.get_pixel(px as u32, py as u32).0;
+                let blended = Rgb([
+                    (color[0] as f32 * alpha + bg[0] as f32 * (1.0 - alpha)) as u8,
+                    (color[1] as f32 * alpha + bg[1] as f32 * (1.0 - alpha)) as u8,
+                    (color[2] as f32 * alpha + bg[2] as f32 * (1.0 - alpha)) as u8,
+                ]);
+                image.put_pixel(px as u32, py as u32, blended);
+            }
+        }
+    }
+}
+
 /// Draw a smoke screen as a semi-transparent filled circle.
 fn draw_smoke(image: &mut RgbImage, x: i32, y: i32, radius: i32, smoke_color: [u8; 3], alpha: f32) {
     let w = image.width() as i32;
@@ -286,7 +325,7 @@ pub type ShipIcon = RgbaImage;
 
 /// Software renderer that draws to an `RgbImage`.
 ///
-/// Owns the map image, font, ship icons, and plane icons.
+/// Owns the map image, font, ship icons, plane icons, and consumable icons.
 /// Implements `RenderTarget` by dispatching `DrawCommand`s to pixel-level helpers.
 pub struct ImageTarget {
     canvas: RgbImage,
@@ -295,6 +334,7 @@ pub struct ImageTarget {
     font: FontRef<'static>,
     ship_icons: HashMap<String, ShipIcon>,
     plane_icons: HashMap<String, RgbaImage>,
+    consumable_icons: HashMap<String, RgbaImage>,
 }
 
 impl ImageTarget {
@@ -302,6 +342,7 @@ impl ImageTarget {
         map_image: Option<RgbImage>,
         ship_icons: HashMap<String, ShipIcon>,
         plane_icons: HashMap<String, RgbaImage>,
+        consumable_icons: HashMap<String, RgbaImage>,
     ) -> Self {
         let map = map_image
             .unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
@@ -322,6 +363,7 @@ impl ImageTarget {
             font,
             ship_icons,
             plane_icons,
+            consumable_icons,
         }
     }
 
@@ -436,13 +478,17 @@ impl RenderTarget for ImageTarget {
                 is_self,
                 player_name,
                 ship_name,
+                is_detected_teammate,
             } => {
                 let rgb = color.map(Rgb);
                 let x = pos.x;
                 let y = pos.y + y_off;
 
                 // Pick the right icon variant based on visibility and self status
-                let sp = species.as_ref().expect("ship has no species");
+                let Some(sp) = species.as_ref() else {
+                    // No species info — can't render an icon, skip
+                    return;
+                };
                 let variant_key = match (*visibility, *is_self) {
                     (ShipVisibility::Visible, true) => format!("{}_self", sp),
                     (ShipVisibility::Visible, false) => sp.clone(),
@@ -454,6 +500,12 @@ impl RenderTarget for ImageTarget {
                     .get(&variant_key)
                     .or_else(|| self.ship_icons.get(sp))
                     .unwrap_or_else(|| panic!("missing ship icon for '{}'", variant_key));
+
+                // Draw icon-shape outline for detected teammates (before icon)
+                if *is_detected_teammate {
+                    const GOLD: Rgb<u8> = Rgb([255, 215, 0]);
+                    draw_ship_icon_outline(&mut self.canvas, icon, x, y, *yaw, GOLD, 0.9, 2);
+                }
 
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, *opacity);
                 draw_ship_labels(
@@ -495,7 +547,9 @@ impl RenderTarget for ImageTarget {
                 let y = pos.y + y_off;
                 let rgb = color.map(Rgb);
 
-                let sp = species.as_ref().expect("dead ship has no species");
+                let Some(sp) = species.as_ref() else {
+                    return;
+                };
                 let variant_key = if *is_self {
                     format!("{}_dead_self", sp)
                 } else {
@@ -523,6 +577,42 @@ impl RenderTarget for ImageTarget {
                     .get(icon_key)
                     .unwrap_or_else(|| panic!("missing plane icon for '{}'", icon_key));
                 draw_plane_icon(&mut self.canvas, icon, pos.x, pos.y + y_off);
+            }
+            DrawCommand::ConsumableRadius {
+                pos,
+                radius_px,
+                color,
+                alpha,
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off;
+                // Draw semi-transparent filled circle
+                draw_smoke(&mut self.canvas, x, y, *radius_px, *color, *alpha);
+                // Draw outline for better visibility
+                draw_circle_outline(&mut self.canvas, x, y, *radius_px, *color, 0.5, 2);
+            }
+            DrawCommand::ConsumableIcons {
+                pos,
+                icon_keys,
+                has_hp_bar,
+                ..
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off;
+                // Position below health bar (y+10 bar top + 3 bar height + 2 gap = y+15)
+                // or below the ship icon if no HP bar (y + 12 + 2 gap = y+14)
+                let base_y = if *has_hp_bar { y + 28 } else { y + 26 };
+                let icon_size = 28i32;
+                let gap = 1i32;
+                let count = icon_keys.len() as i32;
+                let total_w = count * icon_size + (count - 1) * gap;
+                let start_x = x - total_w / 2 + icon_size / 2;
+                for (i, icon_key) in icon_keys.iter().enumerate() {
+                    if let Some(icon) = self.consumable_icons.get(icon_key) {
+                        let ix = start_x + i as i32 * (icon_size + gap);
+                        draw_plane_icon(&mut self.canvas, icon, ix, base_y);
+                    }
+                }
             }
             DrawCommand::ScoreBar {
                 team0,
@@ -750,6 +840,90 @@ fn draw_health_bar(
                     (bg_color[2] as f32 * bg_alpha + bg[2] as f32 * (1.0 - bg_alpha)) as u8,
                 ]);
                 image.put_pixel(px as u32, py as u32, blended);
+            }
+        }
+    }
+}
+
+/// Draw an outline that follows the ship icon's shape.
+///
+/// For each destination pixel, we check whether any icon pixel within `thickness` distance
+/// has non-zero alpha (via the rotated inverse-sample). If a neighbor is opaque but the
+/// center pixel itself is transparent, we draw the outline color there.
+fn draw_ship_icon_outline(
+    image: &mut RgbImage,
+    icon: &RgbaImage,
+    x: i32,
+    y: i32,
+    yaw: f32,
+    color: Rgb<u8>,
+    opacity: f32,
+    thickness: i32,
+) {
+    let iw = icon.width() as i32;
+    let ih = icon.height() as i32;
+    let cx = iw as f32 / 2.0;
+    let cy = ih as f32 / 2.0;
+    let img_w = image.width() as i32;
+    let img_h = image.height() as i32;
+
+    let cos_r = yaw.sin();
+    let sin_r = yaw.cos();
+
+    let half = iw / 2 + thickness;
+
+    for dy in -half..=half {
+        for dx in -half..=half {
+            let dest_x = x + dx;
+            let dest_y = y + dy;
+            if dest_x < 0 || dest_x >= img_w || dest_y < 0 || dest_y >= img_h {
+                continue;
+            }
+
+            // Check if this pixel itself is inside the icon (we only want the border)
+            let fdx = dx as f32;
+            let fdy = dy as f32;
+            let src_x = fdx * cos_r + fdy * sin_r + cx;
+            let src_y = -fdx * sin_r + fdy * cos_r + cy;
+            let sx = src_x.round() as i32;
+            let sy = src_y.round() as i32;
+            let self_opaque = if sx >= 0 && sx < iw && sy >= 0 && sy < ih {
+                icon.get_pixel(sx as u32, sy as u32)[3] > 128
+            } else {
+                false
+            };
+            if self_opaque {
+                // This pixel will be covered by the icon itself — skip
+                continue;
+            }
+
+            // Check if any neighbor within `thickness` is opaque in the icon
+            let mut has_opaque_neighbor = false;
+            'outer: for ndy in -thickness..=thickness {
+                for ndx in -thickness..=thickness {
+                    let ndx_f = (dx + ndx) as f32;
+                    let ndy_f = (dy + ndy) as f32;
+                    let ns_x = ndx_f * cos_r + ndy_f * sin_r + cx;
+                    let ns_y = -ndx_f * sin_r + ndy_f * cos_r + cy;
+                    let nsx = ns_x.round() as i32;
+                    let nsy = ns_y.round() as i32;
+                    if nsx >= 0 && nsx < iw && nsy >= 0 && nsy < ih {
+                        if icon.get_pixel(nsx as u32, nsy as u32)[3] > 128 {
+                            has_opaque_neighbor = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            if has_opaque_neighbor {
+                let bg = image.get_pixel(dest_x as u32, dest_y as u32);
+                let blended = Rgb([
+                    (color[0] as f32 * opacity + bg[0] as f32 * (1.0 - opacity)) as u8,
+                    (color[1] as f32 * opacity + bg[1] as f32 * (1.0 - opacity)) as u8,
+                    (color[2] as f32 * opacity + bg[2] as f32 * (1.0 - opacity)) as u8,
+                ]);
+                image.put_pixel(dest_x as u32, dest_y as u32, blended);
             }
         }
     }

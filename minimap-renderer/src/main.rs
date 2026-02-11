@@ -14,7 +14,9 @@ use wows_replays::analyzer::battle_controller::BattleController;
 use wows_replays::analyzer::Analyzer;
 use wows_replays::ReplayFile;
 
-use minimap_renderer::assets::{load_map_image, load_map_info, load_plane_icons, load_ship_icons};
+use minimap_renderer::assets::{
+    load_consumable_icons, load_map_image, load_map_info, load_plane_icons, load_ship_icons,
+};
 use minimap_renderer::drawing::ImageTarget;
 use minimap_renderer::renderer::{MinimapRenderer, RenderOptions};
 use minimap_renderer::video::{DumpMode, VideoEncoder};
@@ -183,9 +185,10 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    println!("Loading ship icons...");
+    println!("Loading icons...");
     let ship_icons = load_ship_icons(&file_tree, &pkg_loader);
     let plane_icons = load_plane_icons(&file_tree, &pkg_loader);
+    let consumable_icons = load_consumable_icons(&file_tree, &pkg_loader);
 
     println!("Parsing replay...");
     let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(replay_path))?;
@@ -197,7 +200,7 @@ fn main() -> anyhow::Result<()> {
 
     let game_duration = replay_file.meta.duration as f32;
 
-    let mut target = ImageTarget::new(map_image, ship_icons, plane_icons);
+    let mut target = ImageTarget::new(map_image, ship_icons, plane_icons, consumable_icons);
 
     let mut options = RenderOptions::default();
     options.show_player_names = !matches.is_present("NO_PLAYER_NAMES");
@@ -225,6 +228,7 @@ fn main() -> anyhow::Result<()> {
         if packet.clock != prev_clock && prev_clock.seconds() > 0.0 {
             renderer.populate_players(&controller);
             renderer.update_squadron_info(&controller);
+            renderer.update_ship_abilities(&controller);
             encoder.advance_clock(prev_clock, &controller, &mut renderer, &mut target);
             prev_clock = packet.clock;
         } else if prev_clock.seconds() == 0.0 {
@@ -239,6 +243,7 @@ fn main() -> anyhow::Result<()> {
     if prev_clock.seconds() > 0.0 {
         renderer.populate_players(&controller);
         renderer.update_squadron_info(&controller);
+        renderer.update_ship_abilities(&controller);
         encoder.advance_clock(prev_clock, &controller, &mut renderer, &mut target);
     }
 

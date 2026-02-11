@@ -5,6 +5,7 @@ use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::game_params::types::{GameParamProvider, PlaneCategory, Species};
 
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
+use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::{EntityId, PlaneId, Relation};
 
 use crate::draw_command::{DrawCommand, ShipVisibility};
@@ -47,6 +48,7 @@ pub struct RenderOptions {
     pub show_capture_points: bool,
     pub show_buildings: bool,
     pub show_turret_direction: bool,
+    pub show_consumables: bool,
 }
 
 impl Default for RenderOptions {
@@ -65,6 +67,7 @@ impl Default for RenderOptions {
             show_capture_points: true,
             show_buildings: true,
             show_turret_direction: true,
+            show_consumables: true,
         }
     }
 }
@@ -90,7 +93,22 @@ pub struct MinimapRenderer<'a> {
     player_names: HashMap<EntityId, String>,
     ship_display_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
+    /// Cache of ship consumable variants: (entity_id, consumable) -> (ability_name, variant_name)
+    ship_consumable_variants: HashMap<(EntityId, ConsumableKey), (String, String)>,
+    /// Per-ship consumable icon names: (entity_id, Consumable) -> PCY name (e.g. "PCY015_SpeedBoosterPremium")
+    ship_ability_icons: HashMap<(EntityId, Consumable), String>,
+    /// Track which entities we've already resolved ability icons for
+    resolved_entities: std::collections::HashSet<EntityId>,
     players_populated: bool,
+}
+
+/// Key for consumable variant lookup (simplified consumable type for detection consumables)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ConsumableKey {
+    Radar,
+    Hydro,
+    Hydrophone,
+    SubSurveillance,
 }
 
 impl<'a> MinimapRenderer<'a> {
@@ -108,6 +126,9 @@ impl<'a> MinimapRenderer<'a> {
             player_names: HashMap::new(),
             ship_display_names: HashMap::new(),
             player_relations: HashMap::new(),
+            ship_consumable_variants: HashMap::new(),
+            ship_ability_icons: HashMap::new(),
+            resolved_entities: std::collections::HashSet::new(),
             players_populated: false,
         }
     }
@@ -119,31 +140,177 @@ impl<'a> MinimapRenderer<'a> {
         self.player_names.clear();
         self.ship_display_names.clear();
         self.player_relations.clear();
+        self.ship_consumable_variants.clear();
+        self.ship_ability_icons.clear();
+        self.resolved_entities.clear();
         self.players_populated = false;
     }
 
     /// Populate player info from controller state (once).
+    ///
+    /// Uses `player_entities` (populated from onArenaStateReceived packet parsing).
     pub fn populate_players(&mut self, controller: &dyn BattleControllerState) {
         if self.players_populated {
             return;
         }
+
         let players = controller.player_entities();
         if players.is_empty() {
             return;
         }
+
         for (entity_id, player) in players {
-            self.player_names
-                .insert(*entity_id, player.initial_state().username().to_string());
             self.player_relations.insert(*entity_id, player.relation());
             if let Some(species) = player.vehicle().species() {
-                let species_name = format!("{:?}", species);
-                self.player_species.insert(*entity_id, species_name);
+                self.player_species
+                    .insert(*entity_id, format!("{:?}", species));
             }
+            self.player_names
+                .insert(*entity_id, player.initial_state().username().to_string());
             if let Some(name) = self.game_params.localized_name_from_param(player.vehicle()) {
                 self.ship_display_names.insert(*entity_id, name.to_string());
             }
+
+            // Cache consumable variants for detection radius lookup
+            let ship_id = player.vehicle().id();
+            let ship_param = GameParamProvider::game_param_by_id(self.game_params, ship_id);
+            if let Some(vehicle) = ship_param.as_ref().and_then(|p| p.vehicle()) {
+                if let Some(abilities) = vehicle.abilities() {
+                    for slot in abilities {
+                        for (ability_name, variant_name) in slot {
+                            if let Some(consumable_key) =
+                                ability_name_to_consumable_key(ability_name)
+                            {
+                                self.ship_consumable_variants.insert(
+                                    (*entity_id, consumable_key),
+                                    (ability_name.clone(), variant_name.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
         self.players_populated = true;
+    }
+
+    /// Resolve per-ship ability icon names from entity vehicle data.
+    ///
+    /// For each vehicle entity, reads `ship_config().abilities()` (equipped GameParam IDs),
+    /// looks up each ability in GameParams to get its `consumable_type` and `name`,
+    /// and maps `(EntityId, Consumable)` → PCY name for icon lookup.
+    pub fn update_ship_abilities(&mut self, controller: &dyn BattleControllerState) {
+        for (entity_id, entity) in controller.entities_by_id() {
+            if self.resolved_entities.contains(entity_id) {
+                continue;
+            }
+            let vehicle = match entity.vehicle_ref() {
+                Some(v) => v,
+                None => continue,
+            };
+            let vehicle = vehicle.borrow();
+            let abilities = vehicle.props().ship_config().abilities();
+            if abilities.is_empty() {
+                continue;
+            }
+            self.resolved_entities.insert(*entity_id);
+            for &ability_id in abilities {
+                let param = match GameParamProvider::game_param_by_id(self.game_params, ability_id)
+                {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let ability = match param.ability() {
+                    Some(a) => a,
+                    None => continue,
+                };
+                // Get consumable_type from the first category
+                let consumable_type = match ability.categories().values().next() {
+                    Some(cat) => cat.consumable_type().to_string(),
+                    None => continue,
+                };
+                if let Some(consumable) = consumable_type_to_enum(&consumable_type) {
+                    self.ship_ability_icons
+                        .insert((*entity_id, consumable), param.name().to_string());
+                }
+            }
+        }
+    }
+
+    /// Get the icon key for a consumable on a specific ship.
+    ///
+    /// Uses the per-ship ability mapping if available, falling back to the
+    /// hardcoded base PCY name.
+    fn consumable_icon_key(&self, entity_id: EntityId, consumable: Consumable) -> Option<String> {
+        if let Some(name) = self.ship_ability_icons.get(&(entity_id, consumable)) {
+            return Some(name.clone());
+        }
+        consumable_to_base_icon_key(consumable)
+    }
+
+    /// Look up detection radius for a consumable on a specific ship from GameParams.
+    ///
+    /// Returns radius in world units (meters), or None if not a detection consumable
+    /// or if the lookup fails.
+    fn get_consumable_radius(&self, entity_id: EntityId, consumable: Consumable) -> Option<f32> {
+        // Try ship-specific lookup first (uses cached ability variants from populate_players)
+        let consumable_key = match consumable {
+            Consumable::Radar => Some(ConsumableKey::Radar),
+            Consumable::HydroacousticSearch => Some(ConsumableKey::Hydro),
+            Consumable::Hydrophone => Some(ConsumableKey::Hydrophone),
+            Consumable::SubmarineSurveillance => Some(ConsumableKey::SubSurveillance),
+            _ => None,
+        };
+
+        if let Some(key) = consumable_key {
+            if let Some((ability_name, variant_name)) =
+                self.ship_consumable_variants.get(&(entity_id, key))
+            {
+                if let Some(param) =
+                    GameParamProvider::game_param_by_name(self.game_params, ability_name)
+                {
+                    if let Some(ability) = param.ability() {
+                        if let Some(cat) = ability.get_category(variant_name) {
+                            if let Some(radius) = cat.detection_radius() {
+                                return Some(radius);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: look up the default ability by well-known name
+        // Try both the Modifier variant (from ship abilities) and the base name
+        let ability_names: &[&str] = match consumable {
+            Consumable::Radar => &["PCY019_RLSSearchModifier", "PCY019_RLSSearch"],
+            Consumable::HydroacousticSearch => {
+                &["PCY008_SonarSearchModifier", "PCY008_SonarSearch"]
+            }
+            Consumable::Hydrophone => &["PCY045_HydrophoneModifier", "PCY045_Hydrophone"],
+            Consumable::SubmarineSurveillance => {
+                &["PCY048_SubmarineLocatorModifier", "PCY048_SubmarineLocator"]
+            }
+            _ => return None,
+        };
+
+        for ability_name in ability_names {
+            if let Some(param) =
+                GameParamProvider::game_param_by_name(self.game_params, ability_name)
+            {
+                if let Some(ability) = param.ability() {
+                    if let Some(radius) = ability
+                        .categories()
+                        .iter()
+                        .find_map(|(_, cat)| cat.detection_radius())
+                    {
+                        return Some(radius);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Update squadron info for any new planes in the controller.
@@ -422,6 +589,17 @@ impl<'a> MinimapRenderer<'a> {
                 minimap.map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.to_radians());
             let world_yaw = world.map(|sp| sp.yaw);
 
+            // A ship is "spotted" when its visibility_flags are non-zero (game mechanic)
+            let is_spotted = controller
+                .entities_by_id()
+                .get(entity_id)
+                .and_then(|e| e.vehicle_ref())
+                .map(|v| v.borrow().props().visibility_flags() != 0)
+                .unwrap_or(false);
+
+            // Detected teammate = spotted ally (not self)
+            let is_detected_teammate = is_spotted && relation.is_ally() && !relation.is_self();
+
             if detected {
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
                 if let Some(ship_pos) = world {
@@ -437,6 +615,7 @@ impl<'a> MinimapRenderer<'a> {
                         is_self: relation.is_self(),
                         player_name: player_name.clone(),
                         ship_name: ship_name.clone(),
+                        is_detected_teammate,
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -463,6 +642,7 @@ impl<'a> MinimapRenderer<'a> {
                         is_self: relation.is_self(),
                         player_name: player_name.clone(),
                         ship_name: ship_name.clone(),
+                        is_detected_teammate,
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -495,8 +675,9 @@ impl<'a> MinimapRenderer<'a> {
                     visibility: ShipVisibility::Undetected,
                     opacity: UNDETECTED_OPACITY,
                     is_self: relation.is_self(),
-                    player_name: player_name.clone(),
-                    ship_name: ship_name.clone(),
+                    player_name: None,
+                    ship_name: None,
+                    is_detected_teammate: false, // Undetected ships can't be detected teammates
                 });
             }
         }
@@ -505,6 +686,14 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_turret_direction {
             let target_yaws = controller.target_yaws();
             for (entity_id, &world_yaw) in target_yaws {
+                // Skip undetected ships — aim data is stale
+                let detected = minimap_positions
+                    .get(entity_id)
+                    .map(|m| m.visible)
+                    .unwrap_or(false);
+                if !detected {
+                    continue;
+                }
                 // Need a position for this ship
                 let px = if let Some(sp) = ship_positions.get(entity_id) {
                     map_info.world_to_minimap(sp.position, MINIMAP_SIZE)
@@ -592,7 +781,87 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 8. Kill feed
+        // 8. Active consumables
+        if self.options.show_consumables {
+            let all_consumables = controller.active_consumables();
+            for (entity_id, consumables) in all_consumables {
+                // Get ship position (prefer world position, fall back to minimap)
+                let pos = if let Some(sp) = ship_positions.get(entity_id) {
+                    Some(map_info.world_to_minimap(sp.position, MINIMAP_SIZE))
+                } else if let Some(mm) = minimap_positions.get(entity_id) {
+                    Some(map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE))
+                } else {
+                    None
+                };
+                let Some(pos) = pos else { continue };
+
+                let relation = self
+                    .player_relations
+                    .get(entity_id)
+                    .copied()
+                    .unwrap_or(Relation::new(2));
+                let is_friendly = relation.is_self() || relation.is_ally();
+
+                // Check if this entity has an HP bar rendered
+                let has_hp_bar = self.options.show_hp_bars
+                    && controller
+                        .entities_by_id()
+                        .get(entity_id)
+                        .and_then(|e| e.vehicle_ref())
+                        .map(|v| {
+                            let v = v.borrow();
+                            v.props().max_health() > 0.0
+                        })
+                        .unwrap_or(false);
+
+                let mut icon_keys = Vec::new();
+                for active in consumables {
+                    let still_active =
+                        clock.seconds() < active.activated_at.seconds() + active.duration;
+                    let past_start = clock.seconds() >= active.activated_at.seconds();
+                    if still_active && past_start {
+                        // Collect icon key
+                        if let Some(icon_key) =
+                            self.consumable_icon_key(*entity_id, active.consumable)
+                        {
+                            icon_keys.push(icon_key);
+                        }
+
+                        // Emit radius for detection consumables (radar, hydro, hydrophone)
+                        if let Some(radius) =
+                            self.get_consumable_radius(*entity_id, active.consumable)
+                        {
+                            // distShip from GameParams is a diameter, divide by 2 for radius
+                            let px_radius = (radius / 2.0 / map_info.space_size as f32
+                                * MINIMAP_SIZE as f32)
+                                as i32;
+                            let color = if is_friendly {
+                                TEAM0_COLOR
+                            } else {
+                                TEAM1_COLOR
+                            };
+                            commands.push(DrawCommand::ConsumableRadius {
+                                pos,
+                                radius_px: px_radius,
+                                color,
+                                alpha: 0.15,
+                            });
+                        }
+                    }
+                }
+
+                if !icon_keys.is_empty() {
+                    commands.push(DrawCommand::ConsumableIcons {
+                        pos,
+                        icon_keys,
+                        is_friendly,
+                        has_hp_bar,
+                    });
+                }
+            }
+        }
+
+        // 9. Kill feed
         if self.options.show_kill_feed {
             let kills = controller.kills();
             let mut recent_kills = Vec::new();
@@ -622,7 +891,7 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 9. Timer
+        // 10. Timer
         if self.options.show_timer {
             commands.push(DrawCommand::Timer {
                 seconds: clock.seconds(),
@@ -695,5 +964,66 @@ fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) 
             Species::Airship => "auxiliary".to_string(),
             _ => format!("fighter_{ammo}"),
         }
+    }
+}
+
+/// Map a Consumable enum to its base (default) PCY icon name.
+///
+/// Used as fallback when per-ship ability data is not available.
+/// Returns None for consumables that don't have a meaningful icon display.
+fn consumable_to_base_icon_key(c: Consumable) -> Option<String> {
+    let key = match c {
+        Consumable::DamageControl => "PCY001_CrashCrew",
+        Consumable::RepairParty => "PCY002_RegenCrew",
+        Consumable::DefensiveAntiAircraft => "PCY003_AirDefenseDisp",
+        Consumable::CatapultFighter => "PCY004_Fighter",
+        Consumable::SpottingAircraft => "PCY005_Spotter",
+        Consumable::Smoke => "PCY006_SmokeGenerator",
+        Consumable::SpeedBoost => "PCY007_SpeedBooster",
+        Consumable::HydroacousticSearch => "PCY008_SonarSearch",
+        Consumable::TorpedoReloadBooster => "PCY017_TorpedoReloader",
+        Consumable::Radar => "PCY019_RLSSearch",
+        Consumable::MainBatteryReloadBooster => "PCY021_ArtilleryBooster",
+        Consumable::Hydrophone => "PCY045_Hydrophone",
+        Consumable::EnhancedRudders => "PCY046_FastDeepRudders",
+        Consumable::SubmarineSurveillance => "PCY048_SubmarineLocator",
+        Consumable::ReserveBattery => return None,
+        Consumable::Unknown(_) => return None,
+    };
+    Some(key.to_string())
+}
+
+/// Map a consumableType string from GameParams to our Consumable enum.
+fn consumable_type_to_enum(consumable_type: &str) -> Option<Consumable> {
+    match consumable_type {
+        "crashCrew" => Some(Consumable::DamageControl),
+        "scout" => Some(Consumable::SpottingAircraft),
+        "airDefenseDisp" => Some(Consumable::DefensiveAntiAircraft),
+        "speedBoosters" => Some(Consumable::SpeedBoost),
+        "regenCrew" | "regenerateHealth" => Some(Consumable::RepairParty),
+        "fighter" | "callFighters" => Some(Consumable::CatapultFighter),
+        "artilleryBoosters" => Some(Consumable::MainBatteryReloadBooster),
+        "torpedoReloader" => Some(Consumable::TorpedoReloadBooster),
+        "smokeGenerator" => Some(Consumable::Smoke),
+        "rls" => Some(Consumable::Radar),
+        "sonar" => Some(Consumable::HydroacousticSearch),
+        "hydrophone" => Some(Consumable::Hydrophone),
+        "fastRudders" => Some(Consumable::EnhancedRudders),
+        "subsEnergyFreeze" => Some(Consumable::ReserveBattery),
+        "submarineLocator" => Some(Consumable::SubmarineSurveillance),
+        _ => None,
+    }
+}
+
+/// Map ability name from ship data to ConsumableKey for detection consumables.
+///
+/// Only maps abilities that have detection radii (radar, hydro, hydrophone).
+fn ability_name_to_consumable_key(ability_name: &str) -> Option<ConsumableKey> {
+    match ability_name {
+        "PCY019_RLSSearchModifier" | "PCY046_RLSSearchDelayed" => Some(ConsumableKey::Radar),
+        "PCY008_SonarSearchModifier" => Some(ConsumableKey::Hydro),
+        "PCY045_HydrophoneModifier" => Some(ConsumableKey::Hydrophone),
+        "PCY048_SubmarineLocatorModifier" => Some(ConsumableKey::SubSurveillance),
+        _ => None,
     }
 }

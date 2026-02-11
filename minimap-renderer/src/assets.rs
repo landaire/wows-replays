@@ -315,6 +315,50 @@ pub fn load_plane_icons(
     icons
 }
 
+/// Load consumable icons from game files into a HashMap keyed by PCY name.
+///
+/// Discovers all `consumable_PCY*.png` files in `gui/consumables/` to support
+/// all ability variants (base, Premium, Super, TimeBased, etc.).
+pub fn load_consumable_icons(
+    file_tree: &FileNode,
+    pkg_loader: &PkgFileLoader,
+) -> HashMap<String, RgbaImage> {
+    let mut icons = HashMap::new();
+
+    // Navigate to gui/consumables/ directory and enumerate all files
+    let consumables_dir = file_tree
+        .children()
+        .get("gui")
+        .and_then(|gui| gui.children().get("consumables"));
+
+    if let Some(dir) = consumables_dir {
+        for (filename, _node) in dir.children() {
+            // Match files like "consumable_PCY009_CrashCrewPremium.png"
+            if let Some(pcy_name) = filename
+                .strip_prefix("consumable_")
+                .and_then(|s| s.strip_suffix(".png"))
+            {
+                if !pcy_name.starts_with("PCY") {
+                    continue;
+                }
+                let path = format!("gui/consumables/{}", filename);
+                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
+                    let resized = image::imageops::resize(
+                        &img,
+                        28,
+                        28,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    icons.insert(pcy_name.to_string(), resized);
+                }
+            }
+        }
+    }
+
+    println!("Loaded {} consumable icons", icons.len());
+    icons
+}
+
 /// Rasterize an SVG byte buffer to an RGBA image at the given size.
 pub fn rasterize_svg(svg_data: &[u8], size: u32) -> Option<RgbaImage> {
     let opt = resvg::usvg::Options::default();

@@ -52,6 +52,8 @@ pub enum DrawCommand {
         player_name: Option<String>,
         /// Localized ship name to render above the icon (below player name)
         ship_name: Option<String>,
+        /// Whether this ship is a detected teammate (ally visible but not self)
+        is_detected_teammate: bool,
     },
     /// Health bar above a ship
     HealthBar {
@@ -110,6 +112,26 @@ pub enum DrawCommand {
         pos: MinimapPos,
         /// Icon key for lookup (e.g. "controllable/fighter_he_enemy")
         icon_key: String,
+    },
+    /// Consumable detection radius circle (radar, hydro, etc.)
+    ConsumableRadius {
+        pos: MinimapPos,
+        /// Radius in pixels
+        radius_px: i32,
+        /// Circle color (team-colored: green for friendly, red for enemy)
+        color: [u8; 3],
+        /// Fill transparency
+        alpha: f32,
+    },
+    /// Active consumable icons laid out horizontally below a ship
+    ConsumableIcons {
+        pos: MinimapPos,
+        /// Icon keys for lookup (e.g. "PCY019_RLSSearch")
+        icon_keys: Vec<String>,
+        /// True for self/allies, false for enemies (affects tint color)
+        is_friendly: bool,
+        /// Whether a health bar is rendered below this ship (affects vertical offset)
+        has_hp_bar: bool,
     },
     /// Score bar
     ScoreBar {
