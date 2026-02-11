@@ -90,6 +90,15 @@ pub enum DrawCommand {
         /// Color of the invading team (shown as progress arc)
         invader_color: Option<[u8; 3]>,
     },
+    /// Turret direction indicator line from ship center
+    TurretDirection {
+        pos: MinimapPos,
+        /// Turret yaw in radians (world-space, already includes ship heading)
+        yaw: f32,
+        color: [u8; 3],
+        /// Line length in pixels
+        length: i32,
+    },
     /// Building dot on the minimap
     Building {
         pos: MinimapPos,

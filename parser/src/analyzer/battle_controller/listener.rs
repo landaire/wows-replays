@@ -61,4 +61,12 @@ pub trait BattleControllerState {
 
     /// Clock time when the battle ended, if it has ended
     fn battle_end_clock(&self) -> Option<GameClock>;
+
+    /// Main battery turret yaws per entity (group 0 only).
+    /// Each entry maps entity_id -> vec of turret yaws in radians (relative to ship heading).
+    fn turret_yaws(&self) -> &HashMap<EntityId, Vec<f32>>;
+
+    /// World-space gun aim yaw per entity, decoded from `targetLocalPos` EntityProperty.
+    /// Updated frequently (~6000 times per match). Values are radians in [-PI, PI].
+    fn target_yaws(&self) -> &HashMap<EntityId, f32>;
 }

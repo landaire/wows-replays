@@ -969,6 +969,18 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         entity_id: EntityId,
         hits: Vec<ShotHit>,
     },
+    /// Turret rotation sync for a ship
+    GunSync {
+        entity_id: EntityId,
+        /// Gun group (0 = main battery)
+        group: u32,
+        /// Turret index within the group
+        turret: u32,
+        /// Turret yaw in radians relative to ship heading (0 = forward, PI = aft)
+        yaw: f32,
+        /// Barrel elevation in radians
+        pitch: f32,
+    },
     /// A new squadron appears on the minimap
     PlaneAdded {
         entity_id: EntityId,
@@ -2062,6 +2074,33 @@ where
                 plane_id,
                 x: position.0,
                 y: position.1,
+            }
+        } else if *method == "syncGun" {
+            // args: [group: int, turret: int, yaw: f32, pitch: f32, state: int, f32, array]
+            let group = match &args[0] {
+                ArgValue::Uint8(v) => *v as u32,
+                ArgValue::Int8(v) => *v as u32,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let turret = match &args[1] {
+                ArgValue::Uint8(v) => *v as u32,
+                ArgValue::Int8(v) => *v as u32,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let yaw = match &args[2] {
+                ArgValue::Float32(v) => *v,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let pitch = match &args[3] {
+                ArgValue::Float32(v) => *v,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            DecodedPacketPayload::GunSync {
+                entity_id: *entity_id,
+                group,
+                turret,
+                yaw,
+                pitch,
             }
         } else {
             DecodedPacketPayload::EntityMethod(packet)

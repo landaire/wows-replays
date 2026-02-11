@@ -46,6 +46,7 @@ pub struct RenderOptions {
     pub show_ship_names: bool,
     pub show_capture_points: bool,
     pub show_buildings: bool,
+    pub show_turret_direction: bool,
 }
 
 impl Default for RenderOptions {
@@ -63,6 +64,7 @@ impl Default for RenderOptions {
             show_ship_names: true,
             show_capture_points: true,
             show_buildings: true,
+            show_turret_direction: true,
         }
     }
 }
@@ -499,7 +501,37 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 6. Dead ship markers
+        // 6. Turret direction indicators (from targetLocalPos EntityProperty)
+        if self.options.show_turret_direction {
+            let target_yaws = controller.target_yaws();
+            for (entity_id, &world_yaw) in target_yaws {
+                // Need a position for this ship
+                let px = if let Some(sp) = ship_positions.get(entity_id) {
+                    map_info.world_to_minimap(sp.position, MINIMAP_SIZE)
+                } else if let Some(mm) = minimap_positions.get(entity_id) {
+                    map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
+                } else {
+                    continue;
+                };
+                // targetLocalPos yaw is compass bearing (0=north, CW positive).
+                // Convert to screen math coords: screen_yaw = PI/2 - compass_yaw
+                let screen_yaw = std::f32::consts::FRAC_PI_2 - world_yaw;
+                let relation = self
+                    .player_relations
+                    .get(entity_id)
+                    .copied()
+                    .unwrap_or(Relation::new(2));
+                let color = ship_color_rgb(relation);
+                commands.push(DrawCommand::TurretDirection {
+                    pos: px,
+                    yaw: screen_yaw,
+                    color,
+                    length: 18,
+                });
+            }
+        }
+
+        // 7. Dead ship markers
         for (entity_id, dead) in dead_ships {
             if clock >= dead.clock {
                 let px = map_info.world_to_minimap(dead.position, MINIMAP_SIZE);

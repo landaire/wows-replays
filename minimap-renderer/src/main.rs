@@ -132,6 +132,11 @@ fn main() -> anyhow::Result<()> {
                 .long("no-buildings"),
         )
         .arg(
+            Arg::with_name("NO_TURRET_DIRECTION")
+                .help("Hide turret direction indicators")
+                .long("no-turret-direction"),
+        )
+        .arg(
             Arg::with_name("REPLAY")
                 .help("The replay file to process")
                 .required(true)
@@ -199,6 +204,7 @@ fn main() -> anyhow::Result<()> {
     options.show_ship_names = !matches.is_present("NO_SHIP_NAMES");
     options.show_capture_points = !matches.is_present("NO_CAPTURE_POINTS");
     options.show_buildings = !matches.is_present("NO_BUILDINGS");
+    options.show_turret_direction = !matches.is_present("NO_TURRET_DIRECTION");
 
     let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, options);
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);

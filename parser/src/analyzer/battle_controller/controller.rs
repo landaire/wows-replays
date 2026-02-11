@@ -482,6 +482,14 @@ pub struct BattleController<'res, 'replay, G> {
     active_planes: HashMap<PlaneId, ActivePlane>,
     kills: Vec<KillRecord>,
     dead_ships: HashMap<EntityId, DeadShip>,
+    /// Main battery turret yaws per entity (group 0 only).
+    /// Maps entity_id -> vec of turret yaws in radians (relative to ship heading).
+    turret_yaws: HashMap<EntityId, Vec<f32>>,
+
+    /// World-space gun aim yaw per entity, decoded from `targetLocalPos` EntityProperty.
+    /// The value is a packed u16: lo byte = yaw, hi byte = pitch.
+    /// Yaw decoding: `(lo_byte / 256) * 2*PI - PI` gives world-space radians.
+    target_yaws: HashMap<EntityId, f32>,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
@@ -532,6 +540,8 @@ where
             active_planes: HashMap::default(),
             kills: Vec::new(),
             dead_ships: HashMap::default(),
+            turret_yaws: HashMap::default(),
+            target_yaws: HashMap::default(),
         }
     }
 
@@ -560,6 +570,8 @@ where
         self.active_planes.clear();
         self.kills.clear();
         self.dead_ships.clear();
+        self.turret_yaws.clear();
+        self.target_yaws.clear();
     }
 
     pub fn players(&self) -> &[SharedPlayer] {
@@ -2021,6 +2033,14 @@ where
     fn battle_end_clock(&self) -> Option<GameClock> {
         self.battle_end_clock
     }
+
+    fn turret_yaws(&self) -> &HashMap<EntityId, Vec<f32>> {
+        &self.turret_yaws
+    }
+
+    fn target_yaws(&self) -> &HashMap<EntityId, f32> {
+        &self.target_yaws
+    }
 }
 
 impl<'res, 'replay, G> Analyzer for BattleController<'res, 'replay, G>
@@ -2130,6 +2150,15 @@ where
                         vehicle
                             .props
                             .update_by_name(prop.property, &prop.value, self.version);
+                    }
+                }
+                // Handle targetLocalPos — packed turret aim direction
+                if prop.property == "targetLocalPos" {
+                    if let Some(val) = Self::arg_to_i64(&prop.value) {
+                        let lo = (val & 0xFF) as f32;
+                        // lo byte encodes world-space yaw: (lo/256)*2*PI - PI
+                        let yaw = (lo / 256.0) * std::f32::consts::TAU - std::f32::consts::PI;
+                        self.target_yaws.insert(entity_id, yaw);
                     }
                 }
                 // Handle InteractiveZone teamId changes (packet type 0x7)
@@ -2421,6 +2450,23 @@ where
                 plane_id,
             } => {
                 self.active_planes.remove(&plane_id);
+            }
+            crate::analyzer::decoder::DecodedPacketPayload::GunSync {
+                entity_id,
+                group,
+                turret,
+                yaw,
+                ..
+            } => {
+                // Only track main battery (group 0)
+                if group == 0 {
+                    let turrets = self.turret_yaws.entry(entity_id).or_default();
+                    let idx = turret as usize;
+                    if turrets.len() <= idx {
+                        turrets.resize(idx + 1, 0.0);
+                    }
+                    turrets[idx] = yaw;
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::CruiseState { .. } => {
                 trace!("CRUISE STATE")

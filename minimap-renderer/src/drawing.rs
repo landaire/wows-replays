@@ -33,6 +33,46 @@ fn draw_torpedo(image: &mut RgbImage, x: i32, y: i32, color: Rgb<u8>) {
     draw_filled_circle_mut(image, (x, y), 2, color);
 }
 
+/// Draw a turret direction line with alpha blending.
+fn draw_turret_line(image: &mut RgbImage, x1: i32, y1: i32, x2: i32, y2: i32, color: [u8; 3]) {
+    let w = image.width() as i32;
+    let h = image.height() as i32;
+    let alpha = 0.7f32;
+
+    // Bresenham's line algorithm
+    let dx = (x2 - x1).abs();
+    let dy = -(y2 - y1).abs();
+    let sx = if x1 < x2 { 1 } else { -1 };
+    let sy = if y1 < y2 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let mut cx = x1;
+    let mut cy = y1;
+
+    loop {
+        if cx >= 0 && cx < w && cy >= 0 && cy < h {
+            let bg = image.get_pixel(cx as u32, cy as u32).0;
+            let blended = Rgb([
+                (color[0] as f32 * alpha + bg[0] as f32 * (1.0 - alpha)) as u8,
+                (color[1] as f32 * alpha + bg[1] as f32 * (1.0 - alpha)) as u8,
+                (color[2] as f32 * alpha + bg[2] as f32 * (1.0 - alpha)) as u8,
+            ]);
+            image.put_pixel(cx as u32, cy as u32, blended);
+        }
+        if cx == x2 && cy == y2 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            cx += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            cy += sy;
+        }
+    }
+}
+
 /// Draw a smoke screen as a semi-transparent filled circle.
 fn draw_smoke(image: &mut RgbImage, x: i32, y: i32, radius: i32, smoke_color: [u8; 3], alpha: f32) {
     let w = image.width() as i32;
@@ -356,6 +396,22 @@ impl RenderTarget for ImageTarget {
                     *invader_color,
                     &self.font,
                 );
+            }
+            DrawCommand::TurretDirection {
+                pos,
+                yaw,
+                color,
+                length,
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off;
+                // Draw a line from ship center in the turret yaw direction
+                // Game yaw: 0 = east, PI/2 = north; screen: 0 = right, PI/2 = up
+                let dx = (*length as f32 * yaw.cos()).round() as i32;
+                let dy = (-*length as f32 * yaw.sin()).round() as i32;
+                let x2 = x + dx;
+                let y2 = y + dy;
+                draw_turret_line(&mut self.canvas, x, y, x2, y2, *color);
             }
             DrawCommand::Building {
                 pos,
