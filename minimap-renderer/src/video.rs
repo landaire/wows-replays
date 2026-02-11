@@ -1,11 +1,8 @@
 use std::fs::File;
 use std::io::BufWriter;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use bytes::Bytes;
-use openh264::encoder::{Encoder, EncoderConfig, FrameRate};
-use openh264::formats::{RgbSliceU8, YUVBuffer};
-use openh264::OpenH264API;
 
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::types::GameClock;
@@ -24,16 +21,258 @@ pub enum DumpMode {
     Midpoint,
 }
 
+// ---------------------------------------------------------------------------
+// GPU backend (vk-video + yuvutils-rs)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "gpu")]
+mod gpu {
+    use std::num::NonZeroU32;
+
+    use anyhow::anyhow;
+    use vk_video::parameters::{RateControl, VideoParameters};
+    use vk_video::{BytesEncoder, Frame, RawFrameData, VulkanInstance};
+    use yuvutils_rs::{
+        BufferStoreMut, YuvBiPlanarImageMut, YuvConversionMode, YuvRange, YuvStandardMatrix,
+    };
+
+    use super::FPS;
+
+    pub struct GpuEncoder {
+        encoder: BytesEncoder,
+        nv12_buf: Vec<u8>,
+        frame_count: u64,
+    }
+
+    impl GpuEncoder {
+        pub fn new(width: u32, height: u32) -> anyhow::Result<Self> {
+            let instance =
+                VulkanInstance::new().map_err(|e| anyhow!("Vulkan init failed: {:?}", e))?;
+            let adapter = instance
+                .create_adapter(None)
+                .map_err(|e| anyhow!("No Vulkan adapter: {:?}", e))?;
+
+            if !adapter.supports_encoding() {
+                return Err(anyhow!(
+                    "Vulkan adapter '{}' does not support video encoding",
+                    adapter.info().name
+                ));
+            }
+
+            let device = adapter
+                .create_device(
+                    wgpu::Features::empty(),
+                    wgpu::ExperimentalFeatures::disabled(),
+                    wgpu::Limits {
+                        max_immediate_size: 128,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|e| anyhow!("Vulkan device creation failed: {:?}", e))?;
+
+            let params = device
+                .encoder_parameters_high_quality(
+                    VideoParameters {
+                        width: NonZeroU32::new(width).expect("non-zero width"),
+                        height: NonZeroU32::new(height).expect("non-zero height"),
+                        target_framerate: (FPS as u32).into(),
+                    },
+                    RateControl::VariableBitrate {
+                        average_bitrate: 20_000_000,
+                        max_bitrate: 40_000_000,
+                        virtual_buffer_size: std::time::Duration::from_secs(2),
+                    },
+                )
+                .map_err(|e| anyhow!("Encoder params failed: {:?}", e))?;
+
+            let encoder = device
+                .create_bytes_encoder(params)
+                .map_err(|e| anyhow!("Encoder creation failed: {:?}", e))?;
+
+            let nv12_size = (width as usize) * (height as usize) * 3 / 2;
+
+            Ok(Self {
+                encoder,
+                nv12_buf: vec![0u8; nv12_size],
+                frame_count: 0,
+            })
+        }
+
+        pub fn encode_frame(
+            &mut self,
+            rgb: &[u8],
+            width: u32,
+            height: u32,
+        ) -> anyhow::Result<Vec<u8>> {
+            let y_len = (width * height) as usize;
+            let uv_len = (width * height / 2) as usize;
+
+            // Split nv12_buf into Y and UV planes
+            let (y_plane, uv_plane) = self.nv12_buf[..y_len + uv_len].split_at_mut(y_len);
+
+            let mut nv12_image = YuvBiPlanarImageMut {
+                y_plane: BufferStoreMut::Borrowed(y_plane),
+                y_stride: width,
+                uv_plane: BufferStoreMut::Borrowed(uv_plane),
+                uv_stride: width,
+                width,
+                height,
+            };
+
+            yuvutils_rs::rgb_to_yuv_nv12(
+                &mut nv12_image,
+                rgb,
+                width * 3,
+                YuvRange::Full,
+                YuvStandardMatrix::Bt709,
+                YuvConversionMode::Balanced,
+            )
+            .map_err(|e| anyhow!("RGB→NV12 conversion failed: {:?}", e))?;
+
+            let force_keyframe = self.frame_count == 0;
+            let frame = Frame {
+                data: RawFrameData {
+                    frame: self.nv12_buf.clone(),
+                    width,
+                    height,
+                },
+                pts: Some(self.frame_count),
+            };
+
+            let output = self
+                .encoder
+                .encode(&frame, force_keyframe)
+                .map_err(|e| anyhow!("GPU encode failed: {:?}", e))?;
+
+            self.frame_count += 1;
+            Ok(output.data)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CPU backend (openh264)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cpu")]
+mod cpu {
+    use anyhow::{Context, anyhow};
+    use openh264::OpenH264API;
+    use openh264::encoder::{Encoder, EncoderConfig, FrameRate};
+    use openh264::formats::{RgbSliceU8, YUVBuffer};
+
+    use super::FPS;
+
+    pub struct CpuEncoder {
+        encoder: Encoder,
+    }
+
+    impl CpuEncoder {
+        pub fn new() -> anyhow::Result<Self> {
+            let config = EncoderConfig::new()
+                .max_frame_rate(FrameRate::from_hz(FPS as f32))
+                .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
+                .rate_control_mode(openh264::encoder::RateControlMode::Off)
+                .qp(openh264::encoder::QpRange::new(0, 0))
+                .adaptive_quantization(false)
+                .background_detection(false);
+            let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
+                .context("Failed to create H.264 encoder")?;
+            Ok(Self { encoder })
+        }
+
+        pub fn encode_frame(
+            &mut self,
+            rgb: &[u8],
+            width: usize,
+            height: usize,
+        ) -> anyhow::Result<Vec<u8>> {
+            let rgb_slice = RgbSliceU8::new(rgb, (width, height));
+            let yuv = YUVBuffer::from_rgb_source(rgb_slice);
+            let bitstream = self
+                .encoder
+                .encode(&yuv)
+                .map_err(|e| anyhow!("H.264 encode error: {:?}", e))?;
+            Ok(bitstream.to_vec())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoder backend dispatch
+// ---------------------------------------------------------------------------
+
+enum EncoderBackend {
+    #[cfg(feature = "gpu")]
+    Gpu(gpu::GpuEncoder),
+    #[cfg(feature = "cpu")]
+    Cpu(cpu::CpuEncoder),
+}
+
+impl EncoderBackend {
+    fn create(_width: u32, _height: u32) -> anyhow::Result<Self> {
+        // Try GPU first when available
+        #[cfg(feature = "gpu")]
+        {
+            match gpu::GpuEncoder::new(_width, _height) {
+                Ok(enc) => {
+                    println!("Using GPU (Vulkan Video) encoder");
+                    return Ok(Self::Gpu(enc));
+                }
+                Err(e) => {
+                    #[cfg(feature = "cpu")]
+                    {
+                        eprintln!("GPU encoder unavailable ({}), falling back to CPU", e);
+                    }
+                    #[cfg(not(feature = "cpu"))]
+                    {
+                        return Err(e.context(
+                            "GPU encoder failed and no CPU fallback (enable 'cpu' feature)",
+                        ));
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "cpu")]
+        {
+            println!("Using CPU (openh264) encoder");
+            return Ok(Self::Cpu(cpu::CpuEncoder::new()?));
+        }
+
+        #[cfg(not(any(feature = "gpu", feature = "cpu")))]
+        {
+            compile_error!("At least one of 'gpu' or 'cpu' features must be enabled");
+        }
+    }
+
+    fn encode_frame(&mut self, rgb: &[u8], width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
+        match self {
+            #[cfg(feature = "gpu")]
+            Self::Gpu(enc) => enc.encode_frame(rgb, width, height),
+            #[cfg(feature = "cpu")]
+            Self::Cpu(enc) => enc.encode_frame(rgb, width as usize, height as usize),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VideoEncoder (public API — unchanged from caller's perspective)
+// ---------------------------------------------------------------------------
+
 /// Handles H.264 encoding and MP4 muxing for the minimap renderer.
 ///
 /// Encodes frames on-the-fly to avoid storing raw RGB data in memory.
 /// Stores encoded H.264 Annex B NAL data per frame, then muxes to MP4 at the end.
+///
+/// Uses GPU (vk-video) by default, falls back to CPU (openh264) if the `cpu`
+/// feature is enabled and GPU is unavailable.
 pub struct VideoEncoder {
     output_path: String,
     dump_mode: Option<DumpMode>,
     game_duration: f32,
     last_rendered_frame: i64,
-    encoder: Option<Encoder>,
+    backend: Option<EncoderBackend>,
     h264_frames: Vec<Vec<u8>>,
 }
 
@@ -44,27 +283,17 @@ impl VideoEncoder {
             dump_mode,
             game_duration,
             last_rendered_frame: -1,
-            encoder: None,
+            backend: None,
             h264_frames: Vec::with_capacity(TOTAL_FRAMES),
         }
     }
 
-    /// Create the H.264 encoder on first use.
+    /// Create the encoder backend on first use.
     fn ensure_encoder(&mut self) -> anyhow::Result<()> {
-        if self.encoder.is_some() {
+        if self.backend.is_some() {
             return Ok(());
         }
-        let config = EncoderConfig::new()
-            .max_frame_rate(FrameRate::from_hz(FPS as f32))
-            .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
-            .rate_control_mode(openh264::encoder::RateControlMode::Off)
-            .qp(openh264::encoder::QpRange::new(0, 0))
-            .adaptive_quantization(false)
-            .background_detection(false);
-        self.encoder = Some(
-            Encoder::with_api_config(OpenH264API::from_source(), config)
-                .context("Failed to create H.264 encoder")?,
-        );
+        self.backend = Some(EncoderBackend::create(MINIMAP_SIZE, CANVAS_HEIGHT)?);
         println!(
             "Rendering {} frames ({}x{}, {:.1}s game time at {:.0} fps)...",
             TOTAL_FRAMES, MINIMAP_SIZE, CANVAS_HEIGHT, self.game_duration, FPS
@@ -74,18 +303,14 @@ impl VideoEncoder {
 
     /// Encode a rendered frame to H.264 immediately.
     fn encode_frame(&mut self, target: &ImageTarget) -> anyhow::Result<()> {
-        let encoder = self
-            .encoder
+        let backend = self
+            .backend
             .as_mut()
             .ok_or_else(|| anyhow!("Encoder not initialized"))?;
         let frame_image = target.frame();
         let rgb_data = frame_image.as_raw();
-        let rgb = RgbSliceU8::new(rgb_data, (MINIMAP_SIZE as usize, CANVAS_HEIGHT as usize));
-        let yuv = YUVBuffer::from_rgb_source(rgb);
-        let bitstream = encoder
-            .encode(&yuv)
-            .map_err(|e| anyhow!("H.264 encode error: {:?}", e))?;
-        self.h264_frames.push(bitstream.to_vec());
+        let encoded = backend.encode_frame(rgb_data, MINIMAP_SIZE, CANVAS_HEIGHT)?;
+        self.h264_frames.push(encoded);
         Ok(())
     }
 
