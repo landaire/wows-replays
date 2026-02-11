@@ -166,6 +166,64 @@ pub struct CruiseState {
     pub value: i32,
 }
 
+// ============================================================================
+// The following packet types were identified through AI-assisted analysis of
+// raw replay data. Their structure and semantics are best-effort
+// interpretations and may not be 100% accurate. Field names and purposes are
+// inferred from observed patterns across replays.
+// ============================================================================
+
+/// Packet 0x02: Believed to be EntityControl — transfers entity ownership to
+/// the client. Confirmed by the Python reference parser's PACKETS_MAPPING.
+#[derive(Debug, Serialize)]
+pub struct EntityControlPacket {
+    pub entity_id: EntityId,
+    pub is_controlled: bool,
+}
+
+/// Packet 0x2a: Believed to be a SmokeScreen position drift update (wind).
+/// The entity IDs observed are exclusively SmokeScreen entities, and the two
+/// non-zero floats closely track the EntityCreate position with gradual drift
+/// over the entity's lifetime.
+#[derive(Debug, Serialize)]
+pub struct SmokeScreenDriftPacket {
+    pub entity_id: EntityId,
+    /// Believed to be the updated world-space X/Z position of the smoke cloud.
+    pub position: Vec3,
+    pub unknown: [f32; 4],
+}
+
+/// Packet 0x1d: Believed to be a packed player view direction. Fires at ~10Hz,
+/// same count as Camera (0x25) packets. Two bytes: one appears to encode
+/// heading, the other pitch.
+#[derive(Debug, Serialize)]
+pub struct ViewDirectionPacket {
+    pub heading: u8,
+    pub pitch: u8,
+}
+
+/// Packet 0x0f: Believed to be a server timestamp. Single f64 at clock=0.
+#[derive(Debug, Serialize)]
+pub struct ServerTimestampPacket {
+    pub timestamp: f64,
+}
+
+/// Packet 0x20: Believed to link the Avatar to its owned ship entity. The
+/// entity ID observed matches the Avatar's `ownShipId` property.
+#[derive(Debug, Serialize)]
+pub struct OwnShipPacket {
+    pub entity_id: EntityId,
+}
+
+/// Packet 0x30: References a vehicle entity mid-game. Purpose not fully
+/// understood — observed to reference vehicles that die later in the match.
+#[derive(Debug, Serialize)]
+pub struct VehicleRefPacket {
+    pub unknown1: u32,
+    pub entity_id: EntityId,
+    pub unknown2: u32,
+}
+
 #[derive(Debug, Serialize)]
 pub struct MapPacket<'replay> {
     pub space_id: u32,
@@ -199,6 +257,16 @@ pub enum PacketType<'replay, 'argtype> {
     CameraFreeLook(u8),
     Map(MapPacket<'replay>),
     BattleResults(&'replay str),
+    // The following variants were identified through AI-assisted replay analysis.
+    // Their semantics are best-effort interpretations.
+    EntityControl(EntityControlPacket),
+    SmokeScreenDrift(SmokeScreenDriftPacket),
+    ViewDirection(ViewDirectionPacket),
+    ServerTimestamp(ServerTimestampPacket),
+    OwnShip(OwnShipPacket),
+    VehicleRef(VehicleRefPacket),
+    /// Packet 0x0e: Believed to be a server tick rate constant (always 1/7).
+    ServerTick(f64),
     Unknown(&'replay [u8]),
 
     /// These are packets which we thought we understood, but couldn't parse
@@ -269,7 +337,22 @@ impl<'argtype> Parser<'argtype> {
 
         let entity_type = self.entities.get(&entity_id).unwrap().entity_type;
 
-        let spec = &self.specs[entity_type as usize - 1].client_methods[method_id as usize];
+        let methods = &self.specs[entity_type as usize - 1].client_methods;
+        if method_id as usize >= methods.len() {
+            return Ok((
+                i,
+                PacketType::Invalid(InvalidPacket {
+                    message: format!(
+                        "method_id {} out of bounds for entity type {} (has {} methods)",
+                        method_id,
+                        entity_type,
+                        methods.len()
+                    ),
+                    raw: payload,
+                }),
+            ));
+        }
+        let spec = &methods[method_id as usize];
 
         let mut i = payload;
         let mut args = vec![];
@@ -468,6 +551,106 @@ impl<'argtype> Parser<'argtype> {
                 fov,
                 position,
                 rotation,
+            }),
+        ))
+    }
+
+    fn parse_entity_control_packet<'a, 'b>(
+        &'b self,
+        i: &'a [u8],
+    ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
+        let (i, entity_id) = le_u32(i)?;
+        let (i, is_controlled) = le_u8(i)?;
+        Ok((
+            i,
+            PacketType::EntityControl(EntityControlPacket {
+                entity_id: entity_id.into(),
+                is_controlled: is_controlled != 0,
+            }),
+        ))
+    }
+
+    fn parse_smoke_screen_drift_packet<'a, 'b>(
+        &'b self,
+        i: &'a [u8],
+    ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
+        let (i, entity_id) = le_u32(i)?;
+        let (i, f0) = le_f32(i)?;
+        let (i, x) = le_f32(i)?;
+        let (i, f2) = le_f32(i)?;
+        let (i, z) = le_f32(i)?;
+        let (i, f4) = le_f32(i)?;
+        let (i, f5) = le_f32(i)?;
+        let (i, _f6) = le_f32(i)?;
+        Ok((
+            i,
+            PacketType::SmokeScreenDrift(SmokeScreenDriftPacket {
+                entity_id: entity_id.into(),
+                position: Vec3 { x, y: 0.0, z },
+                unknown: [f0, f2, f4, f5],
+            }),
+        ))
+    }
+
+    fn parse_view_direction_packet<'a, 'b>(
+        &'b self,
+        i: &'a [u8],
+    ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
+        let (i, heading) = le_u8(i)?;
+        let (i, pitch) = le_u8(i)?;
+        Ok((
+            i,
+            PacketType::ViewDirection(ViewDirectionPacket { heading, pitch }),
+        ))
+    }
+
+    fn parse_server_timestamp_packet<'a, 'b>(
+        &'b self,
+        i: &'a [u8],
+    ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
+        use nom::number::complete::le_f64;
+        let (i, timestamp) = le_f64(i)?;
+        Ok((
+            i,
+            PacketType::ServerTimestamp(ServerTimestampPacket { timestamp }),
+        ))
+    }
+
+    fn parse_server_tick_packet<'a, 'b>(
+        &'b self,
+        i: &'a [u8],
+    ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
+        use nom::number::complete::le_f64;
+        let (i, tick_rate) = le_f64(i)?;
+        Ok((i, PacketType::ServerTick(tick_rate)))
+    }
+
+    fn parse_own_ship_packet<'a, 'b>(
+        &'b self,
+        i: &'a [u8],
+    ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
+        let (i, entity_id) = le_u32(i)?;
+        Ok((
+            i,
+            PacketType::OwnShip(OwnShipPacket {
+                entity_id: entity_id.into(),
+            }),
+        ))
+    }
+
+    fn parse_vehicle_ref_packet<'a, 'b>(
+        &'b self,
+        i: &'a [u8],
+    ) -> IResult<&'a [u8], PacketType<'a, 'b>> {
+        let (i, unknown1) = le_u32(i)?;
+        let (i, entity_id) = le_u32(i)?;
+        let (i, unknown2) = le_u32(i)?;
+        Ok((
+            i,
+            PacketType::VehicleRef(VehicleRefPacket {
+                unknown1,
+                entity_id: entity_id.into(),
+                unknown2,
             }),
         ))
     }
@@ -758,21 +941,31 @@ impl<'argtype> Parser<'argtype> {
             //0x7 | 0x8 => self.parse_entity_packet(version, packet_type, i)?,
             0x0 => self.parse_base_player_create(packet)?,
             0x1 => self.parse_cell_player_create(packet)?,
+            0x2 => self.parse_entity_control_packet(packet)?,
             0x3 => self.parse_entity_enter(packet)?,
             0x4 => self.parse_entity_leave(packet)?,
             0x5 => self.parse_entity_create(packet)?,
             0x7 => self.parse_entity_property_packet(packet)?,
             0x8 => self.parse_entity_method_packet(packet)?,
             0xA => self.parse_position_packet(packet)?,
+            0x0e => self.parse_server_tick_packet(packet)?,
+            0x0f => self.parse_server_timestamp_packet(packet)?,
             0x16 => self.parse_version_packet(packet)?,
+            0x1d => self.parse_view_direction_packet(packet)?,
+            0x20 => self.parse_own_ship_packet(packet)?,
             0x22 => self.parse_battle_results(packet)?,
             0x23 => self.parse_nested_property_update(packet)?,
-            0x25 => self.parse_camera_packet(packet)?, // Note: We suspect that 0x18 is this also
+            0x25 => self.parse_camera_packet(packet)?,
             0x27 => self.parse_camera_mode_packet(packet)?,
             0x28 => self.parse_map_packet(packet)?,
+            0x2a => self.parse_smoke_screen_drift_packet(packet)?,
             0x2c => self.parse_player_orientation_packet(packet)?,
             0x2f => self.parse_camera_freelook_packet(packet)?,
+            0x30 => self.parse_vehicle_ref_packet(packet)?,
             0x32 => self.parse_cruise_state(packet)?,
+            // 0x10: 1-byte init flag, 0x13: empty init marker, 0x18: secondary
+            // camera (paired with 0x25), 0x26: avatar init — left as Unknown
+            // since they carry no actionable data.
             _ => self.parse_unknown_packet(packet, packet.len().try_into().unwrap())?,
         };
         Ok((i, payload))

@@ -76,6 +76,9 @@ pub enum VoiceLine {
     /// `RectangleAttentionCommand`` in game code
     AttentionToSquare(u32, u32),
 
+    /// Unknown voice line type
+    Unknown(i64),
+
     /// Field is the avatar ID of the target
     /// Pair of the target type and target ID
     QuickTactic(u16, u64),
@@ -721,7 +724,7 @@ pub struct ShotHit {
 }
 
 /// Enumerates usable consumables in-game
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum Consumable {
     DamageControl,
     SpottingAircraft,
@@ -737,6 +740,7 @@ pub enum Consumable {
     Hydrophone,
     EnhancedRudders,
     ReserveBattery,
+    SubmarineSurveillance,
     Unknown(i8),
 }
 
@@ -1003,6 +1007,25 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         x: f32,
         y: f32,
     },
+    // ========================================================================
+    // The following variants were identified through AI-assisted analysis of
+    // raw replay data. Their semantics are best-effort interpretations.
+    // ========================================================================
+    /// Believed to be EntityControl — transfers entity ownership to the client.
+    /// Confirmed by the Python reference parser's PACKETS_MAPPING.
+    EntityControl(&'rawpacket crate::packet2::EntityControlPacket),
+    /// Believed to be a SmokeScreen position drift update (wind displacement).
+    SmokeScreenDrift(&'rawpacket crate::packet2::SmokeScreenDriftPacket),
+    /// Believed to be a packed player view direction (heading + pitch bytes).
+    ViewDirection(&'rawpacket crate::packet2::ViewDirectionPacket),
+    /// Believed to be a server timestamp at session start.
+    ServerTimestamp(f64),
+    /// Believed to link the Avatar to its owned ship entity.
+    OwnShip(&'rawpacket crate::packet2::OwnShipPacket),
+    /// References a vehicle entity mid-game. Purpose not fully understood.
+    VehicleRef(&'rawpacket crate::packet2::VehicleRefPacket),
+    /// Believed to be a server tick rate constant (observed as 1/7).
+    ServerTick(f64),
     /// This is a packet of unknown type
     Unknown(&'replay [u8]),
     /// This is a packet of known type, but which we were unable to parse
@@ -1181,7 +1204,8 @@ fn parse_receive_common_cmd_blob(blob: &[u8]) -> IResult<&[u8], (VoiceLine, bool
         //  SUBMARINE_LOCATOR
         19 => (i, VoiceLine::UsingSubmarineLocator),
         line => {
-            panic!("Unknown voice line {}, {:#X?}", line, i);
+            eprintln!("Warning: Unknown voice line {}, {:#X?}", line, i);
+            (i, VoiceLine::Unknown(line as i64))
         }
     };
 
@@ -1311,6 +1335,14 @@ where
             }
             PacketType::Invalid(u) => DecodedPacketPayload::Invalid(u),
             PacketType::BattleResults(results) => DecodedPacketPayload::BattleResults(results),
+            // AI-identified packet types
+            PacketType::EntityControl(ec) => DecodedPacketPayload::EntityControl(ec),
+            PacketType::SmokeScreenDrift(sd) => DecodedPacketPayload::SmokeScreenDrift(sd),
+            PacketType::ViewDirection(vd) => DecodedPacketPayload::ViewDirection(vd),
+            PacketType::ServerTimestamp(st) => DecodedPacketPayload::ServerTimestamp(st.timestamp),
+            PacketType::OwnShip(os) => DecodedPacketPayload::OwnShip(os),
+            PacketType::VehicleRef(vr) => DecodedPacketPayload::VehicleRef(vr),
+            PacketType::ServerTick(tick) => DecodedPacketPayload::ServerTick(*tick),
         }
     }
 
@@ -1439,60 +1471,67 @@ where
                 extra_data,
             }
         } else if *method == "receive_CommonCMD" {
-            let (sender_id, message, is_global) =
-                if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
-                    let sender = *args[0]
-                        .int_32_ref()
-                        .expect("receive_CommonCMD: sender is not an i32");
+            let (sender_id, message, is_global) = if version
+                .is_at_least(&Version::from_client_exe("0,12,8,0"))
+            {
+                let sender = *args[0]
+                    .int_32_ref()
+                    .expect("receive_CommonCMD: sender is not an i32");
 
-                    let blob = args[1]
-                        .blob_ref()
-                        .expect("receive_CommonCMD: second argument is not a blob");
+                let blob = args[1]
+                    .blob_ref()
+                    .expect("receive_CommonCMD: second argument is not a blob");
 
-                    let (_reminader, (message_type, is_global)) =
-                        parse_receive_common_cmd_blob(blob.as_ref())
-                            .expect("receive_CommonCMD: failed to parse blob");
-
-                    (sender, message_type, is_global)
-                } else {
-                    let (audience, sender_id, line, a, b) =
-                        unpack_rpc_args!(args, u8, i32, u8, u32, u64);
-                    let is_global = match audience {
-                        0 => false,
-                        1 => true,
-                        _ => {
-                            panic!(
-                                "Got unknown audience {} sender=0x{:x} line={} a={:x} b={:x}",
-                                audience, sender_id, line, a, b
-                            );
-                        }
-                    };
-                    let message = match line {
-                        1 => VoiceLine::AttentionToSquare(a, b as u32),
-                        2 => VoiceLine::QuickTactic(a as u16, b),
-                        3 => VoiceLine::RequestingSupport(None),
-                        5 => VoiceLine::Wilco,
-                        6 => VoiceLine::Negative,
-                        7 => VoiceLine::WellDone, // TODO: Find the corresponding field
-                        8 => VoiceLine::FairWinds,
-                        9 => VoiceLine::Curses,
-                        10 => VoiceLine::DefendTheBase,
-                        11 => VoiceLine::ProvideAntiAircraft,
-                        12 => VoiceLine::Retreat(if b != 0 { Some(b as i32) } else { None }),
-                        13 => VoiceLine::IntelRequired,
-                        14 => VoiceLine::SetSmokeScreen,
-                        15 => VoiceLine::UsingRadar,
-                        16 => VoiceLine::UsingHydroSearch,
-                        17 => VoiceLine::FollowMe,
-                        18 => VoiceLine::MapPointAttention(a as f32, b as f32),
-                        19 => VoiceLine::UsingSubmarineLocator,
-                        _ => {
-                            panic!("Unknown voice line {} a={:x} b={:x}!", line, a, b);
+                let (_reminader, (message_type, is_global)) =
+                    match parse_receive_common_cmd_blob(blob.as_ref()) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            eprintln!("Warning: receive_CommonCMD: failed to parse blob: {:?}", e);
+                            (&[][..], (VoiceLine::Unknown(0), false))
                         }
                     };
 
-                    (sender_id, message, is_global)
+                (sender, message_type, is_global)
+            } else {
+                let (audience, sender_id, line, a, b) =
+                    unpack_rpc_args!(args, u8, i32, u8, u32, u64);
+                let is_global = match audience {
+                    0 => false,
+                    1 => true,
+                    _ => {
+                        panic!(
+                            "Got unknown audience {} sender=0x{:x} line={} a={:x} b={:x}",
+                            audience, sender_id, line, a, b
+                        );
+                    }
                 };
+                let message = match line {
+                    1 => VoiceLine::AttentionToSquare(a, b as u32),
+                    2 => VoiceLine::QuickTactic(a as u16, b),
+                    3 => VoiceLine::RequestingSupport(None),
+                    5 => VoiceLine::Wilco,
+                    6 => VoiceLine::Negative,
+                    7 => VoiceLine::WellDone, // TODO: Find the corresponding field
+                    8 => VoiceLine::FairWinds,
+                    9 => VoiceLine::Curses,
+                    10 => VoiceLine::DefendTheBase,
+                    11 => VoiceLine::ProvideAntiAircraft,
+                    12 => VoiceLine::Retreat(if b != 0 { Some(b as i32) } else { None }),
+                    13 => VoiceLine::IntelRequired,
+                    14 => VoiceLine::SetSmokeScreen,
+                    15 => VoiceLine::UsingRadar,
+                    16 => VoiceLine::UsingHydroSearch,
+                    17 => VoiceLine::FollowMe,
+                    18 => VoiceLine::MapPointAttention(a as f32, b as f32),
+                    19 => VoiceLine::UsingSubmarineLocator,
+                    _ => {
+                        eprintln!("Warning: Unknown voice line {} a={:x} b={:x}!", line, a, b);
+                        VoiceLine::Unknown(line as i64)
+                    }
+                };
+
+                (sender_id, message, is_global)
+            };
 
             // let (audience, sender_id, line, a, b) = unpack_rpc_args!(args, u8, i32, u8, u32, u64);
 
@@ -1811,19 +1850,38 @@ where
                 winning_team,
                 state,
             }
-        } else if *method == "consumableUsed" {
-            let (consumable, duration) = unpack_rpc_args!(args, i8, f32);
+        } else if *method == "consumableUsed" || *method == "onConsumableUsed" {
+            // onConsumableUsed may use different integer width than consumableUsed
+            let consumable: i8 = match &args[0] {
+                ArgValue::Int8(v) => *v,
+                ArgValue::Uint8(v) => *v as i8,
+                ArgValue::Int16(v) => *v as i8,
+                ArgValue::Uint16(v) => *v as i8,
+                ArgValue::Int32(v) => *v as i8,
+                other => panic!(
+                    "onConsumableUsed: unexpected consumable arg type: {:?}",
+                    other
+                ),
+            };
+            let duration: f32 = match &args[1] {
+                ArgValue::Float32(v) => *v,
+                ArgValue::Float64(v) => *v as f32,
+                other => panic!(
+                    "onConsumableUsed: unexpected duration arg type: {:?}",
+                    other
+                ),
+            };
             let raw_consumable = consumable;
             let consumable = match consumable {
-                0 => Consumable::DamageControl,
+                0 | 4 => Consumable::DamageControl,
                 1 => Consumable::SpottingAircraft,
                 2 => Consumable::DefensiveAntiAircraft,
                 3 => Consumable::SpeedBoost,
                 5 => Consumable::MainBatteryReloadBooster,
-                7 => Consumable::Smoke,
-                9 => Consumable::RepairParty,
+                6 | 7 => Consumable::Smoke,
+                8 | 11 => Consumable::HydroacousticSearch,
+                9 | 41 => Consumable::RepairParty,
                 10 => Consumable::CatapultFighter,
-                11 => Consumable::HydroacousticSearch,
                 12 => Consumable::TorpedoReloadBooster,
                 13 => Consumable::Radar,
                 35 => Consumable::Hydrophone,

@@ -2492,6 +2492,14 @@ where
                     }
                 }
             }
+            // AI-identified packet types — no controller action needed
+            crate::analyzer::decoder::DecodedPacketPayload::EntityControl(_) => {}
+            crate::analyzer::decoder::DecodedPacketPayload::SmokeScreenDrift(_) => {}
+            crate::analyzer::decoder::DecodedPacketPayload::ViewDirection(_) => {}
+            crate::analyzer::decoder::DecodedPacketPayload::ServerTimestamp(_) => {}
+            crate::analyzer::decoder::DecodedPacketPayload::OwnShip(_) => {}
+            crate::analyzer::decoder::DecodedPacketPayload::VehicleRef(_) => {}
+            crate::analyzer::decoder::DecodedPacketPayload::ServerTick(_) => {}
             crate::analyzer::decoder::DecodedPacketPayload::Unknown(_) => trace!("UNKNOWN"),
             crate::analyzer::decoder::DecodedPacketPayload::Invalid(_) => trace!("INVALID"),
             crate::analyzer::decoder::DecodedPacketPayload::Audit(_) => trace!("AUDIT"),
