@@ -3,6 +3,10 @@ name = "wows_minimap_renderer"
 version = "0.1.0"
 edition = "2021"
 publish = true
+description = """
+Library/CLI application for rendering World of Warships replay files as a minimap render
+""""
+license = "MIT"
 
 [lib]
 name = "wows_minimap_renderer"
