@@ -1,11 +1,11 @@
 [package]
-name = "minimap_renderer"
+name = "wows_minimap_renderer"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [lib]
-name = "minimap_renderer"
+name = "wows_minimap_renderer"
 
 [[bin]]
 name = "minimap_renderer"

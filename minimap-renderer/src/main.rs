@@ -14,12 +14,12 @@ use wows_replays::analyzer::battle_controller::BattleController;
 use wows_replays::analyzer::Analyzer;
 use wows_replays::ReplayFile;
 
-use minimap_renderer::assets::{
+use wows_minimap_renderer::assets::{
     load_consumable_icons, load_map_image, load_map_info, load_plane_icons, load_ship_icons,
 };
-use minimap_renderer::drawing::ImageTarget;
-use minimap_renderer::renderer::{MinimapRenderer, RenderOptions};
-use minimap_renderer::video::{DumpMode, VideoEncoder};
+use wows_minimap_renderer::drawing::ImageTarget;
+use wows_minimap_renderer::renderer::{MinimapRenderer, RenderOptions};
+use wows_minimap_renderer::video::{DumpMode, VideoEncoder};
 
 fn find_latest_build(game_dir: &Path) -> anyhow::Result<usize> {
     let mut latest_build: Option<usize> = None;
