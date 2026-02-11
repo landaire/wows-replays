@@ -98,27 +98,81 @@ fn draw_capture_point(
     color: [u8; 3],
     alpha: f32,
     label: &str,
+    progress: f32,
+    invader_color: Option<[u8; 3]>,
     font: &FontRef,
 ) {
-    // Filled circle with low alpha
-    draw_smoke(image, x, y, radius, color, alpha);
-
-    // Circle outline at higher alpha
     let img_w = image.width() as i32;
     let img_h = image.height() as i32;
+
+    // Base filled circle with owner's color
+    draw_smoke(image, x, y, radius, color, alpha);
+
+    // If capture in progress, draw a pie-slice fill in the invader's color
+    if progress > 0.001 {
+        if let Some(inv_color) = invader_color {
+            let fill_alpha = alpha + 0.10;
+            // Pie-slice from top (-PI/2), sweeping clockwise by progress * 2*PI
+            let start_angle = -std::f32::consts::FRAC_PI_2;
+            let sweep = progress * std::f32::consts::TAU;
+            let r2 = (radius * radius) as f32;
+            for dy in -radius..=radius {
+                for dx in -radius..=radius {
+                    let dist2 = (dx * dx + dy * dy) as f32;
+                    if dist2 > r2 {
+                        continue;
+                    }
+                    // Check if this pixel is within the pie-slice
+                    let mut angle = (dy as f32).atan2(dx as f32) - start_angle;
+                    if angle < 0.0 {
+                        angle += std::f32::consts::TAU;
+                    }
+                    if angle > sweep {
+                        continue;
+                    }
+                    let px = x + dx;
+                    let py = y + dy;
+                    if px >= 0 && px < img_w && py >= 0 && py < img_h {
+                        let bg = image.get_pixel(px as u32, py as u32).0;
+                        let blended = Rgb([
+                            (inv_color[0] as f32 * fill_alpha + bg[0] as f32 * (1.0 - fill_alpha))
+                                as u8,
+                            (inv_color[1] as f32 * fill_alpha + bg[1] as f32 * (1.0 - fill_alpha))
+                                as u8,
+                            (inv_color[2] as f32 * fill_alpha + bg[2] as f32 * (1.0 - fill_alpha))
+                                as u8,
+                        ]);
+                        image.put_pixel(px as u32, py as u32, blended);
+                    }
+                }
+            }
+        }
+    }
+
+    // Circle outline — use invader color when contested, owner color otherwise
+    let outline_color = if invader_color.is_some() && progress > 0.001 {
+        invader_color.unwrap()
+    } else {
+        color
+    };
     let outline_alpha = 0.6f32;
-    for angle_step in 0..360 {
-        let angle = (angle_step as f32).to_radians();
-        let px = x + (radius as f32 * angle.cos()).round() as i32;
-        let py = y + (radius as f32 * angle.sin()).round() as i32;
-        if px >= 0 && px < img_w && py >= 0 && py < img_h {
-            let bg = image.get_pixel(px as u32, py as u32).0;
-            let blended = Rgb([
-                (color[0] as f32 * outline_alpha + bg[0] as f32 * (1.0 - outline_alpha)) as u8,
-                (color[1] as f32 * outline_alpha + bg[1] as f32 * (1.0 - outline_alpha)) as u8,
-                (color[2] as f32 * outline_alpha + bg[2] as f32 * (1.0 - outline_alpha)) as u8,
-            ]);
-            image.put_pixel(px as u32, py as u32, blended);
+    for angle_step in 0..720 {
+        let angle = (angle_step as f32 * 0.5).to_radians();
+        for r_offset in [radius, radius - 1] {
+            let px = x + (r_offset as f32 * angle.cos()).round() as i32;
+            let py = y + (r_offset as f32 * angle.sin()).round() as i32;
+            if px >= 0 && px < img_w && py >= 0 && py < img_h {
+                let bg = image.get_pixel(px as u32, py as u32).0;
+                let blended = Rgb([
+                    (outline_color[0] as f32 * outline_alpha + bg[0] as f32 * (1.0 - outline_alpha))
+                        as u8,
+                    (outline_color[1] as f32 * outline_alpha + bg[1] as f32 * (1.0 - outline_alpha))
+                        as u8,
+                    (outline_color[2] as f32 * outline_alpha + bg[2] as f32 * (1.0 - outline_alpha))
+                        as u8,
+                ]);
+                image.put_pixel(px as u32, py as u32, blended);
+            }
         }
     }
 
@@ -285,6 +339,8 @@ impl RenderTarget for ImageTarget {
                 color,
                 alpha,
                 label,
+                progress,
+                invader_color,
             } => {
                 let x = pos.x;
                 let y = pos.y + y_off;
@@ -296,6 +352,8 @@ impl RenderTarget for ImageTarget {
                     *color,
                     *alpha,
                     label,
+                    *progress,
+                    *invader_color,
                     &self.font,
                 );
             }

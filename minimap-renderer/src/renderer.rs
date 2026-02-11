@@ -221,12 +221,20 @@ impl<'a> MinimapRenderer<'a> {
                     let letter = (b'A' + cp.index as u8) as char;
                     letter.to_string()
                 };
+                let progress = cp.progress.0 as f32;
+                let invader_color = if cp.has_invaders && cp.invader_team >= 0 {
+                    Some(cap_point_color(cp.invader_team))
+                } else {
+                    None
+                };
                 commands.push(DrawCommand::CapturePoint {
                     pos: px,
                     radius: px_radius.max(5),
                     color,
                     alpha: 0.15,
                     label,
+                    progress,
+                    invader_color,
                 });
             }
         }

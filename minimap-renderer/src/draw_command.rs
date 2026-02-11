@@ -79,12 +79,16 @@ pub enum DrawCommand {
         pos: MinimapPos,
         /// Zone radius in pixels
         radius: i32,
-        /// Team color (green/red/white)
+        /// Team color (green/red/white) for the owning team
         color: [u8; 3],
         /// Fill transparency
         alpha: f32,
         /// Zone label (e.g. "A", "B", "C")
         label: String,
+        /// Capture progress 0.0..1.0 (0 = no capture in progress)
+        progress: f32,
+        /// Color of the invading team (shown as progress arc)
+        invader_color: Option<[u8; 3]>,
     },
     /// Building dot on the minimap
     Building {
