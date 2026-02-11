@@ -540,8 +540,7 @@ impl RenderTarget for ImageTarget {
                 species,
                 color,
                 is_self,
-                player_name,
-                ship_name,
+                ..
             } => {
                 let x = pos.x;
                 let y = pos.y + y_off;
@@ -562,14 +561,7 @@ impl RenderTarget for ImageTarget {
                     .unwrap_or_else(|| panic!("missing ship icon for '{}'", variant_key));
 
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, rgb, 1.0);
-                draw_ship_labels(
-                    &mut self.canvas,
-                    x,
-                    y,
-                    player_name.as_deref(),
-                    ship_name.as_deref(),
-                    &self.font,
-                );
+                // Skip labels for dead ships in video output — just show the X marker
             }
             DrawCommand::Plane { pos, icon_key } => {
                 let icon = self
