@@ -117,21 +117,167 @@ pub enum Ribbon {
     Unknown(i8),
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize)]
 pub enum DeathCause {
-    Secondaries,
+    /// 0: NONE
+    None,
+    /// 1: ARTILLERY (generic, pre-shell-type replays)
     Artillery,
-    Fire,
-    Flooding,
+    /// 2: ATBA (secondaries)
+    Secondaries,
+    /// 3: TORPEDO
     Torpedo,
+    /// 4: BOMB (dive bomber)
     DiveBomber,
-    AerialRocket,
+    /// 5: TBOMB (aerial torpedo)
     AerialTorpedo,
-    Detonation,
+    /// 6: BURNING (fire)
+    Fire,
+    /// 7: RAM
     Ramming,
+    /// 8: TERRAIN
+    Terrain,
+    /// 9: FLOOD
+    Flooding,
+    /// 10: MIRROR
+    Mirror,
+    /// 11: SEA_MINE
+    SeaMine,
+    /// 12: SPECIAL
+    Special,
+    /// 13: DBOMB (depth charge)
     DepthCharge,
+    /// 14: ROCKET (aerial rocket)
+    AerialRocket,
+    /// 15: DETONATE
+    Detonation,
+    /// 16: HEALTH
+    Health,
+    /// 17: AP_SHELL
+    ApShell,
+    /// 18: HE_SHELL
+    HeShell,
+    /// 19: CS_SHELL
+    CsShell,
+    /// 20: FEL
+    Fel,
+    /// 21: PORTAL
+    Portal,
+    /// 22: SKIP_BOMB
     SkipBombs,
+    /// 23: SECTOR_WAVE
+    SectorWave,
+    /// 24: ACID
+    Acid,
+    /// 25: LASER
+    Laser,
+    /// 26: MATCH
+    Match,
+    /// 27: TIMER
+    Timer,
+    /// 28: ADBOMB (aerial depth charge)
+    AerialDepthCharge,
+    /// 29: EVENT_1
+    Event1,
+    /// 30: EVENT_2
+    Event2,
+    /// 31: EVENT_3
+    Event3,
+    /// 32: EVENT_4
+    Event4,
+    /// 33: EVENT_5
+    Event5,
+    /// 34: EVENT_6
+    Event6,
+    /// 35: MISSILE
+    Missile,
+    /// Unknown integer ID (no constants available)
     Unknown(u32),
+    /// Name from game constants that doesn't map to a known variant
+    UnknownName(String),
+}
+
+impl DeathCause {
+    /// Resolve a death cause from its XML constant name.
+    /// Returns a known variant if the name matches, or `UnknownName` for
+    /// unrecognized names so callers can handle them.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "NONE" => DeathCause::None,
+            "ARTILLERY" => DeathCause::Artillery,
+            "ATBA" => DeathCause::Secondaries,
+            "TORPEDO" => DeathCause::Torpedo,
+            "BOMB" => DeathCause::DiveBomber,
+            "TBOMB" => DeathCause::AerialTorpedo,
+            "BURNING" => DeathCause::Fire,
+            "RAM" => DeathCause::Ramming,
+            "TERRAIN" => DeathCause::Terrain,
+            "FLOOD" => DeathCause::Flooding,
+            "MIRROR" => DeathCause::Mirror,
+            "SEA_MINE" => DeathCause::SeaMine,
+            "SPECIAL" => DeathCause::Special,
+            "DBOMB" => DeathCause::DepthCharge,
+            "ROCKET" => DeathCause::AerialRocket,
+            "DETONATE" => DeathCause::Detonation,
+            "HEALTH" => DeathCause::Health,
+            "AP_SHELL" => DeathCause::ApShell,
+            "HE_SHELL" => DeathCause::HeShell,
+            "CS_SHELL" => DeathCause::CsShell,
+            "FEL" => DeathCause::Fel,
+            "PORTAL" => DeathCause::Portal,
+            "SKIP_BOMB" => DeathCause::SkipBombs,
+            "SECTOR_WAVE" => DeathCause::SectorWave,
+            "ACID" => DeathCause::Acid,
+            "LASER" => DeathCause::Laser,
+            "MATCH" => DeathCause::Match,
+            "TIMER" => DeathCause::Timer,
+            "ADBOMB" => DeathCause::AerialDepthCharge,
+            "EVENT_1" => DeathCause::Event1,
+            "EVENT_2" => DeathCause::Event2,
+            "EVENT_3" => DeathCause::Event3,
+            "EVENT_4" => DeathCause::Event4,
+            "EVENT_5" => DeathCause::Event5,
+            "EVENT_6" => DeathCause::Event6,
+            "MISSILE" => DeathCause::Missile,
+            other => DeathCause::UnknownName(other.to_string()),
+        }
+    }
+
+    /// Returns the icon texture name for this death cause, if one exists.
+    pub fn icon_name(&self) -> Option<&'static str> {
+        match self {
+            DeathCause::Secondaries => Some("icon_frag_atba"),
+            DeathCause::Torpedo => Some("icon_frag_torpedo"),
+            DeathCause::DiveBomber => Some("icon_frag_bomb"),
+            DeathCause::AerialTorpedo => Some("icon_frag_torpedo"),
+            DeathCause::Fire => Some("icon_frag_burning"),
+            DeathCause::Ramming => Some("icon_frag_ram"),
+            DeathCause::Flooding => Some("icon_frag_flood"),
+            DeathCause::SeaMine => Some("icon_frag_naval_mine"),
+            DeathCause::DepthCharge => Some("icon_frag_depthbomb"),
+            DeathCause::AerialRocket => Some("icon_frag_rocket"),
+            DeathCause::Detonation => Some("icon_frag_detonate"),
+            DeathCause::ApShell => Some("icon_frag_main_caliber"),
+            DeathCause::HeShell => Some("icon_frag_main_caliber"),
+            DeathCause::CsShell => Some("icon_frag_main_caliber"),
+            DeathCause::Fel => Some("icon_frag_fel"),
+            DeathCause::Portal => Some("icon_frag_portal"),
+            DeathCause::SkipBombs => Some("icon_frag_skip"),
+            DeathCause::SectorWave => Some("icon_frag_wave"),
+            DeathCause::Acid => Some("icon_frag_acid"),
+            DeathCause::Laser => Some("icon_frag_laser"),
+            DeathCause::Match => Some("icon_frag_octagon"),
+            DeathCause::Timer => Some("icon_timer"),
+            DeathCause::AerialDepthCharge => Some("icon_frag_depthbomb"),
+            DeathCause::Event1 => Some("icon_frag_fel"),
+            DeathCause::Event2 => Some("icon_frag_fel"),
+            DeathCause::Event3 => Some("icon_frag_fel"),
+            DeathCause::Event4 => Some("icon_frag_fel"),
+            DeathCause::Event5 => Some("icon_frag_fel"),
+            DeathCause::Event6 => Some("icon_frag_torpedo"),
+            _ => Option::None,
+        }
+    }
 }
 
 /// Contains the information describing a player
@@ -726,33 +872,121 @@ pub struct ShotHit {
 /// Enumerates usable consumables in-game
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum Consumable {
+    /// 0: crashCrew
     DamageControl,
+    /// 1: scout
     SpottingAircraft,
+    /// 2: airDefenseDisp
     DefensiveAntiAircraft,
+    /// 3: speedBoosters
     SpeedBoost,
-    RepairParty,
-    CatapultFighter,
+    /// 4: artilleryBoosters
     MainBatteryReloadBooster,
-    TorpedoReloadBooster,
+    /// 6: smokeGenerator
     Smoke,
-    Radar,
+    /// 8: regenCrew
+    RepairParty,
+    /// 9: fighter
+    CatapultFighter,
+    /// 10: sonar
     HydroacousticSearch,
+    /// 11: torpedoReloader
+    TorpedoReloadBooster,
+    /// 12: rls
+    Radar,
+    /// 19: invulnerable
+    Invulnerable,
+    /// 20: healForsage
+    HealForsage,
+    /// 21: callFighters
+    CallFighters,
+    /// 22: regenerateHealth
+    RegenerateHealth,
+    /// 26: depthCharges
+    DepthCharges,
+    /// 34: weaponReloadBooster
+    WeaponReloadBooster,
+    /// 35: hydrophone
     Hydrophone,
+    /// 36: fastRudders
     EnhancedRudders,
+    /// 37: subsEnergyFreeze
     ReserveBattery,
+    /// 41: submarineLocator
     SubmarineSurveillance,
     Unknown(i8),
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum CameraMode {
+    /// 1: AIRPLANES
+    Airplanes,
+    /// 2: DOCK
+    Dock,
+    /// 3: TACTICALMAP (overhead map)
     OverheadMap,
+    /// 4: DEVFREE
+    DevFree,
+    /// 5: SHELLTRACKER
     FollowingShells,
+    /// 6: PLANETRACKER
     FollowingPlanes,
+    /// 7: DOCKMODULE
+    DockModule,
+    /// 8: SNAKETAIL (following ship)
     FollowingShip,
-    FollowingSubmarine,
+    /// 9: SPECTATOR (free flying)
     FreeFlying,
+    /// 10: REPLAY_FPC
+    ReplayFpc,
+    /// 11: UNDERWATER
+    FollowingSubmarine,
+    /// 12: TACTICAL_CONSUMABLES
+    TacticalConsumables,
+    /// 13: RESPAWN_MAP
+    RespawnMap,
+    /// 19: DOCKFLAGS
+    DockFlags,
+    /// 20: DOCKENSIGN
+    DockEnsign,
+    /// 21: DOCKLOOTBOX
+    DockLootbox,
+    /// 22: DOCKNAVALFLAG
+    DockNavalFlag,
+    /// 23: IDLEGAME
+    IdleGame,
     Unknown(u32),
+    /// Name from game constants that doesn't map to a known variant
+    UnknownName(String),
+}
+
+impl CameraMode {
+    /// Resolve a camera mode from its XML constant name.
+    /// Returns a known variant if the name matches, or `UnknownName` for
+    /// unrecognized names so callers can handle them.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "AIRPLANES" => CameraMode::Airplanes,
+            "DOCK" => CameraMode::Dock,
+            "TACTICALMAP" => CameraMode::OverheadMap,
+            "DEVFREE" => CameraMode::DevFree,
+            "SHELLTRACKER" => CameraMode::FollowingShells,
+            "PLANETRACKER" => CameraMode::FollowingPlanes,
+            "DOCKMODULE" => CameraMode::DockModule,
+            "SNAKETAIL" => CameraMode::FollowingShip,
+            "SPECTATOR" => CameraMode::FreeFlying,
+            "REPLAY_FPC" => CameraMode::ReplayFpc,
+            "UNDERWATER" => CameraMode::FollowingSubmarine,
+            "TACTICAL_CONSUMABLES" => CameraMode::TacticalConsumables,
+            "RESPAWN_MAP" => CameraMode::RespawnMap,
+            "DOCKFLAGS" => CameraMode::DockFlags,
+            "DOCKENSIGN" => CameraMode::DockEnsign,
+            "DOCKLOOTBOX" => CameraMode::DockLootbox,
+            "DOCKNAVALFLAG" => CameraMode::DockNavalFlag,
+            "IDLEGAME" => CameraMode::IdleGame,
+            other => CameraMode::UnknownName(other.to_string()),
+        }
+    }
 }
 
 /// Enumerates the "cruise states". See <https://github.com/lkolbly/wows-replays/issues/14#issuecomment-976784004>
@@ -1222,27 +1456,50 @@ where
         audit: bool,
         payload: &'rawpacket crate::packet2::PacketType<'replay, 'argtype>,
         packet_type: u32,
+        battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
     ) -> Self {
         match payload {
             PacketType::EntityMethod(em) => {
-                DecodedPacketPayload::from_entity_method(version, audit, em)
+                DecodedPacketPayload::from_entity_method(version, audit, em, battle_constants)
             }
             PacketType::Camera(camera) => DecodedPacketPayload::Camera(camera),
-            PacketType::CameraMode(mode) => match mode {
-                3 => DecodedPacketPayload::CameraMode(CameraMode::OverheadMap),
-                5 => DecodedPacketPayload::CameraMode(CameraMode::FollowingShells),
-                6 => DecodedPacketPayload::CameraMode(CameraMode::FollowingPlanes),
-                8 => DecodedPacketPayload::CameraMode(CameraMode::FollowingShip),
-                9 => DecodedPacketPayload::CameraMode(CameraMode::FreeFlying),
-                11 => DecodedPacketPayload::CameraMode(CameraMode::FollowingSubmarine),
-                _ => {
-                    if audit {
-                        DecodedPacketPayload::Audit(format!("CameraMode({})", mode))
-                    } else {
-                        DecodedPacketPayload::CameraMode(CameraMode::Unknown(*mode))
+            PacketType::CameraMode(mode) => {
+                // Try constants lookup first, fall back to hardcoded mapping
+                if let Some(cm) = battle_constants
+                    .and_then(|bc| bc.camera_mode(*mode as i32))
+                    .map(CameraMode::from_name)
+                {
+                    DecodedPacketPayload::CameraMode(cm)
+                } else {
+                    match mode {
+                        1 => DecodedPacketPayload::CameraMode(CameraMode::Airplanes),
+                        2 => DecodedPacketPayload::CameraMode(CameraMode::Dock),
+                        3 => DecodedPacketPayload::CameraMode(CameraMode::OverheadMap),
+                        4 => DecodedPacketPayload::CameraMode(CameraMode::DevFree),
+                        5 => DecodedPacketPayload::CameraMode(CameraMode::FollowingShells),
+                        6 => DecodedPacketPayload::CameraMode(CameraMode::FollowingPlanes),
+                        7 => DecodedPacketPayload::CameraMode(CameraMode::DockModule),
+                        8 => DecodedPacketPayload::CameraMode(CameraMode::FollowingShip),
+                        9 => DecodedPacketPayload::CameraMode(CameraMode::FreeFlying),
+                        10 => DecodedPacketPayload::CameraMode(CameraMode::ReplayFpc),
+                        11 => DecodedPacketPayload::CameraMode(CameraMode::FollowingSubmarine),
+                        12 => DecodedPacketPayload::CameraMode(CameraMode::TacticalConsumables),
+                        13 => DecodedPacketPayload::CameraMode(CameraMode::RespawnMap),
+                        19 => DecodedPacketPayload::CameraMode(CameraMode::DockFlags),
+                        20 => DecodedPacketPayload::CameraMode(CameraMode::DockEnsign),
+                        21 => DecodedPacketPayload::CameraMode(CameraMode::DockLootbox),
+                        22 => DecodedPacketPayload::CameraMode(CameraMode::DockNavalFlag),
+                        23 => DecodedPacketPayload::CameraMode(CameraMode::IdleGame),
+                        _ => {
+                            if audit {
+                                DecodedPacketPayload::Audit(format!("CameraMode({})", mode))
+                            } else {
+                                DecodedPacketPayload::CameraMode(CameraMode::Unknown(*mode))
+                            }
+                        }
                     }
                 }
-            },
+            }
             PacketType::CameraFreeLook(freelook) => match freelook {
                 0 => DecodedPacketPayload::CameraFreeLook(false),
                 1 => DecodedPacketPayload::CameraFreeLook(true),
@@ -1363,6 +1620,7 @@ where
         version: &Version,
         audit: bool,
         packet: &'rawpacket EntityMethodPacket<'argtype>,
+        battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
     ) -> Self {
         let entity_id = &packet.entity_id;
         let method = &packet.method;
@@ -1696,30 +1954,59 @@ where
             DecodedPacketPayload::DamageStat(stats)
         } else if *method == "receiveVehicleDeath" {
             let (victim, killer, cause) = unpack_rpc_args!(args, i32, i32, u32);
-            let cause = match cause {
-                2 => DeathCause::Secondaries,
-                3 => DeathCause::Torpedo,
-                4 => DeathCause::DiveBomber,
-                5 => DeathCause::AerialTorpedo,
-                6 => DeathCause::Fire,
-                7 => DeathCause::Ramming,
-                9 => DeathCause::Flooding,
-                13 => DeathCause::DepthCharge,
-                14 => DeathCause::AerialRocket,
-                15 => DeathCause::Detonation,
-                17 => DeathCause::Artillery,
-                18 => DeathCause::Artillery,
-                19 => DeathCause::Artillery,
-                22 => DeathCause::SkipBombs,
-                28 => DeathCause::DepthCharge, // TODO: Why is this different from the above depth charge?
-                cause => {
-                    if audit {
-                        return DecodedPacketPayload::Audit(format!(
-                            "receiveVehicleDeath(victim={}, killer={}, unknown cause {})",
-                            victim, killer, cause
-                        ));
-                    } else {
-                        DeathCause::Unknown(cause)
+            // Try constants lookup first, fall back to hardcoded mapping
+            let cause = if let Some(dc) = battle_constants
+                .and_then(|bc| bc.death_reason(cause as i32))
+                .map(DeathCause::from_name)
+            {
+                dc
+            } else {
+                match cause {
+                    0 => DeathCause::None,
+                    1 => DeathCause::Artillery,
+                    2 => DeathCause::Secondaries,
+                    3 => DeathCause::Torpedo,
+                    4 => DeathCause::DiveBomber,
+                    5 => DeathCause::AerialTorpedo,
+                    6 => DeathCause::Fire,
+                    7 => DeathCause::Ramming,
+                    8 => DeathCause::Terrain,
+                    9 => DeathCause::Flooding,
+                    10 => DeathCause::Mirror,
+                    11 => DeathCause::SeaMine,
+                    12 => DeathCause::Special,
+                    13 => DeathCause::DepthCharge,
+                    14 => DeathCause::AerialRocket,
+                    15 => DeathCause::Detonation,
+                    16 => DeathCause::Health,
+                    17 => DeathCause::ApShell,
+                    18 => DeathCause::HeShell,
+                    19 => DeathCause::CsShell,
+                    20 => DeathCause::Fel,
+                    21 => DeathCause::Portal,
+                    22 => DeathCause::SkipBombs,
+                    23 => DeathCause::SectorWave,
+                    24 => DeathCause::Acid,
+                    25 => DeathCause::Laser,
+                    26 => DeathCause::Match,
+                    27 => DeathCause::Timer,
+                    28 => DeathCause::AerialDepthCharge,
+                    29 => DeathCause::Event1,
+                    30 => DeathCause::Event2,
+                    31 => DeathCause::Event3,
+                    32 => DeathCause::Event4,
+                    33 => DeathCause::Event5,
+                    34 => DeathCause::Event6,
+                    35 => DeathCause::Missile,
+                    cause => {
+                        if audit {
+                            return DecodedPacketPayload::Audit(format!(
+                                "receiveVehicleDeath(victim={}, killer={}, unknown cause {})",
+                                victim, killer, cause
+                            ));
+                        } else {
+                            DeathCause::Unknown(cause)
+                        }
                     }
                 }
             };
@@ -1872,21 +2159,30 @@ where
                 ),
             };
             let raw_consumable = consumable;
+            // Mapping from wows-constants CONSUMABLE_IDS
+            // Verified identical across all known game versions (build 9129736 through 11965230)
             let consumable = match consumable {
-                0 | 4 => Consumable::DamageControl,
-                1 => Consumable::SpottingAircraft,
-                2 => Consumable::DefensiveAntiAircraft,
-                3 => Consumable::SpeedBoost,
-                5 => Consumable::MainBatteryReloadBooster,
-                6 | 7 => Consumable::Smoke,
-                8 | 11 => Consumable::HydroacousticSearch,
-                9 | 41 => Consumable::RepairParty,
-                10 => Consumable::CatapultFighter,
-                12 => Consumable::TorpedoReloadBooster,
-                13 => Consumable::Radar,
-                35 => Consumable::Hydrophone,
-                36 => Consumable::EnhancedRudders,
-                37 => Consumable::ReserveBattery,
+                0 => Consumable::DamageControl,            // crashCrew
+                1 => Consumable::SpottingAircraft,         // scout
+                2 => Consumable::DefensiveAntiAircraft,    // airDefenseDisp
+                3 => Consumable::SpeedBoost,               // speedBoosters
+                4 => Consumable::MainBatteryReloadBooster, // artilleryBoosters
+                6 => Consumable::Smoke,                    // smokeGenerator
+                8 => Consumable::RepairParty,              // regenCrew
+                9 => Consumable::CatapultFighter,          // fighter
+                10 => Consumable::HydroacousticSearch,     // sonar
+                11 => Consumable::TorpedoReloadBooster,    // torpedoReloader
+                12 => Consumable::Radar,                   // rls
+                19 => Consumable::Invulnerable,            // invulnerable
+                20 => Consumable::HealForsage,             // healForsage
+                21 => Consumable::CallFighters,            // callFighters
+                22 => Consumable::RegenerateHealth,        // regenerateHealth
+                26 => Consumable::DepthCharges,            // depthCharges
+                34 => Consumable::WeaponReloadBooster,     // weaponReloadBooster
+                35 => Consumable::Hydrophone,              // hydrophone
+                36 => Consumable::EnhancedRudders,         // fastRudders
+                37 => Consumable::ReserveBattery,          // subsEnergyFreeze
+                41 => Consumable::SubmarineSurveillance,   // submarineLocator
                 _ => {
                     if audit {
                         return DecodedPacketPayload::Audit(format!(
@@ -2178,7 +2474,12 @@ where
     'rawpacket: 'replay,
     'rawpacket: 'argtype,
 {
-    pub fn from(version: &Version, audit: bool, packet: &'rawpacket Packet<'_, '_>) -> Self {
+    pub fn from(
+        version: &Version,
+        audit: bool,
+        packet: &'rawpacket Packet<'_, '_>,
+        battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
+    ) -> Self {
         Self {
             clock: packet.clock,
             packet_type: packet.packet_type,
@@ -2187,6 +2488,7 @@ where
                 audit,
                 &packet.payload,
                 packet.packet_type,
+                battle_constants,
             ),
         }
     }
@@ -2232,7 +2534,7 @@ impl Analyzer for Decoder {
     fn finish(&mut self) {}
 
     fn process(&mut self, packet: &Packet<'_, '_>) {
-        let decoded = DecodedPacket::from(&self.version, false, packet);
+        let decoded = DecodedPacket::from(&self.version, false, packet, None);
         //println!("{:#?}", decoded);
         //println!("{}", serde_json::to_string_pretty(&decoded).unwrap());
         let encoded = serde_json::to_string(&decoded).unwrap();

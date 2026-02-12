@@ -990,11 +990,17 @@ fn consumable_to_base_icon_key(c: Consumable) -> Option<String> {
         Consumable::TorpedoReloadBooster => "PCY017_TorpedoReloader",
         Consumable::Radar => "PCY019_RLSSearch",
         Consumable::MainBatteryReloadBooster => "PCY021_ArtilleryBooster",
+        Consumable::CallFighters => "PCY004_Fighter",
+        Consumable::RegenerateHealth => "PCY002_RegenCrew",
         Consumable::Hydrophone => "PCY045_Hydrophone",
         Consumable::EnhancedRudders => "PCY046_FastDeepRudders",
         Consumable::SubmarineSurveillance => "PCY048_SubmarineLocator",
-        Consumable::ReserveBattery => return None,
-        Consumable::Unknown(_) => return None,
+        Consumable::ReserveBattery
+        | Consumable::Invulnerable
+        | Consumable::HealForsage
+        | Consumable::DepthCharges
+        | Consumable::WeaponReloadBooster
+        | Consumable::Unknown(_) => return None,
     };
     Some(key.to_string())
 }
@@ -1006,13 +1012,19 @@ fn consumable_type_to_enum(consumable_type: &str) -> Option<Consumable> {
         "scout" => Some(Consumable::SpottingAircraft),
         "airDefenseDisp" => Some(Consumable::DefensiveAntiAircraft),
         "speedBoosters" => Some(Consumable::SpeedBoost),
-        "regenCrew" | "regenerateHealth" => Some(Consumable::RepairParty),
-        "fighter" | "callFighters" => Some(Consumable::CatapultFighter),
         "artilleryBoosters" => Some(Consumable::MainBatteryReloadBooster),
-        "torpedoReloader" => Some(Consumable::TorpedoReloadBooster),
         "smokeGenerator" => Some(Consumable::Smoke),
-        "rls" => Some(Consumable::Radar),
+        "regenCrew" => Some(Consumable::RepairParty),
+        "fighter" => Some(Consumable::CatapultFighter),
         "sonar" => Some(Consumable::HydroacousticSearch),
+        "torpedoReloader" => Some(Consumable::TorpedoReloadBooster),
+        "rls" => Some(Consumable::Radar),
+        "invulnerable" => Some(Consumable::Invulnerable),
+        "healForsage" => Some(Consumable::HealForsage),
+        "callFighters" => Some(Consumable::CallFighters),
+        "regenerateHealth" => Some(Consumable::RegenerateHealth),
+        "depthCharges" => Some(Consumable::DepthCharges),
+        "weaponReloadBooster" => Some(Consumable::WeaponReloadBooster),
         "hydrophone" => Some(Consumable::Hydrophone),
         "fastRudders" => Some(Consumable::EnhancedRudders),
         "subsEnergyFreeze" => Some(Consumable::ReserveBattery),

@@ -1,18 +1,19 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use clap::{App, Arg};
 use std::borrow::Cow;
-use std::fs::{read_dir, File};
+use std::fs::{File, read_dir};
 use std::io::Cursor;
 use std::path::Path;
+use wowsunpack::data::DataFileWithCallback;
 use wowsunpack::data::idx::{self, FileNode};
 use wowsunpack::data::pkg::PkgFileLoader;
-use wowsunpack::data::DataFileWithCallback;
 use wowsunpack::game_params::provider::GameMetadataProvider;
-use wowsunpack::rpc::entitydefs::{parse_scripts, EntitySpec};
+use wowsunpack::rpc::entitydefs::{EntitySpec, parse_scripts};
 
-use wows_replays::analyzer::battle_controller::BattleController;
-use wows_replays::analyzer::Analyzer;
 use wows_replays::ReplayFile;
+use wows_replays::analyzer::Analyzer;
+use wows_replays::analyzer::battle_controller::BattleController;
+use wows_replays::game_constants::GameConstants;
 
 use wows_minimap_renderer::assets::{
     load_consumable_icons, load_map_image, load_map_info, load_plane_icons, load_ship_icons,
@@ -190,8 +191,15 @@ fn main() -> anyhow::Result<()> {
     let plane_icons = load_plane_icons(&file_tree, &pkg_loader);
     let consumable_icons = load_consumable_icons(&file_tree, &pkg_loader);
 
+    // Load game constants from game data (falls back to hardcoded defaults per-field)
+    let game_constants = GameConstants::from_pkg(&file_tree, &pkg_loader);
+
     println!("Parsing replay...");
     let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(replay_path))?;
+
+    if let Some(mode_name) = game_constants.game_mode_name(replay_file.meta.gameMode as i32) {
+        println!("Game mode: {} ({})", mode_name, replay_file.meta.gameMode);
+    }
 
     // Load map image and metadata from game files
     let map_name = &replay_file.meta.mapName;
@@ -212,7 +220,11 @@ fn main() -> anyhow::Result<()> {
     let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, options);
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);
 
-    let mut controller = BattleController::new(&replay_file.meta, &controller_game_params);
+    let mut controller = BattleController::new(
+        &replay_file.meta,
+        &controller_game_params,
+        Some(game_constants.battle().clone()),
+    );
 
     let mut parser = wows_replays::packet2::Parser::new(&specs);
     let mut remaining = &replay_file.packet_data[..];

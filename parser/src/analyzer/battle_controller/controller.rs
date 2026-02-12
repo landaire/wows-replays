@@ -28,6 +28,7 @@ use crate::{
     packet2::{EntityCreatePacket, Packet},
     types::{AccountId, EntityId, GameClock, GameParamId, PlaneId, Relation, WorldPos},
 };
+use wowsunpack::game_constants::BattleConstants;
 
 use super::listener::BattleControllerState;
 use super::state::{
@@ -490,13 +491,21 @@ pub struct BattleController<'res, 'replay, G> {
     /// The value is a packed u16: lo byte = yaw, hi byte = pitch.
     /// Yaw decoding: `(lo_byte / 256) * 2*PI - PI` gives world-space radians.
     target_yaws: HashMap<EntityId, f32>,
+
+    /// Optional battle constants loaded from game data for resolving
+    /// death causes, camera modes, etc.
+    battle_constants: Option<BattleConstants>,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
 where
     G: ResourceLoader,
 {
-    pub fn new(game_meta: &'replay ReplayMeta, game_resources: &'res G) -> Self {
+    pub fn new(
+        game_meta: &'replay ReplayMeta,
+        game_resources: &'res G,
+        battle_constants: Option<BattleConstants>,
+    ) -> Self {
         let players: Vec<SharedPlayer> = game_meta
             .vehicles
             .iter()
@@ -542,6 +551,7 @@ where
             dead_ships: HashMap::default(),
             turret_yaws: HashMap::default(),
             target_yaws: HashMap::default(),
+            battle_constants,
         }
     }
 
@@ -1838,8 +1848,8 @@ impl DeathInfo {
         self.killer
     }
 
-    pub fn cause(&self) -> DeathCause {
-        self.cause
+    pub fn cause(&self) -> &DeathCause {
+        &self.cause
     }
 }
 
@@ -1855,7 +1865,7 @@ impl From<&Death> for DeathInfo {
         DeathInfo {
             time_lived,
             killer: death.killer,
-            cause: death.cause,
+            cause: death.cause.clone(),
         }
     }
 }
@@ -2053,7 +2063,8 @@ where
 
         self.current_clock = packet.clock;
 
-        let decoded = DecodedPacket::from(&self.version, false, packet);
+        let decoded =
+            DecodedPacket::from(&self.version, false, packet, self.battle_constants.as_ref());
         match decoded.payload {
             crate::analyzer::decoder::DecodedPacketPayload::Chat {
                 entity_id,
@@ -2120,7 +2131,7 @@ where
                     timestamp: packet.clock.to_duration(),
                     killer,
                     victim,
-                    cause,
+                    cause: cause.clone(),
                 });
                 self.kills.push(KillRecord {
                     clock: packet.clock,

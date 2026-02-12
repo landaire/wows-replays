@@ -230,7 +230,7 @@ impl Analyzer for DamageMonitor {
         let seconds = (secs - minutes as f32 * 60.0).floor() as i32;
         let time = format!("{:02}:{:02}", minutes, seconds);
 
-        let decoded = DecodedPacket::from(&self.version, false, packet);
+        let decoded = DecodedPacket::from(&self.version, false, packet, None);
         if let DecodedPacketPayload::OnArenaStateReceived {
             player_states: players,
             ..

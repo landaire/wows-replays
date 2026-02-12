@@ -28,7 +28,7 @@ impl wows_replays::analyzer::Analyzer for InvestigativePrinter {
 
     fn process(&mut self, packet: &wows_replays::packet2::Packet<'_, '_>) {
         let decoded =
-            wows_replays::analyzer::decoder::DecodedPacket::from(&self.version, true, packet);
+            wows_replays::analyzer::decoder::DecodedPacket::from(&self.version, true, packet, None);
 
         if self.meta {
             match &decoded.payload {

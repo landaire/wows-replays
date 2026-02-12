@@ -76,7 +76,7 @@ impl Analyzer for Survey {
         let mut stats: RefMut<_> = self.stats.borrow_mut();
         if !self.skip_decoder {
             //let decoded = self.decoder.process(packet);
-            let decoded = decoder::DecodedPacket::from(&self.version, true, packet);
+            let decoded = decoder::DecodedPacket::from(&self.version, true, packet, None);
             if let crate::analyzer::decoder::DecodedPacketPayload::Audit(s) = &decoded.payload {
                 stats.audits.push(s.to_string());
             }

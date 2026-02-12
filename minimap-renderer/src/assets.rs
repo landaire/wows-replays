@@ -4,8 +4,8 @@ use std::path::Path;
 use wowsunpack::data::idx::FileNode;
 use wowsunpack::data::pkg::PkgFileLoader;
 
-use crate::map_data;
 use crate::MINIMAP_SIZE;
+use crate::map_data;
 
 /// Icon size in pixels for rasterized ship icons.
 pub const ICON_SIZE: u32 = 24;

@@ -22,7 +22,7 @@ cpu = ["dep:openh264"]
 arc = ["wows_replays/arc"]
 
 [dependencies]
-wows_replays = { version = "0.13"  }
+wows_replays = { version = "0.13", path = "../parser" }
 wowsunpack = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 imageproc = "0.25"
