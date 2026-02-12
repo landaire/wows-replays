@@ -309,6 +309,10 @@ impl Player {
     pub fn vehicle(&self) -> &Param {
         &self.vehicle
     }
+
+    pub fn is_bot(&self) -> bool {
+        self.initial_state.is_bot
+    }
 }
 
 #[derive(Debug)]
@@ -725,38 +729,45 @@ where
             .as_ref()
             .and_then(|results| serde_json::Value::from_str(results.as_str()).ok());
 
-        // Build final Player objects with owned VehicleEntity
+        // Build final Player objects with owned VehicleEntity.
+        // Players without a matching entity (e.g. disconnected, bots without EntityCreate)
+        // are still included with vehicle_entity = None.
         let players: Vec<Rc<Player>> = self
             .player_entities
             .values()
-            .filter_map(|player| {
-                let entity = self.entities_by_id.get(&player.initial_state.entity_id())?;
-                let vehicle_rc = entity.vehicle_ref()?;
-                let mut vehicle: VehicleEntity = RefCell::borrow(vehicle_rc).clone();
+            .map(|player| {
+                let vehicle = self
+                    .entities_by_id
+                    .get(&player.initial_state.entity_id())
+                    .and_then(|entity| entity.vehicle_ref())
+                    .map(|vehicle_rc| {
+                        let mut vehicle: VehicleEntity = RefCell::borrow(vehicle_rc).clone();
 
-                // Add battle results info to vehicle
-                if let Some(battle_results) = parsed_battle_results
-                    .as_ref()
-                    .and_then(|results| results.as_object())
-                {
-                    vehicle.results_info =
-                        battle_results.get("playersPublicInfo").and_then(|infos| {
-                            infos.as_object().and_then(|infos| {
-                                infos
-                                    .get(player.initial_state.db_id.to_string().as_str())
-                                    .cloned()
-                            })
-                        });
+                        // Add battle results info to vehicle
+                        if let Some(battle_results) = parsed_battle_results
+                            .as_ref()
+                            .and_then(|results| results.as_object())
+                        {
+                            vehicle.results_info =
+                                battle_results.get("playersPublicInfo").and_then(|infos| {
+                                    infos.as_object().and_then(|infos| {
+                                        infos
+                                            .get(player.initial_state.db_id.to_string().as_str())
+                                            .cloned()
+                                    })
+                                });
 
-                    if let Some(frags) = self.frags.get(&player.initial_state.entity_id()) {
-                        vehicle.frags = frags.iter().map(DeathInfo::from).collect();
-                    }
-                }
+                            if let Some(frags) = self.frags.get(&player.initial_state.entity_id()) {
+                                vehicle.frags = frags.iter().map(DeathInfo::from).collect();
+                            }
+                        }
 
-                // Clone player and attach the finalized vehicle entity
+                        vehicle
+                    });
+
                 let mut final_player = player.as_ref().clone();
-                final_player.vehicle_entity = Some(vehicle);
-                Some(Rc::new(final_player))
+                final_player.vehicle_entity = vehicle;
+                Rc::new(final_player)
             })
             .collect();
 
@@ -2209,10 +2220,11 @@ where
                 team_build_type_id: _,
                 pre_battles_info: _,
                 player_states: players,
+                bot_states: bots,
             } => {
                 debug!("OnArenaStateReceived");
                 self.arena_id = arg0;
-                for player in &players {
+                for player in players.iter().chain(bots.iter()) {
                     let metadata_player = self
                         .metadata_players
                         .iter()
@@ -2240,7 +2252,7 @@ where
                         })
                         .unwrap_or_default();
 
-                    if player.is_connected {
+                    if player.is_connected() {
                         battle_player
                             .connection_change_info_mut()
                             .push(ConnectionChangeInfo {
@@ -2553,7 +2565,7 @@ where
                         })
                         .unwrap_or_default();
 
-                    let connection_event_kind = if player.end_state().is_connected {
+                    let connection_event_kind = if player.end_state().is_connected() {
                         ConnectionChangeKind::Connected
                     } else {
                         ConnectionChangeKind::Disconnected

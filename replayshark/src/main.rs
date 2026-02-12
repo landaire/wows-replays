@@ -34,16 +34,15 @@ impl wows_replays::analyzer::Analyzer for InvestigativePrinter {
             match &decoded.payload {
                 wows_replays::analyzer::decoder::DecodedPacketPayload::OnArenaStateReceived {
                     player_states: players,
+                    bot_states: bots,
                     ..
                 } => {
-                    for player in players.iter() {
+                    for player in players.iter().chain(bots.iter()) {
                         println!(
-                            "{} {}/{} ({:x?}/{:x?})",
+                            "{} {} ({:x?})",
                             player.username(),
                             player.meta_ship_id(),
-                            player.avatar_id(),
                             (player.meta_ship_id().raw() as u32).to_le_bytes(),
-                            (player.avatar_id().raw() as u32).to_le_bytes()
                         );
                     }
                 }
