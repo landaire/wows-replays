@@ -18,17 +18,20 @@ use wowsunpack::{
 
 static TIME_UNTIL_GAME_START: Duration = Duration::from_secs(30);
 
+use crate::game_constants::GameConstants;
 use crate::{
     IResult, Rc, ReplayMeta,
     analyzer::{
         analyzer::Analyzer,
-        decoder::{ChatMessageExtra, DeathCause, DecodedPacket, PlayerStateData},
+        decoder::{
+            ChatMessageExtra, DeathCause, DecodedPacket, DepthState, FinishType, PlayerStateData,
+            WeaponType,
+        },
     },
     nested_property_path::{PropertyNestLevel, UpdateAction},
     packet2::{EntityCreatePacket, Packet},
     types::{AccountId, EntityId, GameClock, GameParamId, PlaneId, Relation, WorldPos},
 };
-use wowsunpack::game_constants::BattleConstants;
 
 use super::listener::BattleControllerState;
 use super::state::{
@@ -380,6 +383,7 @@ pub struct BattleReport {
     battle_results: Option<String>,
     frags: HashMap<Rc<Player>, Vec<DeathInfo>>,
     match_result: Option<BattleResult>,
+    finish_type: Option<FinishType>,
     capture_points: Vec<CapturePointState>,
     team_scores: Vec<TeamScore>,
     buildings: Vec<BuildingEntity>,
@@ -447,6 +451,10 @@ impl BattleReport {
     pub fn buildings(&self) -> &[BuildingEntity] {
         &self.buildings
     }
+
+    pub fn finish_type(&self) -> Option<&FinishType> {
+        self.finish_type.as_ref()
+    }
 }
 
 #[allow(dead_code)]
@@ -469,6 +477,7 @@ pub struct BattleController<'res, 'replay, G> {
     match_finished: bool,
     battle_end_clock: Option<GameClock>,
     winning_team: Option<i8>,
+    finish_type: Option<FinishType>,
     arena_id: i64,
     current_clock: GameClock,
 
@@ -496,9 +505,9 @@ pub struct BattleController<'res, 'replay, G> {
     /// Yaw decoding: `(lo_byte / 256) * 2*PI - PI` gives world-space radians.
     target_yaws: HashMap<EntityId, f32>,
 
-    /// Optional battle constants loaded from game data for resolving
-    /// death causes, camera modes, etc.
-    battle_constants: Option<BattleConstants>,
+    /// Optional game constants loaded from game data for resolving
+    /// death causes, camera modes, entity types, etc.
+    game_constants: Option<&'res GameConstants>,
 }
 
 impl<'res, 'replay, G> BattleController<'res, 'replay, G>
@@ -508,7 +517,7 @@ where
     pub fn new(
         game_meta: &'replay ReplayMeta,
         game_resources: &'res G,
-        battle_constants: Option<BattleConstants>,
+        game_constants: Option<&'res GameConstants>,
     ) -> Self {
         let players: Vec<SharedPlayer> = game_meta
             .vehicles
@@ -540,6 +549,7 @@ where
             match_finished: false,
             battle_end_clock: None,
             winning_team: None,
+            finish_type: None,
             arena_id: 0,
             current_clock: GameClock::default(),
             ship_positions: HashMap::default(),
@@ -555,7 +565,7 @@ where
             dead_ships: HashMap::default(),
             turret_yaws: HashMap::default(),
             target_yaws: HashMap::default(),
-            battle_constants,
+            game_constants,
         }
     }
 
@@ -571,6 +581,7 @@ where
         self.match_finished = false;
         self.battle_end_clock = None;
         self.winning_team = None;
+        self.finish_type = None;
         self.arena_id = 0;
         self.current_clock = GameClock::default();
         self.ship_positions.clear();
@@ -643,7 +654,7 @@ where
             "battle_common" => ChatChannel::Global,
             "battle_team" => ChatChannel::Team,
             "battle_prebattle" => ChatChannel::Division,
-            other => panic!("unknown channel {}", other),
+            other => ChatChannel::Unknown(other.to_string()),
         };
 
         let mut sender_team = None;
@@ -817,6 +828,7 @@ where
             players,
             game_chat: self.game_chat,
             battle_results: self.battle_results,
+            finish_type: self.finish_type,
             frags,
             capture_points: self.capture_points,
             team_scores: self.team_scores,
@@ -1084,11 +1096,13 @@ where
     }
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ChatChannel {
     Division,
     Global,
     Team,
+    System,
+    Unknown(String),
 }
 
 fn parse_ship_config(blob: &[u8], version: Version) -> IResult<&[u8], ShipConfig> {
@@ -1333,7 +1347,7 @@ pub struct VehicleProps {
     crew_modifiers_compact_params: CrewModifiersCompactParams,
     laser_target_local_pos: u16,
     anti_air_auras: Vec<AAAura>,
-    selected_weapon: u32,
+    selected_weapon: WeaponType,
     regeneration_health: f32,
     is_on_forsage: bool,
     is_in_rage_mode: bool,
@@ -1377,7 +1391,7 @@ pub struct VehicleProps {
     engine_dir: i8,
     state: VehicleState,
     team_id: i8,
-    buoyancy_current_state: u8,
+    buoyancy_current_state: DepthState,
     ui_enabled: bool,
     respawn_time: u16,
     engine_power: u8,
@@ -1422,8 +1436,8 @@ impl VehicleProps {
         self.anti_air_auras.as_ref()
     }
 
-    pub fn selected_weapon(&self) -> u32 {
-        self.selected_weapon
+    pub fn selected_weapon(&self) -> &WeaponType {
+        &self.selected_weapon
     }
 
     pub fn regeneration_health(&self) -> f32 {
@@ -1582,8 +1596,8 @@ impl VehicleProps {
         self.team_id
     }
 
-    pub fn buoyancy_current_state(&self) -> u8 {
-        self.buoyancy_current_state
+    pub fn buoyancy_current_state(&self) -> &DepthState {
+        &self.buoyancy_current_state
     }
 
     pub fn ui_enabled(&self) -> bool {
@@ -1724,7 +1738,10 @@ impl UpdateFromReplayArgs for VehicleProps {
         );
 
         // TODO: AntiAirAuras
-        set_arg_value!(self.selected_weapon, args, SELECTED_WEAPON_KEY, u32);
+        if args.contains_key(SELECTED_WEAPON_KEY) {
+            self.selected_weapon =
+                WeaponType::from_id(arg_value_to_type!(args, SELECTED_WEAPON_KEY, u32));
+        }
 
         set_arg_value!(self.is_on_forsage, args, IS_ON_FORSAGE_KEY, bool);
 
@@ -1822,12 +1839,10 @@ impl UpdateFromReplayArgs for VehicleProps {
         // TODO: state
 
         set_arg_value!(self.team_id, args, TEAM_ID_KEY, i8);
-        set_arg_value!(
-            self.buoyancy_current_state,
-            args,
-            BUOYANCY_CURRENT_STATE_KEY,
-            u8
-        );
+        if args.contains_key(BUOYANCY_CURRENT_STATE_KEY) {
+            self.buoyancy_current_state =
+                DepthState::from_id(arg_value_to_type!(args, BUOYANCY_CURRENT_STATE_KEY, u8));
+        }
         set_arg_value!(self.ui_enabled, args, UI_ENABLED_KEY, bool);
         set_arg_value!(self.respawn_time, args, RESPAWN_TIME_KEY, u16);
         set_arg_value!(self.engine_power, args, ENGINE_POWER_KEY, u8);
@@ -2074,8 +2089,12 @@ where
 
         self.current_clock = packet.clock;
 
-        let decoded =
-            DecodedPacket::from(&self.version, false, packet, self.battle_constants.as_ref());
+        let decoded = DecodedPacket::from(
+            &self.version,
+            false,
+            packet,
+            self.game_constants.map(|gc| gc.battle()),
+        );
         match decoded.payload {
             crate::analyzer::decoder::DecodedPacketPayload::Chat {
                 entity_id,
@@ -2391,11 +2410,12 @@ where
             }
             crate::analyzer::decoder::DecodedPacketPayload::BattleEnd {
                 winning_team,
-                state: _,
+                finish_type,
             } => {
                 self.match_finished = true;
                 self.battle_end_clock = Some(packet.clock);
                 self.winning_team = winning_team;
+                self.finish_type = finish_type;
             }
             crate::analyzer::decoder::DecodedPacketPayload::Consumable {
                 entity,

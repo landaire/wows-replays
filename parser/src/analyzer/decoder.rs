@@ -7,6 +7,7 @@ use pickled::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
+use std::fmt;
 use std::iter::FromIterator;
 use wowsunpack::data::Version;
 use wowsunpack::game_params::convert::pickle_to_json;
@@ -1056,6 +1057,314 @@ impl CameraMode {
     }
 }
 
+/// How the battle ended, from `FINISH_TYPE` in battle.xml.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FinishType {
+    /// 0: UNKNOWN
+    Unknown,
+    /// 1: EXTERMINATION — all enemy ships destroyed
+    Extermination,
+    /// 2: BASE — base captured
+    BaseCaptured,
+    /// 3: TIMEOUT — time ran out
+    Timeout,
+    /// 4: FAILURE — mission failure (PvE)
+    Failure,
+    /// 5: TECHNICAL — technical end
+    Technical,
+    /// 8: SCORE — score limit reached
+    Score,
+    /// 9: SCORE_ON_TIMEOUT — highest score when time ran out
+    ScoreOnTimeout,
+    /// 10: PVE_MAIN_TASK_SUCCEEDED
+    PveMainTaskSucceeded,
+    /// 11: PVE_MAIN_TASK_FAILED
+    PveMainTaskFailed,
+    /// 12: SCORE_ZERO — a team's score reached zero
+    ScoreZero,
+    /// 13: SCORE_EXCESS — score exceeded threshold
+    ScoreExcess,
+    /// Unrecognized finish type ID
+    Other(u8),
+}
+
+impl FinishType {
+    /// Resolve from the XML constant name (from `FINISH_TYPE` in battle.xml).
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "UNKNOWN" => FinishType::Unknown,
+            "EXTERMINATION" => FinishType::Extermination,
+            "BASE" => FinishType::BaseCaptured,
+            "TIMEOUT" => FinishType::Timeout,
+            "FAILURE" => FinishType::Failure,
+            "TECHNICAL" => FinishType::Technical,
+            "SCORE" => FinishType::Score,
+            "SCORE_ON_TIMEOUT" => FinishType::ScoreOnTimeout,
+            "PVE_MAIN_TASK_SUCCEEDED" => FinishType::PveMainTaskSucceeded,
+            "PVE_MAIN_TASK_FAILED" => FinishType::PveMainTaskFailed,
+            "SCORE_ZERO" => FinishType::ScoreZero,
+            "SCORE_EXCESS" => FinishType::ScoreExcess,
+            _ => FinishType::Unknown,
+        }
+    }
+
+    /// Hardcoded fallback when game constants are not available.
+    pub fn from_id(id: u8) -> Self {
+        match id {
+            0 => FinishType::Unknown,
+            1 => FinishType::Extermination,
+            2 => FinishType::BaseCaptured,
+            3 => FinishType::Timeout,
+            4 => FinishType::Failure,
+            5 => FinishType::Technical,
+            8 => FinishType::Score,
+            9 => FinishType::ScoreOnTimeout,
+            10 => FinishType::PveMainTaskSucceeded,
+            11 => FinishType::PveMainTaskFailed,
+            12 => FinishType::ScoreZero,
+            13 => FinishType::ScoreExcess,
+            other => FinishType::Other(other),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            FinishType::Unknown => "Unknown",
+            FinishType::Extermination => "Extermination",
+            FinishType::BaseCaptured => "Base Captured",
+            FinishType::Timeout => "Timeout",
+            FinishType::Failure => "Failure",
+            FinishType::Technical => "Technical",
+            FinishType::Score => "Score",
+            FinishType::ScoreOnTimeout => "Score on Timeout",
+            FinishType::PveMainTaskSucceeded => "PvE Main Task Succeeded",
+            FinishType::PveMainTaskFailed => "PvE Main Task Failed",
+            FinishType::ScoreZero => "Score Zero",
+            FinishType::ScoreExcess => "Score Excess",
+            FinishType::Other(_) => "Other",
+        }
+    }
+}
+
+impl fmt::Display for FinishType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+/// Submarine depth state, from `DEPTH_STATE` in battle.xml.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum DepthState {
+    /// -1: INVALID_STATE
+    Invalid,
+    /// 0: SURFACE
+    Surface,
+    /// 1: PERISCOPE
+    Periscope,
+    /// 2: WORKING — operating depth
+    Working,
+    /// 3: INVULNERABLE — deep dive (invulnerable)
+    Invulnerable,
+    /// Unrecognized depth state
+    Other(u8),
+}
+
+impl DepthState {
+    /// Resolve from the XML constant name (from `DEPTH_STATE` in battle.xml).
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "INVALID_STATE" => DepthState::Invalid,
+            "SURFACE" => DepthState::Surface,
+            "PERISCOPE" => DepthState::Periscope,
+            "WORKING" => DepthState::Working,
+            "INVULNERABLE" => DepthState::Invulnerable,
+            _ => DepthState::Other(0),
+        }
+    }
+
+    /// Hardcoded fallback when game constants are not available.
+    pub fn from_id(id: u8) -> Self {
+        match id {
+            0 => DepthState::Surface,
+            1 => DepthState::Periscope,
+            2 => DepthState::Working,
+            3 => DepthState::Invulnerable,
+            0xFF => DepthState::Invalid, // -1 as u8
+            other => DepthState::Other(other),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            DepthState::Invalid => "Invalid",
+            DepthState::Surface => "Surface",
+            DepthState::Periscope => "Periscope",
+            DepthState::Working => "Operating Depth",
+            DepthState::Invulnerable => "Deep Dive",
+            DepthState::Other(_) => "Other",
+        }
+    }
+}
+
+impl Default for DepthState {
+    fn default() -> Self {
+        DepthState::Surface
+    }
+}
+
+impl fmt::Display for DepthState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+/// Selected weapon type, from `SHIP_WEAPON_TYPES` in ships.xml.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum WeaponType {
+    /// 0: ARTILLERY — main battery guns
+    Artillery,
+    /// 1: ATBA — secondary battery
+    Secondaries,
+    /// 2: TORPEDO — torpedo tubes
+    Torpedoes,
+    /// 3: AIRPLANES — aircraft
+    Planes,
+    /// 4: PINGER — submarine sonar
+    Pinger,
+    /// Unrecognized weapon type
+    Other(u32),
+}
+
+impl WeaponType {
+    /// Resolve from the XML constant name (from `SHIP_WEAPON_TYPES` in ships.xml).
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "ARTILLERY" => WeaponType::Artillery,
+            "ATBA" => WeaponType::Secondaries,
+            "TORPEDO" => WeaponType::Torpedoes,
+            "AIRPLANES" => WeaponType::Planes,
+            "PINGER" => WeaponType::Pinger,
+            _ => WeaponType::Other(0),
+        }
+    }
+
+    /// Hardcoded fallback when game constants are not available.
+    pub fn from_id(id: u32) -> Self {
+        match id {
+            0 => WeaponType::Artillery,
+            1 => WeaponType::Secondaries,
+            2 => WeaponType::Torpedoes,
+            3 => WeaponType::Planes,
+            4 => WeaponType::Pinger,
+            other => WeaponType::Other(other),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            WeaponType::Artillery => "Main Battery",
+            WeaponType::Secondaries => "Secondaries",
+            WeaponType::Torpedoes => "Torpedoes",
+            WeaponType::Planes => "Planes",
+            WeaponType::Pinger => "Sonar",
+            WeaponType::Other(_) => "Other",
+        }
+    }
+}
+
+impl Default for WeaponType {
+    fn default() -> Self {
+        WeaponType::Artillery
+    }
+}
+
+impl fmt::Display for WeaponType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+/// Submarine battery state, from `BATTERY_STATE` in battle.xml.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum BatteryState {
+    /// 0: IDLE
+    Idle,
+    /// 1: CHARGING
+    Charging,
+    /// 2: DISCHARGING
+    Discharging,
+    /// 3: CRITICAL_DISCHARGING
+    CriticalDischarging,
+    /// 4: BROKEN_CHARGING
+    BrokenCharging,
+    /// 5: BROKEN_IDLE
+    BrokenIdle,
+    /// 6: REGENERATION
+    Regeneration,
+    /// 7: EMPTY
+    Empty,
+    /// Unrecognized battery state
+    Other(u8),
+}
+
+impl BatteryState {
+    /// Resolve from the XML constant name (from `BATTERY_STATE` in battle.xml).
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "IDLE" => BatteryState::Idle,
+            "CHARGING" => BatteryState::Charging,
+            "DISCHARGING" => BatteryState::Discharging,
+            "CRITICAL_DISCHARGING" => BatteryState::CriticalDischarging,
+            "BROKEN_CHARGING" => BatteryState::BrokenCharging,
+            "BROKEN_IDLE" => BatteryState::BrokenIdle,
+            "REGENERATION" => BatteryState::Regeneration,
+            "EMPTY" => BatteryState::Empty,
+            _ => BatteryState::Other(0),
+        }
+    }
+
+    /// Hardcoded fallback when game constants are not available.
+    pub fn from_id(id: u8) -> Self {
+        match id {
+            0 => BatteryState::Idle,
+            1 => BatteryState::Charging,
+            2 => BatteryState::Discharging,
+            3 => BatteryState::CriticalDischarging,
+            4 => BatteryState::BrokenCharging,
+            5 => BatteryState::BrokenIdle,
+            6 => BatteryState::Regeneration,
+            7 => BatteryState::Empty,
+            other => BatteryState::Other(other),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            BatteryState::Idle => "Idle",
+            BatteryState::Charging => "Charging",
+            BatteryState::Discharging => "Discharging",
+            BatteryState::CriticalDischarging => "Critical Discharging",
+            BatteryState::BrokenCharging => "Broken Charging",
+            BatteryState::BrokenIdle => "Broken Idle",
+            BatteryState::Regeneration => "Regeneration",
+            BatteryState::Empty => "Empty",
+            BatteryState::Other(_) => "Other",
+        }
+    }
+}
+
+impl Default for BatteryState {
+    fn default() -> Self {
+        BatteryState::Idle
+    }
+}
+
+impl fmt::Display for BatteryState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 /// Enumerates the "cruise states". See <https://github.com/lkolbly/wows-replays/issues/14#issuecomment-976784004>
 /// for more information.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -1232,9 +1541,8 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     BattleEnd {
         /// The team ID of the winning team (corresponds to the teamid in [OnArenaStateReceivedPlayer])
         winning_team: Option<i8>,
-        /// Unknown
-        // TODO: Probably how the game was won? (time expired, score, or ships destroyed)
-        state: Option<u8>,
+        /// How the battle ended (from `FINISH_TYPE` in battle.xml)
+        finish_type: Option<FinishType>,
     },
     /// Sent when a consumable is activated
     Consumable {
@@ -2212,16 +2520,23 @@ where
                 arg1: args1,
             }
         } else if *method == "onBattleEnd" {
-            let (winning_team, state) =
+            let (winning_team, finish_type) =
                 if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
                     (None, None)
                 } else {
-                    let (winning_team, unknown) = unpack_rpc_args!(args, i8, u8);
-                    (Some(winning_team), Some(unknown))
+                    let (winning_team, raw_finish) = unpack_rpc_args!(args, i8, u8);
+                    let ft = if let Some(name) =
+                        battle_constants.and_then(|bc| bc.finish_type(raw_finish as i32))
+                    {
+                        FinishType::from_name(name)
+                    } else {
+                        FinishType::from_id(raw_finish)
+                    };
+                    (Some(winning_team), Some(ft))
                 };
             DecodedPacketPayload::BattleEnd {
                 winning_team,
-                state,
+                finish_type,
             }
         } else if *method == "consumableUsed" || *method == "onConsumableUsed" {
             // onConsumableUsed may use different integer width than consumableUsed

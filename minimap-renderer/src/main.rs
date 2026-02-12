@@ -223,7 +223,7 @@ fn main() -> anyhow::Result<()> {
     let mut controller = BattleController::new(
         &replay_file.meta,
         &controller_game_params,
-        Some(game_constants.battle().clone()),
+        Some(&game_constants),
     );
 
     let mut parser = wows_replays::packet2::Parser::new(&specs);

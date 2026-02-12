@@ -43,10 +43,10 @@ impl From<i64> for EntityId {
 /// A persistent player account identifier (db_id, avatar_id).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct AccountId(pub u64);
+pub struct AccountId(pub i64);
 
 impl AccountId {
-    pub fn raw(self) -> u64 {
+    pub fn raw(self) -> i64 {
         self.0
     }
 }
@@ -59,19 +59,19 @@ impl fmt::Display for AccountId {
 
 impl From<u32> for AccountId {
     fn from(v: u32) -> Self {
-        AccountId(v as u64)
+        AccountId(v as i64)
     }
 }
 
 impl From<i32> for AccountId {
     fn from(v: i32) -> Self {
-        AccountId(v as u64)
+        AccountId(v as i64)
     }
 }
 
 impl From<i64> for AccountId {
     fn from(v: i64) -> Self {
-        AccountId(v as u64)
+        AccountId(v)
     }
 }
 
@@ -111,9 +111,10 @@ impl From<i64> for GameParamId {
 }
 
 /// Represents the relation of a player/entity to the recording player.
-/// - 0 = self (the player who recorded the replay)
-/// - 1 = teammate (ally)
-/// - 2+ = enemy
+/// Corresponds to `PLAYER_RELATION` in battle.xml:
+/// - 0 = SELF (the player who recorded the replay)
+/// - 1 = ALLY (teammate)
+/// - 2 = ENEMY
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Relation(u32);
@@ -139,9 +140,25 @@ impl Relation {
         self.0 >= 2
     }
 
+    /// Returns the human-readable name from PLAYER_RELATION constants.
+    pub fn name(&self) -> &'static str {
+        match self.0 {
+            0 => "Self",
+            1 => "Ally",
+            2 => "Enemy",
+            _ => "Unknown",
+        }
+    }
+
     /// Returns the raw relation value.
     pub fn value(&self) -> u32 {
         self.0
+    }
+}
+
+impl fmt::Display for Relation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
     }
 }
 

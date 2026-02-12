@@ -1,11 +1,17 @@
 use wowsunpack::data::idx::FileNode;
 use wowsunpack::data::pkg::PkgFileLoader;
-pub use wowsunpack::game_constants::{BattleConstants, ShipsConstants};
+pub use wowsunpack::game_constants::{
+    BattleConstants, ChannelConstants, CommonConstants, ShipsConstants, WeaponsConstants,
+};
 
 /// Composed game constants that knows which sub-constants are needed.
+#[derive(Clone)]
 pub struct GameConstants {
     battle: BattleConstants,
     ships: ShipsConstants,
+    weapons: WeaponsConstants,
+    common: CommonConstants,
+    channel: ChannelConstants,
 }
 
 impl GameConstants {
@@ -14,6 +20,9 @@ impl GameConstants {
         Self {
             battle: BattleConstants::load(file_tree, pkg_loader),
             ships: ShipsConstants::load(file_tree, pkg_loader),
+            weapons: WeaponsConstants::load(file_tree, pkg_loader),
+            common: CommonConstants::load(file_tree, pkg_loader),
+            channel: ChannelConstants::load(file_tree, pkg_loader),
         }
     }
 
@@ -22,6 +31,9 @@ impl GameConstants {
         Self {
             battle: BattleConstants::defaults(),
             ships: ShipsConstants::defaults(),
+            weapons: WeaponsConstants::defaults(),
+            common: CommonConstants::defaults(),
+            channel: ChannelConstants::defaults(),
         }
     }
 
@@ -31,6 +43,18 @@ impl GameConstants {
 
     pub fn ships(&self) -> &ShipsConstants {
         &self.ships
+    }
+
+    pub fn weapons(&self) -> &WeaponsConstants {
+        &self.weapons
+    }
+
+    pub fn common(&self) -> &CommonConstants {
+        &self.common
+    }
+
+    pub fn channel(&self) -> &ChannelConstants {
+        &self.channel
     }
 
     pub fn game_mode_name(&self, id: i32) -> Option<&str> {
