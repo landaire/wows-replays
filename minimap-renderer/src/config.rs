@@ -26,6 +26,7 @@ pub struct RendererConfig {
     // New features (default false)
     pub show_armament: bool,
     pub show_trails: bool,
+    pub show_ship_config: bool,
 }
 
 impl Default for RendererConfig {
@@ -47,6 +48,7 @@ impl Default for RendererConfig {
             show_consumables: true,
             show_armament: false,
             show_trails: false,
+            show_ship_config: false,
         }
     }
 }
@@ -78,6 +80,7 @@ impl RendererConfig {
             show_consumables: self.show_consumables,
             show_armament: self.show_armament,
             show_trails: self.show_trails,
+            show_ship_config: self.show_ship_config,
         }
     }
 
@@ -136,11 +139,15 @@ show_armament = false
 
 # Show position trail heatmap (rainbow: blue=oldest, red=newest)
 show_trails = false
+
+# Show ship config range circles (detection, main battery, secondary, etc.)
+show_ship_config = false
 "#
         .to_string()
     }
 
     /// Apply CLI flag overrides. Flags use negative form (--no-X disables, --show-X enables).
+    #[cfg(feature = "bin")]
     pub fn apply_cli_overrides(&mut self, matches: &clap::ArgMatches) {
         if matches.is_present("NO_PLAYER_NAMES") {
             self.show_player_names = false;
@@ -162,6 +169,9 @@ show_trails = false
         }
         if matches.is_present("SHOW_TRAILS") {
             self.show_trails = true;
+        }
+        if matches.is_present("SHOW_SHIP_CONFIG") {
+            self.show_ship_config = true;
         }
     }
 }

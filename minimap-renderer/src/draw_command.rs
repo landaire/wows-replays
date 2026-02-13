@@ -11,6 +11,16 @@ pub enum ShipVisibility {
     Undetected,
 }
 
+/// Kind of ship configuration circle for filtering and grouping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShipConfigCircleKind {
+    Detection,
+    MainBattery,
+    SecondaryBattery,
+    Radar,
+    Hydro,
+}
+
 /// A high-level draw command emitted by the renderer.
 ///
 /// The renderer reads game state and produces a sequence of these commands.
@@ -136,8 +146,25 @@ pub enum DrawCommand {
         /// Whether a health bar is rendered below this ship (affects vertical offset)
         has_hp_bar: bool,
     },
+    /// Ship configuration range circle (detection, main battery, secondary, radar, hydro)
+    ShipConfigCircle {
+        pos: MinimapPos,
+        /// Radius in minimap pixels
+        radius_px: f32,
+        color: [u8; 3],
+        alpha: f32,
+        /// Whether circle should be dashed (detection) or solid
+        dashed: bool,
+        /// Label text (e.g. "12.0 km")
+        label: Option<String>,
+        kind: ShipConfigCircleKind,
+        /// Player name for filtering per-ship
+        player_name: String,
+    },
     /// Position trail showing historical movement as colored dots
     PositionTrail {
+        /// Player name for filtering trails per-ship
+        player_name: Option<String>,
         /// Points with interpolated colors (oldest=blue, newest=red)
         points: Vec<(MinimapPos, [u8; 3])>,
     },

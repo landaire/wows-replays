@@ -112,6 +112,47 @@ fn draw_circle_outline(
     }
 }
 
+/// Draw a dashed circle outline with alpha blending.
+fn draw_dashed_circle_outline(
+    image: &mut RgbImage,
+    x: i32,
+    y: i32,
+    radius: i32,
+    color: [u8; 3],
+    alpha: f32,
+    thickness: i32,
+) {
+    let w = image.width() as i32;
+    let h = image.height() as i32;
+    // Dash pattern: 8px on, 8px off (in angle steps)
+    const DASH_ON: i32 = 16;
+    const DASH_CYCLE: i32 = 32;
+
+    for r_off in 0..thickness {
+        let r = radius - r_off;
+        if r <= 0 {
+            continue;
+        }
+        for angle_step in 0..720 {
+            if angle_step % DASH_CYCLE >= DASH_ON {
+                continue;
+            }
+            let angle = (angle_step as f32 * 0.5).to_radians();
+            let px = x + (r as f32 * angle.cos()).round() as i32;
+            let py = y + (r as f32 * angle.sin()).round() as i32;
+            if px >= 0 && px < w && py >= 0 && py < h {
+                let bg = image.get_pixel(px as u32, py as u32).0;
+                let blended = Rgb([
+                    (color[0] as f32 * alpha + bg[0] as f32 * (1.0 - alpha)) as u8,
+                    (color[1] as f32 * alpha + bg[1] as f32 * (1.0 - alpha)) as u8,
+                    (color[2] as f32 * alpha + bg[2] as f32 * (1.0 - alpha)) as u8,
+                ]);
+                image.put_pixel(px as u32, py as u32, blended);
+            }
+        }
+    }
+}
+
 /// Draw a smoke screen as a semi-transparent filled circle.
 fn draw_smoke(image: &mut RgbImage, x: i32, y: i32, radius: i32, smoke_color: [u8; 3], alpha: f32) {
     let w = image.width() as i32;
@@ -636,7 +677,7 @@ impl RenderTarget for ImageTarget {
             DrawCommand::Timer { seconds } => {
                 draw_timer(&mut self.canvas, *seconds, &self.font);
             }
-            DrawCommand::PositionTrail { points } => {
+            DrawCommand::PositionTrail { points, .. } => {
                 for (pos, color) in points {
                     let px = pos.x;
                     let py = pos.y + y_off;
@@ -647,6 +688,47 @@ impl RenderTarget for ImageTarget {
                     {
                         self.canvas.put_pixel(px as u32, py as u32, Rgb(*color));
                     }
+                }
+            }
+            DrawCommand::ShipConfigCircle {
+                pos,
+                radius_px,
+                color,
+                alpha,
+                dashed,
+                label,
+                ..
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off;
+                let r = *radius_px as i32;
+                if *dashed {
+                    draw_dashed_circle_outline(&mut self.canvas, x, y, r, *color, *alpha, 1);
+                } else {
+                    draw_circle_outline(&mut self.canvas, x, y, r, *color, *alpha, 1);
+                }
+                if let Some(text) = label {
+                    let scale = ab_glyph::PxScale::from(11.0);
+                    let lx = x + r + 3;
+                    let ly = y - 5;
+                    draw_text_mut(
+                        &mut self.canvas,
+                        COLOR_TEXT_SHADOW,
+                        lx + 1,
+                        ly + 1,
+                        scale,
+                        &self.font,
+                        text,
+                    );
+                    draw_text_mut(
+                        &mut self.canvas,
+                        Rgb(*color),
+                        lx,
+                        ly,
+                        scale,
+                        &self.font,
+                        text,
+                    );
                 }
             }
             DrawCommand::KillFeed { entries } => {

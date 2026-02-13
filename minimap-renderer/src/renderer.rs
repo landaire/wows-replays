@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use wowsunpack::data::ResourceLoader as _;
 use wowsunpack::game_params::provider::GameMetadataProvider;
-use wowsunpack::game_params::types::{GameParamProvider, PlaneCategory, Species};
+use wowsunpack::game_params::types::{AbilityCategory, GameParamProvider, PlaneCategory, Species};
 
 use wows_replays::analyzer::decoder::{DepthState, WeaponType};
 
@@ -10,7 +10,7 @@ use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::{EntityId, PlaneId, Relation};
 
-use crate::draw_command::{DrawCommand, ShipVisibility};
+use crate::draw_command::{DrawCommand, ShipConfigCircleKind, ShipVisibility};
 use crate::map_data::{self, WorldPos};
 
 use crate::MINIMAP_SIZE;
@@ -53,6 +53,7 @@ pub struct RenderOptions {
     pub show_consumables: bool,
     pub show_armament: bool,
     pub show_trails: bool,
+    pub show_ship_config: bool,
 }
 
 impl Default for RenderOptions {
@@ -74,6 +75,7 @@ impl Default for RenderOptions {
             show_consumables: true,
             show_armament: false,
             show_trails: false,
+            show_ship_config: false,
         }
     }
 }
@@ -97,26 +99,18 @@ pub struct MinimapRenderer<'a> {
     squadron_info: HashMap<PlaneId, SquadronInfo>,
     player_species: HashMap<EntityId, String>,
     player_names: HashMap<EntityId, String>,
+    ship_param_ids: HashMap<EntityId, u32>,
     ship_display_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
-    /// Cache of ship consumable variants: (entity_id, consumable) -> (ability_name, variant_name)
-    ship_consumable_variants: HashMap<(EntityId, ConsumableKey), (String, String)>,
     /// Per-ship consumable icon names: (entity_id, Consumable) -> PCY name (e.g. "PCY015_SpeedBoosterPremium")
     ship_ability_icons: HashMap<(EntityId, Consumable), String>,
+    /// Per-ship consumable variants for detection radius lookup: (entity_id, Consumable) -> (ability_name, variant_name)
+    ship_ability_variants: HashMap<(EntityId, Consumable), (String, String)>,
     /// Track which entities we've already resolved ability icons for
     resolved_entities: std::collections::HashSet<EntityId>,
     players_populated: bool,
     /// Position history per entity for trail rendering
     position_history: HashMap<EntityId, Vec<map_data::MinimapPos>>,
-}
-
-/// Key for consumable variant lookup (simplified consumable type for detection consumables)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum ConsumableKey {
-    Radar,
-    Hydro,
-    Hydrophone,
-    SubSurveillance,
 }
 
 impl<'a> MinimapRenderer<'a> {
@@ -132,10 +126,11 @@ impl<'a> MinimapRenderer<'a> {
             squadron_info: HashMap::new(),
             player_species: HashMap::new(),
             player_names: HashMap::new(),
+            ship_param_ids: HashMap::new(),
             ship_display_names: HashMap::new(),
             player_relations: HashMap::new(),
-            ship_consumable_variants: HashMap::new(),
             ship_ability_icons: HashMap::new(),
+            ship_ability_variants: HashMap::new(),
             resolved_entities: std::collections::HashSet::new(),
             players_populated: false,
             position_history: HashMap::new(),
@@ -147,10 +142,11 @@ impl<'a> MinimapRenderer<'a> {
         self.squadron_info.clear();
         self.player_species.clear();
         self.player_names.clear();
+        self.ship_param_ids.clear();
         self.ship_display_names.clear();
         self.player_relations.clear();
-        self.ship_consumable_variants.clear();
         self.ship_ability_icons.clear();
+        self.ship_ability_variants.clear();
         self.resolved_entities.clear();
         self.players_populated = false;
         self.position_history.clear();
@@ -177,25 +173,43 @@ impl<'a> MinimapRenderer<'a> {
             }
             self.player_names
                 .insert(*entity_id, player.initial_state().username().to_string());
+            self.ship_param_ids
+                .insert(*entity_id, player.vehicle().id());
             if let Some(name) = self.game_params.localized_name_from_param(player.vehicle()) {
                 self.ship_display_names.insert(*entity_id, name.to_string());
             }
 
-            // Cache consumable variants for detection radius lookup
+            // Cache consumable variants for detection radius lookup.
+            // Iterate ship ability slots, look up each ability's consumableType from GameParams.
             let ship_id = player.vehicle().id();
             let ship_param = GameParamProvider::game_param_by_id(self.game_params, ship_id);
             if let Some(vehicle) = ship_param.as_ref().and_then(|p| p.vehicle()) {
                 if let Some(abilities) = vehicle.abilities() {
                     for slot in abilities {
                         for (ability_name, variant_name) in slot {
-                            if let Some(consumable_key) =
-                                ability_name_to_consumable_key(ability_name)
-                            {
-                                self.ship_consumable_variants.insert(
-                                    (*entity_id, consumable_key),
-                                    (ability_name.clone(), variant_name.clone()),
-                                );
-                            }
+                            let Some(param) = GameParamProvider::game_param_by_name(
+                                self.game_params,
+                                ability_name,
+                            ) else {
+                                continue;
+                            };
+                            let Some(ability) = param.ability() else {
+                                continue;
+                            };
+
+                            let Some(consumable) = ability
+                                .categories()
+                                .values()
+                                .next()
+                                .and_then(AbilityCategory::consumable_type)
+                            else {
+                                continue;
+                            };
+
+                            self.ship_ability_variants.insert(
+                                (*entity_id, consumable),
+                                (ability_name.clone(), variant_name.clone()),
+                            );
                         }
                     }
                 }
@@ -214,9 +228,8 @@ impl<'a> MinimapRenderer<'a> {
             if self.resolved_entities.contains(entity_id) {
                 continue;
             }
-            let vehicle = match entity.vehicle_ref() {
-                Some(v) => v,
-                None => continue,
+            let Some(vehicle) = entity.vehicle_ref() else {
+                continue;
             };
             let vehicle = vehicle.borrow();
             let abilities = vehicle.props().ship_config().abilities();
@@ -225,21 +238,19 @@ impl<'a> MinimapRenderer<'a> {
             }
             self.resolved_entities.insert(*entity_id);
             for &ability_id in abilities {
-                let param = match GameParamProvider::game_param_by_id(self.game_params, ability_id)
-                {
-                    Some(p) => p,
-                    None => continue,
+                let Some(param) = GameParamProvider::game_param_by_id(self.game_params, ability_id)
+                else {
+                    continue;
                 };
-                let ability = match param.ability() {
-                    Some(a) => a,
-                    None => continue,
+                let Some(ability) = param.ability() else {
+                    continue;
                 };
                 // Get consumable_type from the first category
-                let consumable_type = match ability.categories().values().next() {
-                    Some(cat) => cat.consumable_type().to_string(),
-                    None => continue,
+                let Some(cat) = ability.categories().values().next() else {
+                    continue;
                 };
-                if let Some(consumable) = consumable_type_to_enum(&consumable_type) {
+                let consumable_type = cat.consumable_type_raw().to_string();
+                if let Some(consumable) = Consumable::from_consumable_type(&consumable_type) {
                     self.ship_ability_icons
                         .insert((*entity_id, consumable), param.name().to_string());
                 }
@@ -263,64 +274,13 @@ impl<'a> MinimapRenderer<'a> {
     /// Returns radius in world units (meters), or None if not a detection consumable
     /// or if the lookup fails.
     fn get_consumable_radius(&self, entity_id: EntityId, consumable: Consumable) -> Option<f32> {
-        // Try ship-specific lookup first (uses cached ability variants from populate_players)
-        let consumable_key = match consumable {
-            Consumable::Radar => Some(ConsumableKey::Radar),
-            Consumable::HydroacousticSearch => Some(ConsumableKey::Hydro),
-            Consumable::Hydrophone => Some(ConsumableKey::Hydrophone),
-            Consumable::SubmarineSurveillance => Some(ConsumableKey::SubSurveillance),
-            _ => None,
-        };
-
-        if let Some(key) = consumable_key {
-            if let Some((ability_name, variant_name)) =
-                self.ship_consumable_variants.get(&(entity_id, key))
-            {
-                if let Some(param) =
-                    GameParamProvider::game_param_by_name(self.game_params, ability_name)
-                {
-                    if let Some(ability) = param.ability() {
-                        if let Some(cat) = ability.get_category(variant_name) {
-                            if let Some(radius) = cat.detection_radius() {
-                                return Some(radius);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: look up the default ability by well-known name
-        // Try both the Modifier variant (from ship abilities) and the base name
-        let ability_names: &[&str] = match consumable {
-            Consumable::Radar => &["PCY019_RLSSearchModifier", "PCY019_RLSSearch"],
-            Consumable::HydroacousticSearch => {
-                &["PCY008_SonarSearchModifier", "PCY008_SonarSearch"]
-            }
-            Consumable::Hydrophone => &["PCY045_HydrophoneModifier", "PCY045_Hydrophone"],
-            Consumable::SubmarineSurveillance => {
-                &["PCY048_SubmarineLocatorModifier", "PCY048_SubmarineLocator"]
-            }
-            _ => return None,
-        };
-
-        for ability_name in ability_names {
-            if let Some(param) =
-                GameParamProvider::game_param_by_name(self.game_params, ability_name)
-            {
-                if let Some(ability) = param.ability() {
-                    if let Some(radius) = ability
-                        .categories()
-                        .iter()
-                        .find_map(|(_, cat)| cat.detection_radius())
-                    {
-                        return Some(radius);
-                    }
-                }
-            }
-        }
-
-        None
+        // Look up ship-specific ability variant (cached from populate_players)
+        let (ability_name, variant_name) =
+            self.ship_ability_variants.get(&(entity_id, consumable))?;
+        let param = GameParamProvider::game_param_by_name(self.game_params, ability_name)?;
+        let ability = param.ability()?;
+        let cat = ability.get_category(variant_name)?;
+        cat.detection_radius()
     }
 
     /// Update squadron info for any new planes in the controller.
@@ -428,11 +388,30 @@ impl<'a> MinimapRenderer<'a> {
         history.push(pos);
     }
 
+    /// Record ship positions from controller state without emitting draw commands.
+    /// Called during replay parsing to accumulate trail history.
+    pub fn record_positions(&mut self, controller: &dyn BattleControllerState) {
+        let Some(map_info) = self.map_info.clone() else {
+            return;
+        };
+        let ship_positions = controller.ship_positions();
+        let minimap_positions = controller.minimap_positions();
+        for (entity_id, ship_pos) in ship_positions {
+            let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
+            self.record_position(*entity_id, px);
+        }
+        for (entity_id, mm) in minimap_positions {
+            if !ship_positions.contains_key(entity_id) {
+                let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
+                self.record_position(*entity_id, px);
+            }
+        }
+    }
+
     /// Produce draw commands for the current frame from controller state.
     pub fn draw_frame(&mut self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
-        let map_info = match self.map_info.clone() {
-            Some(info) => info,
-            None => return Vec::new(),
+        let Some(map_info) = self.map_info.clone() else {
+            return Vec::new();
         };
 
         let clock = controller.clock();
@@ -454,9 +433,8 @@ impl<'a> MinimapRenderer<'a> {
         // 2. Capture points (drawn early so they're behind everything)
         if self.options.show_capture_points {
             for cp in controller.capture_points() {
-                let pos = match cp.position {
-                    Some(p) => p,
-                    None => continue,
+                let Some(pos) = cp.position else {
+                    continue;
                 };
                 let px = map_info.world_to_minimap(pos, MINIMAP_SIZE);
                 let px_radius =
@@ -488,7 +466,7 @@ impl<'a> MinimapRenderer<'a> {
 
         // 2b. Position trails (drawn early so they appear behind everything else)
         if self.options.show_trails {
-            for (_entity_id, history) in &self.position_history {
+            for (entity_id, history) in &self.position_history {
                 if history.len() < 2 {
                     continue;
                 }
@@ -502,7 +480,11 @@ impl<'a> MinimapRenderer<'a> {
                         (*pos, color)
                     })
                     .collect();
-                commands.push(DrawCommand::PositionTrail { points });
+                let player_name = self.player_names.get(entity_id).cloned();
+                commands.push(DrawCommand::PositionTrail {
+                    player_name,
+                    points,
+                });
             }
         }
 
@@ -721,16 +703,15 @@ impl<'a> MinimapRenderer<'a> {
                 .unwrap_or(false);
 
             // Detected teammate = spotted ally (not self)
-            let is_detected_teammate = is_spotted && relation.is_ally() && !relation.is_self();
+            let is_detected_teammate = is_spotted && !relation.is_enemy();
 
             if detected {
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
                 if let Some(ship_pos) = world {
                     // Have world position — use it (higher precision than minimap)
                     let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
-                    if self.options.show_trails {
-                        self.record_position(*entity_id, px);
-                    }
+                    // Always record positions so trails are available when toggled on mid-replay
+                    self.record_position(*entity_id, px);
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
@@ -759,9 +740,8 @@ impl<'a> MinimapRenderer<'a> {
                 } else if let Some(mm) = minimap {
                     // Minimap-only position
                     let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
-                    if self.options.show_trails {
-                        self.record_position(*entity_id, px);
-                    }
+                    // Always record positions so trails are available when toggled on mid-replay
+                    self.record_position(*entity_id, px);
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
@@ -818,6 +798,12 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_turret_direction {
             let target_yaws = controller.target_yaws();
             for (entity_id, &world_yaw) in target_yaws {
+                // Skip dead ships
+                if let Some(dead) = dead_ships.get(entity_id) {
+                    if clock >= dead.clock {
+                        continue;
+                    }
+                }
                 // Skip undetected ships — aim data is stale
                 let detected = minimap_positions
                     .get(entity_id)
@@ -969,10 +955,9 @@ impl<'a> MinimapRenderer<'a> {
                         if let Some(radius) =
                             self.get_consumable_radius(*entity_id, active.consumable)
                         {
-                            // distShip from GameParams is a diameter, divide by 2 for radius
-                            let px_radius = (radius / 2.0 / map_info.space_size as f32
-                                * MINIMAP_SIZE as f32)
-                                as i32;
+                            // distShip from GameParams is already a radius in BigWorld units
+                            let px_radius =
+                                (radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
                             let color = if is_friendly {
                                 TEAM0_COLOR
                             } else {
@@ -994,6 +979,222 @@ impl<'a> MinimapRenderer<'a> {
                         icon_keys,
                         is_friendly,
                         has_hp_bar,
+                    });
+                }
+            }
+        }
+
+        // 8b. Ship config circles (detection, main battery, secondary, radar, hydro)
+        if self.options.show_ship_config {
+            for entity_id in &all_ship_ids {
+                // Only show for the recording player's own ship
+                let Some(relation) = self.player_relations.get(entity_id) else {
+                    continue;
+                };
+                if !relation.is_self() {
+                    continue;
+                }
+
+                // Skip dead ships
+                if let Some(dead) = dead_ships.get(entity_id) {
+                    if clock >= dead.clock {
+                        continue;
+                    }
+                }
+
+                // Get ship position
+                let pos = if let Some(ship_pos) = ship_positions.get(entity_id) {
+                    map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE)
+                } else if let Some(mm) = minimap_positions.get(entity_id) {
+                    map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
+                } else {
+                    continue;
+                };
+
+                let Some(player_name) = self.player_names.get(entity_id) else {
+                    continue;
+                };
+                let player_name = player_name.clone();
+
+                let Some(&ship_param_id) = self.ship_param_ids.get(entity_id) else {
+                    continue;
+                };
+                let Some(ship_param) =
+                    GameParamProvider::game_param_by_id(self.game_params, ship_param_id)
+                else {
+                    continue;
+                };
+                let Some(vehicle) = ship_param.vehicle() else {
+                    continue;
+                };
+                let species = ship_param.species();
+
+                // Get vehicle entity for ship config (modernizations, skills)
+                let vehicle_entity = controller
+                    .entities_by_id()
+                    .get(entity_id)
+                    .and_then(|e| e.vehicle_ref());
+
+                // Look up the equipped hull upgrade name from replay data
+                let hull_name = vehicle_entity.as_ref().and_then(|v| {
+                    let v = v.borrow();
+                    let hull_id = v.props().ship_config().hull();
+                    GameParamProvider::game_param_by_id(self.game_params, hull_id)
+                        .map(|p| p.name().to_string())
+                });
+
+                // Use Vehicle::resolve_ranges to get all range data
+                let mut ranges =
+                    vehicle.resolve_ranges(Some(self.game_params), hull_name.as_deref());
+
+                // Apply build modifiers (modernizations + captain skills)
+                if let Some(ref species) = species {
+                    let mut vis_coeff: f32 = 1.0;
+                    let mut gm_max_dist: f32 = 1.0;
+                    let mut gs_max_dist: f32 = 1.0;
+
+                    if let Some(v_ref) = &vehicle_entity {
+                        let v = v_ref.borrow();
+
+                        // Modernization modifiers
+                        for mod_id in v.props().ship_config().modernization() {
+                            let Some(mod_param) =
+                                GameParamProvider::game_param_by_id(self.game_params, *mod_id)
+                            else {
+                                continue;
+                            };
+                            let Some(modernization) = mod_param.modernization() else {
+                                continue;
+                            };
+                            for modifier in modernization.modifiers() {
+                                match modifier.name() {
+                                    "visibilityDistCoeff" => {
+                                        vis_coeff *= modifier.get_for_species(species)
+                                    }
+                                    "GMMaxDist" => gm_max_dist *= modifier.get_for_species(species),
+                                    "GSMaxDist" => gs_max_dist *= modifier.get_for_species(species),
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        // Captain skill modifiers
+                        let crew_params = v.props().crew_modifiers_compact_params();
+                        if let Some(crew_param) = GameParamProvider::game_param_by_id(
+                            self.game_params,
+                            crew_params.params_id(),
+                        ) {
+                            if let Some(crew) = crew_param.crew() {
+                                for &skill_id in crew_params.learned_skills().for_species(species) {
+                                    let Some(skill) = crew.skill_by_type(skill_id as u32) else {
+                                        continue;
+                                    };
+                                    let Some(modifiers) = skill.modifiers() else {
+                                        continue;
+                                    };
+                                    for modifier in modifiers {
+                                        match modifier.name() {
+                                            "visibilityDistCoeff" => {
+                                                vis_coeff *= modifier.get_for_species(species)
+                                            }
+                                            "GMMaxDist" => {
+                                                gm_max_dist *= modifier.get_for_species(species)
+                                            }
+                                            "GSMaxDist" => {
+                                                gs_max_dist *= modifier.get_for_species(species)
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Apply coefficients
+                    ranges.detection_km = ranges.detection_km.map(|km| km * vis_coeff);
+                    ranges.air_detection_km = ranges.air_detection_km.map(|km| km * vis_coeff);
+                    ranges.main_battery_m = ranges.main_battery_m.map(|m| m * gm_max_dist);
+                    ranges.secondary_battery_m =
+                        ranges.secondary_battery_m.map(|m| m * gs_max_dist);
+                }
+
+                let space_size = map_info.space_size as f32;
+
+                // Helper: convert meters to minimap pixel radius
+                let meters_to_px = |m: f32| -> f32 { m / 30.0 / space_size * MINIMAP_SIZE as f32 };
+
+                // Helper: convert km to minimap pixel radius
+                let km_to_px =
+                    |km: f32| -> f32 { km * 1000.0 / 30.0 / space_size * MINIMAP_SIZE as f32 };
+
+                // Detection circle
+                if let Some(detection_km) = ranges.detection_km {
+                    commands.push(DrawCommand::ShipConfigCircle {
+                        pos,
+                        radius_px: km_to_px(detection_km),
+                        color: [135, 206, 235], // light blue
+                        alpha: 0.6,
+                        dashed: true,
+                        label: Some(format!("{:.1} km", detection_km)),
+                        kind: ShipConfigCircleKind::Detection,
+                        player_name: player_name.clone(),
+                    });
+                }
+
+                // Main battery range
+                if let Some(main_battery_m) = ranges.main_battery_m {
+                    commands.push(DrawCommand::ShipConfigCircle {
+                        pos,
+                        radius_px: meters_to_px(main_battery_m),
+                        color: [180, 180, 180], // light gray
+                        alpha: 0.5,
+                        dashed: false,
+                        label: Some(format!("{:.1} km", main_battery_m / 1000.0)),
+                        kind: ShipConfigCircleKind::MainBattery,
+                        player_name: player_name.clone(),
+                    });
+                }
+
+                // Secondary battery range
+                if let Some(secondary_m) = ranges.secondary_battery_m {
+                    commands.push(DrawCommand::ShipConfigCircle {
+                        pos,
+                        radius_px: meters_to_px(secondary_m),
+                        color: [255, 165, 0], // orange
+                        alpha: 0.5,
+                        dashed: false,
+                        label: Some(format!("{:.1} km", secondary_m / 1000.0)),
+                        kind: ShipConfigCircleKind::SecondaryBattery,
+                        player_name: player_name.clone(),
+                    });
+                }
+
+                // Radar range
+                if let Some(radar_m) = ranges.radar_m {
+                    commands.push(DrawCommand::ShipConfigCircle {
+                        pos,
+                        radius_px: meters_to_px(radar_m),
+                        color: [255, 255, 100], // yellow
+                        alpha: 0.5,
+                        dashed: false,
+                        label: Some(format!("{:.1} km", radar_m / 1000.0)),
+                        kind: ShipConfigCircleKind::Radar,
+                        player_name: player_name.clone(),
+                    });
+                }
+
+                // Hydro range
+                if let Some(hydro_m) = ranges.hydro_m {
+                    commands.push(DrawCommand::ShipConfigCircle {
+                        pos,
+                        radius_px: meters_to_px(hydro_m),
+                        color: [100, 255, 100], // green
+                        alpha: 0.5,
+                        dashed: false,
+                        label: Some(format!("{:.1} km", hydro_m / 1000.0)),
+                        kind: ShipConfigCircleKind::Hydro,
+                        player_name: player_name.clone(),
                     });
                 }
             }
@@ -1153,45 +1354,4 @@ fn consumable_to_base_icon_key(c: Consumable) -> Option<String> {
         | Consumable::Unknown(_) => return None,
     };
     Some(key.to_string())
-}
-
-/// Map a consumableType string from GameParams to our Consumable enum.
-fn consumable_type_to_enum(consumable_type: &str) -> Option<Consumable> {
-    match consumable_type {
-        "crashCrew" => Some(Consumable::DamageControl),
-        "scout" => Some(Consumable::SpottingAircraft),
-        "airDefenseDisp" => Some(Consumable::DefensiveAntiAircraft),
-        "speedBoosters" => Some(Consumable::SpeedBoost),
-        "artilleryBoosters" => Some(Consumable::MainBatteryReloadBooster),
-        "smokeGenerator" => Some(Consumable::Smoke),
-        "regenCrew" => Some(Consumable::RepairParty),
-        "fighter" => Some(Consumable::CatapultFighter),
-        "sonar" => Some(Consumable::HydroacousticSearch),
-        "torpedoReloader" => Some(Consumable::TorpedoReloadBooster),
-        "rls" => Some(Consumable::Radar),
-        "invulnerable" => Some(Consumable::Invulnerable),
-        "healForsage" => Some(Consumable::HealForsage),
-        "callFighters" => Some(Consumable::CallFighters),
-        "regenerateHealth" => Some(Consumable::RegenerateHealth),
-        "depthCharges" => Some(Consumable::DepthCharges),
-        "weaponReloadBooster" => Some(Consumable::WeaponReloadBooster),
-        "hydrophone" => Some(Consumable::Hydrophone),
-        "fastRudders" => Some(Consumable::EnhancedRudders),
-        "subsEnergyFreeze" => Some(Consumable::ReserveBattery),
-        "submarineLocator" => Some(Consumable::SubmarineSurveillance),
-        _ => None,
-    }
-}
-
-/// Map ability name from ship data to ConsumableKey for detection consumables.
-///
-/// Only maps abilities that have detection radii (radar, hydro, hydrophone).
-fn ability_name_to_consumable_key(ability_name: &str) -> Option<ConsumableKey> {
-    match ability_name {
-        "PCY019_RLSSearchModifier" | "PCY046_RLSSearchDelayed" => Some(ConsumableKey::Radar),
-        "PCY008_SonarSearchModifier" => Some(ConsumableKey::Hydro),
-        "PCY045_HydrophoneModifier" => Some(ConsumableKey::Hydrophone),
-        "PCY048_SubmarineLocatorModifier" => Some(ConsumableKey::SubSurveillance),
-        _ => None,
-    }
 }

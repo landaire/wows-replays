@@ -80,6 +80,11 @@ fn main() -> anyhow::Result<()> {
                 .long("show-trails"),
         )
         .arg(
+            Arg::with_name("SHOW_SHIP_CONFIG")
+                .help("Show ship config range circles (detection, battery, etc.)")
+                .long("show-ship-config"),
+        )
+        .arg(
             Arg::with_name("CONFIG")
                 .help("Path to TOML config file")
                 .long("config")

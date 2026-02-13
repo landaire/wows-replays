@@ -104,6 +104,18 @@ impl Skills {
     pub fn aircraft_carrier(&self) -> &[u8] {
         self.aircraft_carrier.as_ref()
     }
+
+    pub fn for_species(&self, species: &Species) -> &[u8] {
+        match species {
+            Species::AirCarrier => &self.aircraft_carrier,
+            Species::Battleship => &self.battleship,
+            Species::Cruiser => &self.cruiser,
+            Species::Destroyer => &self.destroyer,
+            Species::Submarine => &self.submarine,
+            Species::Auxiliary => &self.auxiliary,
+            _ => &[],
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1188,6 +1200,16 @@ pub struct CrewModifiersCompactParams {
     params_id: u32,
     is_in_adaption: bool,
     learned_skills: Skills,
+}
+
+impl CrewModifiersCompactParams {
+    pub fn params_id(&self) -> u32 {
+        self.params_id
+    }
+
+    pub fn learned_skills(&self) -> &Skills {
+        &self.learned_skills
+    }
 }
 
 trait UpdateFromReplayArgs {
