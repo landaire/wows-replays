@@ -27,7 +27,6 @@ arc = ["wows_replays/arc"]
 wows_replays = { version = "0.14", path = "../parser" }
 wowsunpack = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-imageproc = "0.25"
 ab_glyph = "0.2"
 mp4 = "0.14"
 bytes = "1"
