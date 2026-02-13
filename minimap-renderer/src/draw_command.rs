@@ -1,3 +1,5 @@
+use wows_replays::analyzer::decoder::DeathCause;
+
 use crate::map_data::MinimapPos;
 
 /// How a ship should be rendered based on its visibility state.
@@ -19,6 +21,29 @@ pub enum ShipConfigCircleKind {
     SecondaryBattery,
     Radar,
     Hydro,
+}
+
+/// A single entry in the kill feed.
+#[derive(Debug, Clone)]
+pub struct KillFeedEntry {
+    /// Killer's player name
+    pub killer_name: String,
+    /// Killer's ship species (e.g. "Destroyer") for icon lookup
+    pub killer_species: Option<String>,
+    /// Killer's localized ship name (e.g. "Shimakaze")
+    pub killer_ship_name: Option<String>,
+    /// Killer's team color
+    pub killer_color: [u8; 3],
+    /// Victim's player name
+    pub victim_name: String,
+    /// Victim's ship species for icon lookup
+    pub victim_species: Option<String>,
+    /// Victim's localized ship name
+    pub victim_ship_name: Option<String>,
+    /// Victim's team color
+    pub victim_color: [u8; 3],
+    /// How the victim died
+    pub cause: DeathCause,
 }
 
 /// A high-level draw command emitted by the renderer.
@@ -177,8 +202,8 @@ pub enum DrawCommand {
     },
     /// Game timer
     Timer { seconds: f32 },
-    /// Kill feed entries (killer_name, victim_name)
-    KillFeed { entries: Vec<(String, String)> },
+    /// Kill feed entries with rich data
+    KillFeed { entries: Vec<KillFeedEntry> },
 }
 
 /// Trait for rendering backends that consume `DrawCommand`s.

@@ -10,7 +10,7 @@ use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::{EntityId, PlaneId, Relation};
 
-use crate::draw_command::{DrawCommand, ShipConfigCircleKind, ShipVisibility};
+use crate::draw_command::{DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipVisibility};
 use crate::map_data::{self, WorldPos};
 
 use crate::MINIMAP_SIZE;
@@ -1223,7 +1223,27 @@ impl<'a> MinimapRenderer<'a> {
                         .get(&kill.victim)
                         .cloned()
                         .unwrap_or_else(|| format!("#{}", kill.victim));
-                    recent_kills.push((killer_name, victim_name));
+                    let killer_relation = self
+                        .player_relations
+                        .get(&kill.killer)
+                        .copied()
+                        .unwrap_or(Relation::new(2));
+                    let victim_relation = self
+                        .player_relations
+                        .get(&kill.victim)
+                        .copied()
+                        .unwrap_or(Relation::new(2));
+                    recent_kills.push(KillFeedEntry {
+                        killer_name,
+                        killer_species: self.player_species.get(&kill.killer).cloned(),
+                        killer_ship_name: self.ship_display_names.get(&kill.killer).cloned(),
+                        killer_color: ship_color_rgb(killer_relation),
+                        victim_name,
+                        victim_species: self.player_species.get(&kill.victim).cloned(),
+                        victim_ship_name: self.ship_display_names.get(&kill.victim).cloned(),
+                        victim_color: ship_color_rgb(victim_relation),
+                        cause: kill.cause.clone(),
+                    });
                     if recent_kills.len() >= 5 {
                         break;
                     }

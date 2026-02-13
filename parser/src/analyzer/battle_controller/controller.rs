@@ -870,21 +870,22 @@ where
         // Match: state -> missions -> teamsScore -> [N] -> SetKey{score}
         if levels.len() == 3
             && let PropertyNestLevel::DictKey("missions") = &levels[0]
-                && let PropertyNestLevel::DictKey("teamsScore") = &levels[1]
-                    && let PropertyNestLevel::ArrayIndex(team_idx) = &levels[2]
-                        && let UpdateAction::SetKey {
-                            key: "score",
-                            value,
-                        } = action
-                            && let Ok(score) = TryInto::<i32>::try_into(value) {
-                                while self.team_scores.len() <= *team_idx {
-                                    self.team_scores.push(TeamScore {
-                                        team_index: self.team_scores.len(),
-                                        ..Default::default()
-                                    });
-                                }
-                                self.team_scores[*team_idx].score = score as i64;
-                            }
+            && let PropertyNestLevel::DictKey("teamsScore") = &levels[1]
+            && let PropertyNestLevel::ArrayIndex(team_idx) = &levels[2]
+            && let UpdateAction::SetKey {
+                key: "score",
+                value,
+            } = action
+            && let Some(score) = Self::arg_to_i64(value)
+        {
+            while self.team_scores.len() <= *team_idx {
+                self.team_scores.push(TeamScore {
+                    team_index: self.team_scores.len(),
+                    ..Default::default()
+                });
+            }
+            self.team_scores[*team_idx].score = score;
+        }
     }
 
     fn handle_entity_create_with_clock(
@@ -995,7 +996,32 @@ where
                     Entity::SmokeScreen(Rc::new(RefCell::new(smoke))),
                 );
             }
-            EntityType::BattleLogic => debug!("BattleLogic create"),
+            EntityType::BattleLogic => {
+                debug!("BattleLogic create");
+                // Extract initial team scores from state.missions.teamsScore
+                if let Some(state) = packet.props.get("state")
+                    && let Some(state_dict) = Self::as_dict(state)
+                    && let Some(missions) = state_dict.get("missions")
+                    && let Some(missions_dict) = Self::as_dict(missions)
+                    && let Some(ArgValue::Array(teams)) = missions_dict.get("teamsScore")
+                {
+                    for (idx, entry) in teams.iter().enumerate() {
+                        if let Some(entry_dict) = Self::as_dict(entry) {
+                            let score = entry_dict
+                                .get("score")
+                                .and_then(|v| Self::arg_to_i64(v))
+                                .unwrap_or(0);
+                            while self.team_scores.len() <= idx {
+                                self.team_scores.push(TeamScore {
+                                    team_index: self.team_scores.len(),
+                                    ..Default::default()
+                                });
+                            }
+                            self.team_scores[idx].score = score;
+                        }
+                    }
+                }
+            }
             EntityType::InteractiveZone => {
                 let position = WorldPos {
                     x: packet.position.x,
@@ -1023,34 +1049,37 @@ where
                 let mut both_inside = false;
 
                 if let Some(cs) = packet.props.get("componentsState")
-                    && let Some(cs_dict) = Self::as_dict(cs) {
-                        // Extract control point index and type
-                        if let Some(cp) = cs_dict.get("controlPoint")
-                            && let Some(cp_dict) = Self::as_dict(cp) {
-                                if let Some(idx) = cp_dict.get("index") {
-                                    cp_index = Self::arg_to_i64(idx).map(|v| v as usize);
-                                }
-                                if let Some(t) = cp_dict.get("type") {
-                                    cp_type = Self::arg_to_i64(t).unwrap_or(0) as i32;
-                                }
-                            }
-                        // Extract initial capture logic state
-                        if let Some(cl) = cs_dict.get("captureLogic")
-                            && let Some(cl_dict) = Self::as_dict(cl) {
-                                if let Some(v) = cl_dict.get("hasInvaders") {
-                                    has_invaders = Self::arg_to_i64(v).unwrap_or(0) != 0;
-                                }
-                                if let Some(v) = cl_dict.get("invaderTeam") {
-                                    invader_team = Self::arg_to_i64(v).unwrap_or(-1);
-                                }
-                                if let Some(v) = cl_dict.get("progress") {
-                                    progress = v.float_32_ref().map(|f| *f as f64).unwrap_or(0.0);
-                                }
-                                if let Some(v) = cl_dict.get("bothInside") {
-                                    both_inside = Self::arg_to_i64(v).unwrap_or(0) != 0;
-                                }
-                            }
+                    && let Some(cs_dict) = Self::as_dict(cs)
+                {
+                    // Extract control point index and type
+                    if let Some(cp) = cs_dict.get("controlPoint")
+                        && let Some(cp_dict) = Self::as_dict(cp)
+                    {
+                        if let Some(idx) = cp_dict.get("index") {
+                            cp_index = Self::arg_to_i64(idx).map(|v| v as usize);
+                        }
+                        if let Some(t) = cp_dict.get("type") {
+                            cp_type = Self::arg_to_i64(t).unwrap_or(0) as i32;
+                        }
                     }
+                    // Extract initial capture logic state
+                    if let Some(cl) = cs_dict.get("captureLogic")
+                        && let Some(cl_dict) = Self::as_dict(cl)
+                    {
+                        if let Some(v) = cl_dict.get("hasInvaders") {
+                            has_invaders = Self::arg_to_i64(v).unwrap_or(0) != 0;
+                        }
+                        if let Some(v) = cl_dict.get("invaderTeam") {
+                            invader_team = Self::arg_to_i64(v).unwrap_or(-1);
+                        }
+                        if let Some(v) = cl_dict.get("progress") {
+                            progress = v.float_32_ref().map(|f| *f as f64).unwrap_or(0.0);
+                        }
+                        if let Some(v) = cl_dict.get("bothInside") {
+                            both_inside = Self::arg_to_i64(v).unwrap_or(0) != 0;
+                        }
+                    }
+                }
 
                 if let Some(idx) = cp_index {
                     // Ensure capture_points vec is large enough
@@ -2206,26 +2235,29 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::EntityProperty(prop) => {
                 let entity_id = prop.entity_id;
                 if let Some(entity) = self.entities_by_id.get(&entity_id)
-                    && let Some(vehicle) = entity.vehicle_ref() {
-                        let mut vehicle = RefCell::borrow_mut(vehicle);
-                        vehicle
-                            .props
-                            .update_by_name(prop.property, &prop.value, self.version);
-                    }
+                    && let Some(vehicle) = entity.vehicle_ref()
+                {
+                    let mut vehicle = RefCell::borrow_mut(vehicle);
+                    vehicle
+                        .props
+                        .update_by_name(prop.property, &prop.value, self.version);
+                }
                 // Handle targetLocalPos — packed turret aim direction
                 if prop.property == "targetLocalPos"
-                    && let Some(val) = Self::arg_to_i64(&prop.value) {
-                        let lo = (val & 0xFF) as f32;
-                        // lo byte encodes world-space yaw: (lo/256)*2*PI - PI
-                        let yaw = (lo / 256.0) * std::f32::consts::TAU - std::f32::consts::PI;
-                        self.target_yaws.insert(entity_id, yaw);
-                    }
+                    && let Some(val) = Self::arg_to_i64(&prop.value)
+                {
+                    let lo = (val & 0xFF) as f32;
+                    // lo byte encodes world-space yaw: (lo/256)*2*PI - PI
+                    let yaw = (lo / 256.0) * std::f32::consts::TAU - std::f32::consts::PI;
+                    self.target_yaws.insert(entity_id, yaw);
+                }
                 // Handle InteractiveZone teamId changes (packet type 0x7)
                 if prop.property == "teamId"
                     && let Some(&cp_idx) = self.interactive_zone_indices.get(&entity_id)
-                        && let Some(v) = Self::arg_to_i64(&prop.value) {
-                            self.capture_points[cp_idx].team_id = v;
-                        }
+                    && let Some(v) = Self::arg_to_i64(&prop.value)
+                {
+                    self.capture_points[cp_idx].team_id = v;
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::BasePlayerCreate(_base) => {
                 trace!("BASE PLAYER CREATE");
@@ -2353,69 +2385,71 @@ where
                 // Handle smoke screen point mutations
                 if update.property == "points"
                     && let Some(entity) = self.entities_by_id.get(&update.entity_id)
-                        && let Some(smoke_ref) = entity.smoke_screen_ref() {
-                            let mut smoke = RefCell::borrow_mut(smoke_ref);
-                            match &update.update_cmd.action {
-                                UpdateAction::SetRange { start, values, .. } => {
-                                    while smoke.points.len() < start + values.len() {
-                                        smoke.points.push(WorldPos::default());
-                                    }
-                                    for (i, v) in values.iter().enumerate() {
-                                        if let ArgValue::Vector3((x, y, z)) = v {
-                                            smoke.points[start + i] = WorldPos {
-                                                x: *x,
-                                                y: *y,
-                                                z: *z,
-                                            };
-                                        }
-                                    }
-                                }
-                                UpdateAction::RemoveRange { start, stop } => {
-                                    let end = (*stop).min(smoke.points.len());
-                                    smoke.points.drain(*start..end);
-                                }
-                                _ => {}
+                    && let Some(smoke_ref) = entity.smoke_screen_ref()
+                {
+                    let mut smoke = RefCell::borrow_mut(smoke_ref);
+                    match &update.update_cmd.action {
+                        UpdateAction::SetRange { start, values, .. } => {
+                            while smoke.points.len() < start + values.len() {
+                                smoke.points.push(WorldPos::default());
                             }
-                            drop(smoke);
+                            for (i, v) in values.iter().enumerate() {
+                                if let ArgValue::Vector3((x, y, z)) = v {
+                                    smoke.points[start + i] = WorldPos {
+                                        x: *x,
+                                        y: *y,
+                                        z: *z,
+                                    };
+                                }
+                            }
                         }
+                        UpdateAction::RemoveRange { start, stop } => {
+                            let end = (*stop).min(smoke.points.len());
+                            smoke.points.drain(*start..end);
+                        }
+                        _ => {}
+                    }
+                    drop(smoke);
+                }
                 // Handle InteractiveZone (capture point) state updates
                 // PropertyUpdates arrive as: property="componentsState", levels=[captureLogic], action=SetKey{key, value}
                 if update.property == "componentsState"
                     && let Some(&cp_idx) = self.interactive_zone_indices.get(&update.entity_id)
-                        && matches!(
-                            update.update_cmd.levels.first(),
-                            Some(PropertyNestLevel::DictKey("captureLogic"))
-                        )
-                            && let UpdateAction::SetKey { key, value } = &update.update_cmd.action {
-                                match *key {
-                                    "hasInvaders" => {
-                                        if let Some(v) = Self::arg_to_i64(value) {
-                                            self.capture_points[cp_idx].has_invaders = v != 0;
-                                        }
-                                    }
-                                    "invaderTeam" => {
-                                        if let Some(v) = Self::arg_to_i64(value) {
-                                            self.capture_points[cp_idx].invader_team = v;
-                                        }
-                                    }
-                                    "progress" => {
-                                        if let Some(f) = value.float_32_ref() {
-                                            self.capture_points[cp_idx].progress = (*f as f64, 0.0);
-                                        }
-                                    }
-                                    "bothInside" => {
-                                        if let Some(v) = Self::arg_to_i64(value) {
-                                            self.capture_points[cp_idx].both_inside = v != 0;
-                                        }
-                                    }
-                                    "teamId" | "invaderTeamId" => {
-                                        if let Some(v) = Self::arg_to_i64(value) {
-                                            self.capture_points[cp_idx].invader_team = v;
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                    && matches!(
+                        update.update_cmd.levels.first(),
+                        Some(PropertyNestLevel::DictKey("captureLogic"))
+                    )
+                    && let UpdateAction::SetKey { key, value } = &update.update_cmd.action
+                {
+                    match *key {
+                        "hasInvaders" => {
+                            if let Some(v) = Self::arg_to_i64(value) {
+                                self.capture_points[cp_idx].has_invaders = v != 0;
                             }
+                        }
+                        "invaderTeam" => {
+                            if let Some(v) = Self::arg_to_i64(value) {
+                                self.capture_points[cp_idx].invader_team = v;
+                            }
+                        }
+                        "progress" => {
+                            if let Some(f) = value.float_32_ref() {
+                                self.capture_points[cp_idx].progress = (*f as f64, 0.0);
+                            }
+                        }
+                        "bothInside" => {
+                            if let Some(v) = Self::arg_to_i64(value) {
+                                self.capture_points[cp_idx].both_inside = v != 0;
+                            }
+                        }
+                        "teamId" | "invaderTeamId" => {
+                            if let Some(v) = Self::arg_to_i64(value) {
+                                self.capture_points[cp_idx].invader_team = v;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
 
                 self.handle_property_update(packet.clock, update);
             }

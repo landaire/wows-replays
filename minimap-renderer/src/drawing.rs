@@ -7,7 +7,7 @@ use tiny_skia::{
     Stroke, StrokeDash, Transform,
 };
 
-use crate::draw_command::{DrawCommand, RenderTarget, ShipVisibility};
+use crate::draw_command::{DrawCommand, KillFeedEntry, RenderTarget, ShipVisibility};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSans-Bold.ttf");
 
@@ -575,6 +575,10 @@ fn draw_icon(pm: &mut Pixmap, icon: &RgbaImage, x: i32, y: i32) {
 }
 
 /// Draw the team score bar at the top of the frame.
+///
+/// Two independent progress bars growing toward the center. Each bar represents
+/// progress toward 1000 points. Team 0 (friendly) grows left→center,
+/// team 1 (enemy) grows right→center.
 fn draw_score_bar(
     pm: &mut Pixmap,
     team0_score: i32,
@@ -585,37 +589,47 @@ fn draw_score_bar(
 ) {
     let width = pm.width() as f32;
     let bar_height = 20.0f32;
-    let total = (team0_score + team1_score).max(1) as f32;
-    let team0_width = (team0_score as f32 / total) * width;
+    let max_score = 1000.0f32;
+    let half = width / 2.0;
+    let center_gap = 2.0f32; // small gap between the two bars
 
-    // Team 0 bar (left, green/friendly)
-    if team0_width > 0.0 {
-        draw_filled_rect(pm, 0.0, 0.0, team0_width, bar_height, team0_color, 1.0);
+    // Dark background for the entire bar area
+    draw_filled_rect(pm, 0.0, 0.0, width, bar_height, [30, 30, 30], 0.8);
+
+    // Team 0 progress: grows from left edge toward center
+    let t0_frac = (team0_score as f32 / max_score).clamp(0.0, 1.0);
+    let t0_width = t0_frac * (half - center_gap);
+    if t0_width > 0.0 {
+        draw_filled_rect(pm, 0.0, 0.0, t0_width, bar_height, team0_color, 1.0);
     }
-    // Team 1 bar (right, red/enemy)
-    if team0_width < width {
+
+    // Team 1 progress: grows from right edge toward center
+    let t1_frac = (team1_score as f32 / max_score).clamp(0.0, 1.0);
+    let t1_width = t1_frac * (half - center_gap);
+    if t1_width > 0.0 {
         draw_filled_rect(
             pm,
-            team0_width,
+            width - t1_width,
             0.0,
-            width - team0_width,
+            t1_width,
             bar_height,
             team1_color,
             1.0,
         );
     }
 
-    // Score text
+    // Score text — placed at outer edges to avoid overlapping the centered timer
     let scale = PxScale::from(14.0);
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
-    let (t0w, _) = text_size(scale, font, &t0);
-    let (_, _) = text_size(scale, font, &t1);
+    let (t1w, _) = text_size(scale, font, &t1);
+    // Team 0 score: near left edge
     draw_text_shadow(pm, [255, 255, 255], 8, 2, scale, font, &t0);
+    // Team 1 score: near right edge
     draw_text_shadow(
         pm,
         [255, 255, 255],
-        width as i32 - t0w as i32 - 8,
+        width as i32 - t1w as i32 - 8,
         2,
         scale,
         font,
@@ -634,20 +648,252 @@ fn draw_timer(pm: &mut Pixmap, seconds: f32, font: &FontRef) {
     draw_text_shadow(pm, [255, 255, 255], x, 2, scale, font, &text);
 }
 
-/// Draw kill feed entries in the top-right corner.
-fn draw_kill_feed(pm: &mut Pixmap, entries: &[(String, String)], font: &FontRef) {
-    let scale = PxScale::from(11.0);
-    let line_height = 14i32;
-    let right_margin = 5i32;
+/// Get a short text label for a death cause.
+fn death_cause_label(cause: &wows_replays::analyzer::decoder::DeathCause) -> &'static str {
+    use wows_replays::analyzer::decoder::DeathCause;
+    match cause {
+        DeathCause::Artillery | DeathCause::ApShell | DeathCause::HeShell | DeathCause::CsShell => {
+            "[MB]"
+        }
+        DeathCause::Secondaries => "[SEC]",
+        DeathCause::Torpedo => "[TORP]",
+        DeathCause::AerialTorpedo => "[ATORP]",
+        DeathCause::Fire => "[FIRE]",
+        DeathCause::Flooding => "[FLOOD]",
+        DeathCause::DiveBomber => "[BOMB]",
+        DeathCause::SkipBombs => "[SKIP]",
+        DeathCause::AerialRocket => "[RCKT]",
+        DeathCause::Detonation => "[DET]",
+        DeathCause::Ramming => "[RAM]",
+        DeathCause::DepthCharge | DeathCause::AerialDepthCharge => "[DC]",
+        DeathCause::Missile => "[MSL]",
+        _ => "[x]",
+    }
+}
+
+/// Draw rich kill feed entries in the top-right corner.
+///
+/// Layout per line (right-aligned):
+/// `KILLER_NAME [icon] ship_name  [cause]  VICTIM_NAME [icon] ship_name`
+fn draw_kill_feed(
+    pm: &mut Pixmap,
+    entries: &[KillFeedEntry],
+    font: &FontRef,
+    ship_icons: &HashMap<String, ShipIcon>,
+) {
+    let name_scale = PxScale::from(10.0);
+    let ship_scale = PxScale::from(9.0);
+    let cause_scale = PxScale::from(10.0);
+    let line_height = 18i32;
+    let right_margin = 4i32;
+    let icon_size = 14i32;
+    let gap = 2i32; // gap between elements
     let width = pm.width() as i32;
 
-    for (i, (killer, victim)) in entries.iter().take(5).enumerate() {
-        let text = format!("{} > {}", killer, victim);
-        let (tw, _) = text_size(scale, font, &text);
-        let x = width - tw as i32 - right_margin;
+    for (i, entry) in entries.iter().take(5).enumerate() {
         let y = 22 + i as i32 * line_height;
-        draw_text_shadow(pm, [255, 255, 255], x, y, scale, font, &text);
+
+        // Get death cause label
+        let cause_sym = death_cause_label(&entry.cause);
+
+        // Measure all text segments
+        let (killer_name_w, _) = text_size(name_scale, font, &entry.killer_name);
+        let killer_ship = entry.killer_ship_name.as_deref().unwrap_or("");
+        let (killer_ship_w, _) = if !killer_ship.is_empty() {
+            text_size(ship_scale, font, killer_ship)
+        } else {
+            (0, 0)
+        };
+        let (cause_w, _) = text_size(cause_scale, font, cause_sym);
+        let (victim_name_w, _) = text_size(name_scale, font, &entry.victim_name);
+        let victim_ship = entry.victim_ship_name.as_deref().unwrap_or("");
+        let (victim_ship_w, _) = if !victim_ship.is_empty() {
+            text_size(ship_scale, font, victim_ship)
+        } else {
+            (0, 0)
+        };
+
+        // Determine if we have icons
+        let has_killer_icon = entry.killer_species.is_some()
+            && ship_icons.contains_key(entry.killer_species.as_ref().unwrap());
+        let has_victim_icon = entry.victim_species.is_some()
+            && ship_icons.contains_key(entry.victim_species.as_ref().unwrap());
+
+        // Total width calculation:
+        // killer_name [gap icon gap] killer_ship gap cause gap victim_name [gap icon gap] victim_ship
+        let mut total_w = killer_name_w as i32;
+        if has_killer_icon {
+            total_w += gap + icon_size + gap;
+        } else if killer_ship_w > 0 {
+            total_w += gap;
+        }
+        if killer_ship_w > 0 {
+            total_w += killer_ship_w as i32;
+        }
+        total_w += gap * 2 + cause_w as i32 + gap * 2;
+        total_w += victim_name_w as i32;
+        if has_victim_icon {
+            total_w += gap + icon_size + gap;
+        } else if victim_ship_w > 0 {
+            total_w += gap;
+        }
+        if victim_ship_w > 0 {
+            total_w += victim_ship_w as i32;
+        }
+
+        // Draw a semi-transparent background for readability
+        let bg_x = (width - total_w - right_margin * 2) as f32;
+        let bg_y = y as f32 - 1.0;
+        draw_filled_rect(
+            pm,
+            bg_x,
+            bg_y,
+            (total_w + right_margin * 2) as f32,
+            (line_height) as f32,
+            [0, 0, 0],
+            0.5,
+        );
+
+        let mut x = width - total_w - right_margin;
+
+        // Killer name (team-colored)
+        draw_text_shadow(
+            pm,
+            entry.killer_color,
+            x,
+            y,
+            name_scale,
+            font,
+            &entry.killer_name,
+        );
+        x += killer_name_w as i32;
+
+        // Killer ship icon (facing left = flipped horizontally)
+        if has_killer_icon {
+            x += gap;
+            let icon = &ship_icons[entry.killer_species.as_ref().unwrap()];
+            draw_kill_feed_icon(pm, icon, x, y, icon_size, entry.killer_color, true);
+            x += icon_size + gap;
+        } else if killer_ship_w > 0 {
+            x += gap;
+        }
+
+        // Killer ship name
+        if killer_ship_w > 0 {
+            draw_text_shadow(
+                pm,
+                entry.killer_color,
+                x,
+                y + 1,
+                ship_scale,
+                font,
+                killer_ship,
+            );
+            x += killer_ship_w as i32;
+        }
+
+        // Death cause symbol (white, centered)
+        x += gap * 2;
+        draw_text_shadow(pm, [255, 255, 255], x, y, cause_scale, font, cause_sym);
+        x += cause_w as i32 + gap * 2;
+
+        // Victim name (team-colored)
+        draw_text_shadow(
+            pm,
+            entry.victim_color,
+            x,
+            y,
+            name_scale,
+            font,
+            &entry.victim_name,
+        );
+        x += victim_name_w as i32;
+
+        // Victim ship icon (facing right = normal orientation)
+        if has_victim_icon {
+            x += gap;
+            let icon = &ship_icons[entry.victim_species.as_ref().unwrap()];
+            draw_kill_feed_icon(pm, icon, x, y, icon_size, entry.victim_color, false);
+            x += icon_size + gap;
+        } else if victim_ship_w > 0 {
+            x += gap;
+        }
+
+        // Victim ship name
+        if victim_ship_w > 0 {
+            draw_text_shadow(
+                pm,
+                entry.victim_color,
+                x,
+                y + 1,
+                ship_scale,
+                font,
+                victim_ship,
+            );
+        }
     }
+}
+
+/// Draw a small ship icon for the kill feed, tinted with team color.
+/// If `flip` is true, the icon faces left (horizontally mirrored).
+fn draw_kill_feed_icon(
+    pm: &mut Pixmap,
+    icon: &RgbaImage,
+    x: i32,
+    y: i32,
+    size: i32,
+    color: [u8; 3],
+    flip: bool,
+) {
+    let iw = icon.width();
+    let ih = icon.height();
+    let scale = size as f32 / iw.max(ih) as f32;
+
+    // Create a tinted icon pixmap
+    let mut icon_pm = Pixmap::new(iw, ih).expect("failed to create icon pixmap");
+    let data = icon_pm.data_mut();
+    for iy in 0..ih {
+        for ix in 0..iw {
+            let px = icon.get_pixel(ix, iy).0;
+            let idx = (iy * iw + ix) as usize * 4;
+            let a = px[3] as f32 / 255.0;
+            if a < 0.01 {
+                continue;
+            }
+            let luminance =
+                (px[0] as f32 * 0.299 + px[1] as f32 * 0.587 + px[2] as f32 * 0.114) / 255.0;
+            let r = (color[0] as f32 * luminance) as u8;
+            let g = (color[1] as f32 * luminance) as u8;
+            let b = (color[2] as f32 * luminance) as u8;
+            // Premultiply
+            data[idx] = (r as f32 * a) as u8;
+            data[idx + 1] = (g as f32 * a) as u8;
+            data[idx + 2] = (b as f32 * a) as u8;
+            data[idx + 3] = px[3];
+        }
+    }
+
+    // The ship icons point up (north). For kill feed we want them pointing
+    // right (victim) or left (killer). Rotate 90° CW for right, 90° CCW for left.
+    let angle_deg = if flip { -90.0 } else { 90.0 };
+
+    let cx = iw as f32 / 2.0;
+    let cy = ih as f32 / 2.0;
+    // Center the icon at (x + size/2, y + size/2) with scaling
+    let dest_cx = x as f32 + size as f32 / 2.0;
+    let dest_cy = y as f32 + size as f32 / 2.0;
+
+    let transform = Transform::from_translate(dest_cx - cx * scale, dest_cy - cy * scale)
+        .pre_scale(scale, scale)
+        .post_rotate_at(angle_deg, dest_cx, dest_cy);
+
+    let paint = PixmapPaint {
+        opacity: 1.0,
+        blend_mode: BlendMode::SourceOver,
+        quality: FilterQuality::Bilinear,
+    };
+
+    pm.draw_pixmap(0, 0, icon_pm.as_ref(), &paint, transform, None);
 }
 
 /// Draw the 10x10 grid overlay with labels.
@@ -1057,7 +1303,7 @@ impl RenderTarget for ImageTarget {
                 }
             }
             DrawCommand::KillFeed { entries } => {
-                draw_kill_feed(&mut self.canvas, entries, &self.font);
+                draw_kill_feed(&mut self.canvas, entries, &self.font, &self.ship_icons);
             }
         }
     }

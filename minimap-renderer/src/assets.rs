@@ -21,9 +21,10 @@ pub fn load_packed_image(
     if file_tree
         .read_file_at_path(file_path, pkg_loader, &mut buf)
         .is_ok()
-        && let Ok(img) = image::load_from_memory(&buf) {
-            return Some(img);
-        }
+        && let Ok(img) = image::load_from_memory(&buf)
+    {
+        return Some(img);
+    }
     None
 }
 
@@ -203,10 +204,11 @@ pub fn load_ship_icons(
             .read_file_at_path(file_path, pkg_loader, &mut buf)
             .is_ok()
             && !buf.is_empty()
-            && let Some(img) = rasterize_svg(&buf, ICON_SIZE) {
-                icons.insert(key.to_string(), img);
-                return true;
-            }
+            && let Some(img) = rasterize_svg(&buf, ICON_SIZE)
+        {
+            icons.insert(key.to_string(), img);
+            return true;
+        }
         false
     };
     for name in &species_names {
@@ -355,25 +357,101 @@ pub fn load_consumable_icons(
 }
 
 /// Rasterize an SVG byte buffer to an RGBA image at the given size.
+///
+/// Automatically crops transparent padding from the SVG and fills the output
+/// as much as possible.
 pub fn rasterize_svg(svg_data: &[u8], size: u32) -> Option<RgbaImage> {
     let opt = resvg::usvg::Options::default();
     let tree = resvg::usvg::Tree::from_data(svg_data, &opt).ok()?;
 
+    // Render at a larger internal size for accurate bounding-box detection.
+    // Use pre_scale so the offset is in output-pixel space (not scaled).
+    let internal_size = size * 4;
     let tree_size = tree.size();
-    let sx = size as f32 / tree_size.width();
-    let sy = size as f32 / tree_size.height();
+    let sx = internal_size as f32 / tree_size.width();
+    let sy = internal_size as f32 / tree_size.height();
     let scale = sx.min(sy);
 
-    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
+    let mut pixmap = tiny_skia::Pixmap::new(internal_size, internal_size)?;
 
-    // Center the icon in the output
-    let offset_x = (size as f32 - tree_size.width() * scale) / 2.0;
-    let offset_y = (size as f32 - tree_size.height() * scale) / 2.0;
+    let offset_x = (internal_size as f32 - tree_size.width() * scale) / 2.0;
+    let offset_y = (internal_size as f32 - tree_size.height() * scale) / 2.0;
     let transform =
-        tiny_skia::Transform::from_translate(offset_x, offset_y).post_scale(scale, scale);
+        tiny_skia::Transform::from_scale(scale, scale).post_translate(offset_x, offset_y);
 
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    let data = pixmap.data().to_vec();
-    RgbaImage::from_raw(size, size, data)
+    // Find bounding box of non-transparent pixels
+    let w = pixmap.width();
+    let h = pixmap.height();
+    let data = pixmap.data();
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize * 4;
+            if data[idx + 3] > 0 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if max_x < min_x || max_y < min_y {
+        // Fully transparent — return empty icon at target size
+        return RgbaImage::from_raw(size, size, vec![0u8; (size * size * 4) as usize]);
+    }
+
+    // Crop to bounding box with 1px margin
+    let margin = 1u32;
+    let crop_x = min_x.saturating_sub(margin);
+    let crop_y = min_y.saturating_sub(margin);
+    let crop_w = (max_x + 1 + margin).min(w) - crop_x;
+    let crop_h = (max_y + 1 + margin).min(h) - crop_y;
+
+    // Extract cropped RGBA data (unpremultiply alpha from tiny-skia's premultiplied format)
+    let mut cropped = RgbaImage::new(crop_w, crop_h);
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let src_idx = ((crop_y + y) * w + crop_x + x) as usize * 4;
+            let a = data[src_idx + 3];
+            let (r, g, b) = if a > 0 {
+                let af = a as f32 / 255.0;
+                (
+                    (data[src_idx] as f32 / af).min(255.0) as u8,
+                    (data[src_idx + 1] as f32 / af).min(255.0) as u8,
+                    (data[src_idx + 2] as f32 / af).min(255.0) as u8,
+                )
+            } else {
+                (0, 0, 0)
+            };
+            cropped.put_pixel(x, y, image::Rgba([r, g, b, a]));
+        }
+    }
+
+    // Resize cropped image to fit within size x size, maintaining aspect ratio
+    let fit_sx = size as f32 / crop_w as f32;
+    let fit_sy = size as f32 / crop_h as f32;
+    let fit_scale = fit_sx.min(fit_sy);
+    let final_w = (crop_w as f32 * fit_scale).round().max(1.0) as u32;
+    let final_h = (crop_h as f32 * fit_scale).round().max(1.0) as u32;
+
+    let resized = image::imageops::resize(
+        &cropped,
+        final_w,
+        final_h,
+        image::imageops::FilterType::Lanczos3,
+    );
+
+    // Center in size x size canvas
+    let mut output = RgbaImage::new(size, size);
+    let ox = (size.saturating_sub(final_w)) / 2;
+    let oy = (size.saturating_sub(final_h)) / 2;
+    image::imageops::overlay(&mut output, &resized, ox as i64, oy as i64);
+
+    Some(output)
 }
