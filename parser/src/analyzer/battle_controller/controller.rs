@@ -35,37 +35,38 @@ use crate::{
 
 use super::listener::BattleControllerState;
 use super::state::{
-    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, BuildingEntity, CapturePointState,
-    DeadShip, KillRecord, MinimapPosition, ShipPosition, SmokeScreenEntity, TeamScore,
+    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, BuffZoneState, BuildingEntity,
+    CapturePointState, CapturedBuff, DeadShip, KillRecord, MinimapPosition, ShipPosition,
+    SmokeScreenEntity, TeamScore,
 };
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ShipConfig {
-    abilities: Vec<u32>,
-    hull: u32,
-    modernization: Vec<u32>,
-    units: Vec<u32>,
-    signals: Vec<u32>,
+    abilities: Vec<GameParamId>,
+    hull: GameParamId,
+    modernization: Vec<GameParamId>,
+    units: Vec<GameParamId>,
+    signals: Vec<GameParamId>,
 }
 
 impl ShipConfig {
-    pub fn signals(&self) -> &[u32] {
+    pub fn signals(&self) -> &[GameParamId] {
         self.signals.as_ref()
     }
 
-    pub fn units(&self) -> &[u32] {
+    pub fn units(&self) -> &[GameParamId] {
         self.units.as_ref()
     }
 
-    pub fn modernization(&self) -> &[u32] {
+    pub fn modernization(&self) -> &[GameParamId] {
         self.modernization.as_ref()
     }
 
-    pub fn hull(&self) -> u32 {
+    pub fn hull(&self) -> GameParamId {
         self.hull
     }
 
-    pub fn abilities(&self) -> &[u32] {
+    pub fn abilities(&self) -> &[GameParamId] {
         self.abilities.as_ref()
     }
 }
@@ -397,6 +398,8 @@ pub struct BattleReport {
     match_result: Option<BattleResult>,
     finish_type: Option<FinishType>,
     capture_points: Vec<CapturePointState>,
+    buff_zones: HashMap<EntityId, BuffZoneState>,
+    captured_buffs: Vec<CapturedBuff>,
     team_scores: Vec<TeamScore>,
     buildings: Vec<BuildingEntity>,
 }
@@ -456,6 +459,14 @@ impl BattleReport {
         &self.capture_points
     }
 
+    pub fn buff_zones(&self) -> &HashMap<EntityId, BuffZoneState> {
+        &self.buff_zones
+    }
+
+    pub fn captured_buffs(&self) -> &[CapturedBuff] {
+        &self.captured_buffs
+    }
+
     pub fn team_scores(&self) -> &[TeamScore] {
         &self.team_scores
     }
@@ -501,6 +512,12 @@ pub struct BattleController<'res, 'replay, G> {
     /// Populated from EntityCreate, consumed when PropertyUpdates fill capture_points.
     /// Maps InteractiveZone entity_id -> index in capture_points vec
     interactive_zone_indices: HashMap<EntityId, usize>,
+    /// Buff zones (arms race powerup drops). Maps entity_id -> BuffZoneState.
+    buff_zones: HashMap<EntityId, BuffZoneState>,
+    /// Maps zone entity_id -> Drop GameParam ID (from BattleLogic drop.data)
+    zone_drop_params: HashMap<EntityId, GameParamId>,
+    /// Buffs captured by teams during the match.
+    captured_buffs: Vec<CapturedBuff>,
     team_scores: Vec<TeamScore>,
     active_consumables: HashMap<EntityId, Vec<ActiveConsumable>>,
     active_shots: Vec<ActiveShot>,
@@ -542,7 +559,7 @@ where
                     name: vehicle.name.clone(),
                     relation: Relation::new(vehicle.relation),
                     vehicle: game_resources
-                        .game_param_by_id(vehicle.shipId.raw())
+                        .game_param_by_id(vehicle.shipId)
                         .expect("could not find vehicle"),
                 })
             })
@@ -570,6 +587,9 @@ where
             minimap_positions: HashMap::default(),
             capture_points: Vec::new(),
             interactive_zone_indices: HashMap::default(),
+            buff_zones: HashMap::default(),
+            zone_drop_params: HashMap::default(),
+            captured_buffs: Vec::new(),
             team_scores: Vec::new(),
             active_consumables: HashMap::default(),
             active_shots: Vec::new(),
@@ -603,6 +623,9 @@ where
         self.minimap_positions.clear();
         self.capture_points.clear();
         self.interactive_zone_indices.clear();
+        self.buff_zones.clear();
+        self.zone_drop_params.clear();
+        self.captured_buffs.clear();
         self.team_scores.clear();
         self.active_consumables.clear();
         self.active_shots.clear();
@@ -846,6 +869,8 @@ where
             finish_type: self.finish_type,
             frags,
             capture_points: self.capture_points,
+            buff_zones: self.buff_zones,
+            captured_buffs: self.captured_buffs,
             team_scores: self.team_scores,
             buildings,
         }
@@ -886,6 +911,80 @@ where
             }
             self.team_scores[*team_idx].score = score;
         }
+
+        // Match: state -> drop -> data -> SetRange{values: [{zoneId, paramsId, ...}]}
+        if levels.len() == 2
+            && let PropertyNestLevel::DictKey("drop") = &levels[0]
+            && let PropertyNestLevel::DictKey("data") = &levels[1]
+            && let UpdateAction::SetRange { values, .. } = action
+        {
+            for value in values {
+                if let ArgValue::FixedDict(dict) = value {
+                    let zone_id = dict
+                        .get("zoneId")
+                        .and_then(|v| Self::arg_to_i64(v))
+                        .map(|v| EntityId::from(v as i32));
+                    let params_id = dict
+                        .get("paramsId")
+                        .and_then(|v| Self::arg_to_i64(v))
+                        .map(GameParamId::from);
+
+                    if let (Some(zone_id), Some(params_id)) = (zone_id, params_id) {
+                        self.zone_drop_params.insert(zone_id, params_id);
+                        if let Some(bz) = self.buff_zones.get_mut(&zone_id) {
+                            bz.drop_params_id = Some(params_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Match: state -> drop -> picked -> SetRange{values: [{paramsId, owners: [entity_ids]}]}
+        if levels.len() == 2
+            && let PropertyNestLevel::DictKey("drop") = &levels[0]
+            && let PropertyNestLevel::DictKey("picked") = &levels[1]
+            && let UpdateAction::SetRange { values, .. } = action
+        {
+            for value in values {
+                if let ArgValue::FixedDict(dict) = value {
+                    let params_id = dict
+                        .get("paramsId")
+                        .and_then(|v| Self::arg_to_i64(v))
+                        .map(GameParamId::from);
+                    let owners: Option<Vec<EntityId>> = dict.get("owners").and_then(|v| {
+                        if let ArgValue::Array(arr) = v {
+                            Some(
+                                arr.iter()
+                                    .filter_map(|o| {
+                                        Self::arg_to_i64(o).map(|id| EntityId::from(id as i32))
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let (Some(params_id), Some(owners)) = (params_id, owners) {
+                        // Determine team from first owner entity
+                        let team_id = owners.first().and_then(|owner_id| {
+                            self.player_entities
+                                .values()
+                                .find(|p| p.initial_state.entity_id() == *owner_id)
+                                .map(|p| p.initial_state.team_id as i64)
+                        });
+
+                        if let Some(team_id) = team_id {
+                            self.captured_buffs.push(CapturedBuff {
+                                params_id,
+                                team_id,
+                                clock: _clock,
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn handle_entity_create_with_clock(
@@ -906,7 +1005,7 @@ where
                 props.update_from_args(&packet.props, self.version);
 
                 let captain_id = props.crew_modifiers_compact_params.params_id;
-                let captain = if captain_id != 0 {
+                let captain = if captain_id.raw() != 0 {
                     Some(
                         self.game_resources
                             .game_param_by_id(captain_id)
@@ -1081,8 +1180,19 @@ where
                     }
                 }
 
+                // Extract isEnabled from captureLogic
+                let mut is_enabled = true;
+                if let Some(cs) = packet.props.get("componentsState")
+                    && let Some(cs_dict) = Self::as_dict(cs)
+                    && let Some(cl) = cs_dict.get("captureLogic")
+                    && let Some(cl_dict) = Self::as_dict(cl)
+                    && let Some(v) = cl_dict.get("isEnabled")
+                {
+                    is_enabled = Self::arg_to_i64(v).unwrap_or(1) != 0;
+                }
+
                 if let Some(idx) = cp_index {
-                    // Ensure capture_points vec is large enough
+                    // Capture point: has controlPoint with valid index
                     while self.capture_points.len() <= idx {
                         self.capture_points.push(CapturePointState::default());
                     }
@@ -1096,8 +1206,27 @@ where
                         progress: (progress, 0.0),
                         has_invaders,
                         both_inside,
+                        is_enabled,
                     };
                     self.interactive_zone_indices.insert(packet.entity_id, idx);
+                } else {
+                    // Buff zone: controlPoint is null, this is an arms race powerup drop
+                    // Check if we already have a drop params mapping for this zone
+                    let drop_params_id = self.zone_drop_params.get(&packet.entity_id).copied();
+                    self.buff_zones.insert(
+                        packet.entity_id,
+                        BuffZoneState {
+                            entity_id: packet.entity_id,
+                            position,
+                            radius,
+                            team_id,
+                            is_active: is_enabled,
+                            drop_params_id,
+                        },
+                    );
+                    // Also register for PropertyUpdate tracking
+                    self.interactive_zone_indices
+                        .insert(packet.entity_id, usize::MAX);
                 }
             }
             EntityType::BattleEntity => debug!("BattleEntity create"),
@@ -1177,14 +1306,15 @@ fn parse_ship_config(blob: &[u8], version: Version) -> IResult<&[u8], ShipConfig
     let (i, abilities_count) = le_u32(i)?;
     let (i, abilities) = count(le_u32, abilities_count as usize)(i)?;
 
+    let to_ids = |v: Vec<u32>| v.into_iter().map(GameParamId::from).collect();
     Ok((
         i,
         ShipConfig {
-            abilities,
-            hull: units[0],
-            modernization,
-            units,
-            signals,
+            abilities: to_ids(abilities),
+            hull: GameParamId::from(units[0]),
+            modernization: to_ids(modernization),
+            units: to_ids(units),
+            signals: to_ids(signals),
         },
     ))
 }
@@ -1217,13 +1347,13 @@ pub struct VehicleState {
 
 #[derive(Debug, Default, Serialize, Clone)]
 pub struct CrewModifiersCompactParams {
-    params_id: u32,
+    params_id: GameParamId,
     is_in_adaption: bool,
     learned_skills: Skills,
 }
 
 impl CrewModifiersCompactParams {
-    pub fn params_id(&self) -> u32 {
+    pub fn params_id(&self) -> GameParamId {
         self.params_id
     }
 
@@ -1350,7 +1480,7 @@ impl UpdateFromReplayArgs for CrewModifiersCompactParams {
         const LEARNED_SKILLS_KEY: &str = "learnedSkills";
 
         if args.contains_key(PARAMS_ID_KEY) {
-            self.params_id = arg_value_to_type!(args, PARAMS_ID_KEY, u32);
+            self.params_id = GameParamId::from(arg_value_to_type!(args, PARAMS_ID_KEY, u32));
         }
         if args.contains_key(IS_IN_ADAPTION_KEY) {
             self.is_in_adaption = arg_value_to_type!(args, IS_IN_ADAPTION_KEY, bool);
@@ -1962,7 +2092,7 @@ impl VehicleEntity {
         &self.props
     }
 
-    pub fn commander_id(&self) -> u32 {
+    pub fn commander_id(&self) -> GameParamId {
         self.props.crew_modifiers_compact_params.params_id
     }
 
@@ -2077,6 +2207,14 @@ where
 
     fn capture_points(&self) -> &[CapturePointState] {
         &self.capture_points
+    }
+
+    fn buff_zones(&self) -> &HashMap<EntityId, BuffZoneState> {
+        &self.buff_zones
+    }
+
+    fn captured_buffs(&self) -> &[CapturedBuff] {
+        &self.captured_buffs
     }
 
     fn team_scores(&self) -> &[TeamScore] {
@@ -2278,6 +2416,8 @@ where
                 {
                     self.entities_by_id.remove(&entity_id);
                 }
+                // Remove buff zones on EntityLeave (arms race: zone consumed)
+                self.buff_zones.remove(&entity_id);
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityCreate(entity_create) => {
                 self.handle_entity_create(packet.clock, entity_create);
@@ -2421,33 +2561,41 @@ where
                     )
                     && let UpdateAction::SetKey { key, value } = &update.update_cmd.action
                 {
-                    match *key {
-                        "hasInvaders" => {
-                            if let Some(v) = Self::arg_to_i64(value) {
-                                self.capture_points[cp_idx].has_invaders = v != 0;
+                    if cp_idx != usize::MAX {
+                        // Capture point update
+                        match *key {
+                            "hasInvaders" => {
+                                if let Some(v) = Self::arg_to_i64(value) {
+                                    self.capture_points[cp_idx].has_invaders = v != 0;
+                                }
                             }
-                        }
-                        "invaderTeam" => {
-                            if let Some(v) = Self::arg_to_i64(value) {
-                                self.capture_points[cp_idx].invader_team = v;
+                            "invaderTeam" => {
+                                if let Some(v) = Self::arg_to_i64(value) {
+                                    self.capture_points[cp_idx].invader_team = v;
+                                }
                             }
-                        }
-                        "progress" => {
-                            if let Some(f) = value.float_32_ref() {
-                                self.capture_points[cp_idx].progress = (*f as f64, 0.0);
+                            "progress" => {
+                                if let Some(f) = value.float_32_ref() {
+                                    self.capture_points[cp_idx].progress = (*f as f64, 0.0);
+                                }
                             }
-                        }
-                        "bothInside" => {
-                            if let Some(v) = Self::arg_to_i64(value) {
-                                self.capture_points[cp_idx].both_inside = v != 0;
+                            "bothInside" => {
+                                if let Some(v) = Self::arg_to_i64(value) {
+                                    self.capture_points[cp_idx].both_inside = v != 0;
+                                }
                             }
-                        }
-                        "teamId" | "invaderTeamId" => {
-                            if let Some(v) = Self::arg_to_i64(value) {
-                                self.capture_points[cp_idx].invader_team = v;
+                            "teamId" | "invaderTeamId" => {
+                                if let Some(v) = Self::arg_to_i64(value) {
+                                    self.capture_points[cp_idx].invader_team = v;
+                                }
                             }
+                            "isEnabled" => {
+                                if let Some(v) = Self::arg_to_i64(value) {
+                                    self.capture_points[cp_idx].is_enabled = v != 0;
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
 

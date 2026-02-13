@@ -42,6 +42,38 @@ pub struct CapturePointState {
     pub progress: (f64, f64),
     pub has_invaders: bool,
     pub both_inside: bool,
+    /// Whether this capture point is enabled (arms race: starts disabled, enabled mid-game)
+    pub is_enabled: bool,
+}
+
+/// State of a buff zone (arms race powerup drop).
+///
+/// InteractiveZone entities with `controlPoint: null` in `componentsState`.
+/// These appear in waves during arms race, can be captured by either team,
+/// and disappear (EntityLeave) once consumed.
+#[derive(Debug, Clone, Serialize)]
+pub struct BuffZoneState {
+    pub entity_id: EntityId,
+    /// World position of the zone center
+    pub position: WorldPos,
+    /// Zone radius in world units
+    pub radius: f32,
+    pub team_id: i64,
+    /// Whether this zone is currently active and visible
+    pub is_active: bool,
+    /// GameParam ID of the associated Drop (powerup type)
+    pub drop_params_id: Option<GameParamId>,
+}
+
+/// A buff that has been captured by a team.
+#[derive(Debug, Clone, Serialize)]
+pub struct CapturedBuff {
+    /// GameParam ID of the Drop
+    pub params_id: GameParamId,
+    /// Team that captured it (entity_id of owner → team_id)
+    pub team_id: i64,
+    /// Game clock when captured
+    pub clock: GameClock,
 }
 
 /// Current score for a team.

@@ -114,6 +114,18 @@ pub enum DrawCommand {
         /// Localized ship name to render above the icon (below player name)
         ship_name: Option<String>,
     },
+    /// Arms race buff zone circle
+    BuffZone {
+        pos: MinimapPos,
+        /// Zone radius in pixels
+        radius: i32,
+        /// Team color (green/red/white)
+        color: [u8; 3],
+        /// Fill transparency
+        alpha: f32,
+        /// Marker name for icon lookup (e.g. "damage_active")
+        marker_name: Option<String>,
+    },
     /// Capture zone circle with team coloring and letter label
     CapturePoint {
         pos: MinimapPos,
@@ -192,6 +204,13 @@ pub enum DrawCommand {
         player_name: Option<String>,
         /// Points with interpolated colors (oldest=blue, newest=red)
         points: Vec<(MinimapPos, [u8; 3])>,
+    },
+    /// Team buff indicators below the score bar (arms race)
+    TeamBuffs {
+        /// Friendly team buffs: (marker_name, count), sorted by sorting field
+        friendly_buffs: Vec<(String, u32)>,
+        /// Enemy team buffs: (marker_name, count), sorted by sorting field
+        enemy_buffs: Vec<(String, u32)>,
     },
     /// Score bar
     ScoreBar {

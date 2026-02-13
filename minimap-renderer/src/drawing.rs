@@ -648,26 +648,28 @@ fn draw_timer(pm: &mut Pixmap, seconds: f32, font: &FontRef) {
     draw_text_shadow(pm, [255, 255, 255], x, 2, scale, font, &text);
 }
 
-/// Get a short text label for a death cause.
-fn death_cause_label(cause: &wows_replays::analyzer::decoder::DeathCause) -> &'static str {
+/// Map a DeathCause to the icon key used in the death_cause_icons HashMap.
+///
+/// Keys correspond to the base name portion of `icon_frag_{key}.png` files
+/// in `gui/battle_hud/icon_frag/`.
+fn death_cause_icon_key(cause: &wows_replays::analyzer::decoder::DeathCause) -> &'static str {
     use wows_replays::analyzer::decoder::DeathCause;
     match cause {
         DeathCause::Artillery | DeathCause::ApShell | DeathCause::HeShell | DeathCause::CsShell => {
-            "[MB]"
+            "main_caliber"
         }
-        DeathCause::Secondaries => "[SEC]",
-        DeathCause::Torpedo => "[TORP]",
-        DeathCause::AerialTorpedo => "[ATORP]",
-        DeathCause::Fire => "[FIRE]",
-        DeathCause::Flooding => "[FLOOD]",
-        DeathCause::DiveBomber => "[BOMB]",
-        DeathCause::SkipBombs => "[SKIP]",
-        DeathCause::AerialRocket => "[RCKT]",
-        DeathCause::Detonation => "[DET]",
-        DeathCause::Ramming => "[RAM]",
-        DeathCause::DepthCharge | DeathCause::AerialDepthCharge => "[DC]",
-        DeathCause::Missile => "[MSL]",
-        _ => "[x]",
+        DeathCause::Secondaries => "atba",
+        DeathCause::Torpedo | DeathCause::AerialTorpedo => "torpedo",
+        DeathCause::Fire => "burning",
+        DeathCause::Flooding => "flood",
+        DeathCause::DiveBomber => "bomb",
+        DeathCause::SkipBombs => "skip",
+        DeathCause::AerialRocket => "rocket",
+        DeathCause::Detonation => "detonate",
+        DeathCause::Ramming => "ram",
+        DeathCause::DepthCharge | DeathCause::AerialDepthCharge => "depthbomb",
+        DeathCause::Missile => "missile",
+        _ => "main_caliber",
     }
 }
 
@@ -680,21 +682,30 @@ fn draw_kill_feed(
     entries: &[KillFeedEntry],
     font: &FontRef,
     ship_icons: &HashMap<String, ShipIcon>,
+    death_cause_icons: &HashMap<String, RgbaImage>,
 ) {
     let name_scale = PxScale::from(10.0);
     let ship_scale = PxScale::from(9.0);
-    let cause_scale = PxScale::from(10.0);
     let line_height = 18i32;
     let right_margin = 4i32;
-    let icon_size = 14i32;
+    let icon_size = (crate::assets::ICON_SIZE * 14 / 24) as i32;
+    let cause_icon_size = icon_size;
     let gap = 2i32; // gap between elements
     let width = pm.width() as i32;
 
     for (i, entry) in entries.iter().take(5).enumerate() {
         let y = 22 + i as i32 * line_height;
+        let icon_y = y - (line_height - icon_size) / 2;
 
-        // Get death cause label
-        let cause_sym = death_cause_label(&entry.cause);
+        // Get death cause icon key
+        let cause_key = death_cause_icon_key(&entry.cause);
+        let has_cause_icon = death_cause_icons.contains_key(cause_key);
+        let cause_w = if has_cause_icon {
+            cause_icon_size
+        } else {
+            // Fallback to text measurement — shouldn't happen with full icon set
+            0
+        } as u32;
 
         // Measure all text segments
         let (killer_name_w, _) = text_size(name_scale, font, &entry.killer_name);
@@ -704,7 +715,6 @@ fn draw_kill_feed(
         } else {
             (0, 0)
         };
-        let (cause_w, _) = text_size(cause_scale, font, cause_sym);
         let (victim_name_w, _) = text_size(name_scale, font, &entry.victim_name);
         let victim_ship = entry.victim_ship_name.as_deref().unwrap_or("");
         let (victim_ship_w, _) = if !victim_ship.is_empty() {
@@ -772,7 +782,7 @@ fn draw_kill_feed(
         if has_killer_icon {
             x += gap;
             let icon = &ship_icons[entry.killer_species.as_ref().unwrap()];
-            draw_kill_feed_icon(pm, icon, x, y, icon_size, entry.killer_color, true);
+            draw_kill_feed_icon(pm, icon, x, icon_y, icon_size, entry.killer_color, true);
             x += icon_size + gap;
         } else if killer_ship_w > 0 {
             x += gap;
@@ -792,9 +802,16 @@ fn draw_kill_feed(
             x += killer_ship_w as i32;
         }
 
-        // Death cause symbol (white, centered)
+        // Death cause icon (or fallback gap)
         x += gap * 2;
-        draw_text_shadow(pm, [255, 255, 255], x, y, cause_scale, font, cause_sym);
+        if let Some(cause_icon) = death_cause_icons.get(cause_key) {
+            draw_icon(
+                pm,
+                cause_icon,
+                x + cause_icon_size / 2,
+                icon_y + cause_icon_size / 2,
+            );
+        }
         x += cause_w as i32 + gap * 2;
 
         // Victim name (team-colored)
@@ -813,7 +830,7 @@ fn draw_kill_feed(
         if has_victim_icon {
             x += gap;
             let icon = &ship_icons[entry.victim_species.as_ref().unwrap()];
-            draw_kill_feed_icon(pm, icon, x, y, icon_size, entry.victim_color, false);
+            draw_kill_feed_icon(pm, icon, x, icon_y, icon_size, entry.victim_color, false);
             x += icon_size + gap;
         } else if victim_ship_w > 0 {
             x += gap;
@@ -965,6 +982,8 @@ pub struct ImageTarget {
     ship_icons: HashMap<String, ShipIcon>,
     plane_icons: HashMap<String, RgbaImage>,
     consumable_icons: HashMap<String, RgbaImage>,
+    death_cause_icons: HashMap<String, RgbaImage>,
+    powerup_icons: HashMap<String, RgbaImage>,
 }
 
 impl ImageTarget {
@@ -973,6 +992,8 @@ impl ImageTarget {
         ship_icons: HashMap<String, ShipIcon>,
         plane_icons: HashMap<String, RgbaImage>,
         consumable_icons: HashMap<String, RgbaImage>,
+        death_cause_icons: HashMap<String, RgbaImage>,
+        powerup_icons: HashMap<String, RgbaImage>,
     ) -> Self {
         let map = map_image
             .unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
@@ -995,6 +1016,8 @@ impl ImageTarget {
             ship_icons,
             plane_icons,
             consumable_icons,
+            death_cause_icons,
+            powerup_icons,
         }
     }
 
@@ -1053,6 +1076,27 @@ impl RenderTarget for ImageTarget {
                     *color,
                     *alpha,
                 );
+            }
+            DrawCommand::BuffZone {
+                pos,
+                radius,
+                color,
+                alpha,
+                marker_name,
+            } => {
+                let cx = pos.x as f32;
+                let cy = pos.y as f32 + y_off;
+                let r = *radius as f32;
+                // Filled circle
+                draw_filled_circle(&mut self.canvas, cx, cy, r, *color, *alpha);
+                // Border ring
+                draw_circle_outline(&mut self.canvas, cx, cy, r, *color, 0.6, 1.5);
+                // Draw powerup icon centered on zone
+                if let Some(name) = marker_name {
+                    if let Some(icon) = self.powerup_icons.get(name.as_str()) {
+                        draw_icon(&mut self.canvas, icon, cx as i32, cy as i32);
+                    }
+                }
             }
             DrawCommand::CapturePoint {
                 pos,
@@ -1265,6 +1309,88 @@ impl RenderTarget for ImageTarget {
             DrawCommand::Timer { seconds } => {
                 draw_timer(&mut self.canvas, *seconds, &self.font);
             }
+            DrawCommand::TeamBuffs {
+                friendly_buffs,
+                enemy_buffs,
+            } => {
+                let icon_size = 16i32;
+                let gap = 2i32;
+                let buff_y = 22i32;
+                let count_scale = PxScale::from(10.0);
+
+                // Friendly buffs: left side, starting from x=4
+                let mut x = 4i32;
+                for (marker, count) in friendly_buffs {
+                    if let Some(icon) = self.powerup_icons.get(marker.as_str()) {
+                        let resized = image::imageops::resize(
+                            icon,
+                            icon_size as u32,
+                            icon_size as u32,
+                            image::imageops::FilterType::Nearest,
+                        );
+                        draw_icon(
+                            &mut self.canvas,
+                            &resized,
+                            x + icon_size / 2,
+                            buff_y + icon_size / 2,
+                        );
+                        if *count > 1 {
+                            let label = format!("{}", count);
+                            draw_text_shadow(
+                                &mut self.canvas,
+                                [255, 255, 255],
+                                x + icon_size,
+                                buff_y + 4,
+                                count_scale,
+                                &self.font,
+                                &label,
+                            );
+                            let (tw, _) = text_size(count_scale, &self.font, &label);
+                            x += icon_size + tw as i32 + gap;
+                        } else {
+                            x += icon_size + gap;
+                        }
+                    }
+                }
+
+                // Enemy buffs: right side, starting from right edge
+                let width = self.canvas.width() as i32;
+                let mut x = width - 4;
+                for (marker, count) in enemy_buffs {
+                    if let Some(icon) = self.powerup_icons.get(marker.as_str()) {
+                        let resized = image::imageops::resize(
+                            icon,
+                            icon_size as u32,
+                            icon_size as u32,
+                            image::imageops::FilterType::Nearest,
+                        );
+                        if *count > 1 {
+                            let label = format!("{}", count);
+                            let (tw, _) = text_size(count_scale, &self.font, &label);
+                            x -= tw as i32;
+                            draw_text_shadow(
+                                &mut self.canvas,
+                                [255, 255, 255],
+                                x,
+                                buff_y + 4,
+                                count_scale,
+                                &self.font,
+                                &label,
+                            );
+                            x -= icon_size;
+                        } else {
+                            x -= icon_size;
+                        }
+                        draw_icon(
+                            &mut self.canvas,
+                            &resized,
+                            x + icon_size / 2,
+                            buff_y + icon_size / 2,
+                        );
+                        x -= gap;
+                    }
+                }
+            }
             DrawCommand::PositionTrail { points, .. } => {
                 let y_off_i = y_off as i32;
                 for (pos, color) in points {
@@ -1303,7 +1429,13 @@ impl RenderTarget for ImageTarget {
                 }
             }
             DrawCommand::KillFeed { entries } => {
-                draw_kill_feed(&mut self.canvas, entries, &self.font, &self.ship_icons);
+                draw_kill_feed(
+                    &mut self.canvas,
+                    entries,
+                    &self.font,
+                    &self.ship_icons,
+                    &self.death_cause_icons,
+                );
             }
         }
     }

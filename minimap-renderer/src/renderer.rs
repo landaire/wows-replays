@@ -8,7 +8,7 @@ use wows_replays::analyzer::decoder::{DepthState, WeaponType};
 
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
-use wows_replays::types::{EntityId, PlaneId, Relation};
+use wows_replays::types::{EntityId, GameParamId, PlaneId, Relation};
 
 use crate::draw_command::{DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipVisibility};
 use crate::map_data::{self, WorldPos};
@@ -101,7 +101,7 @@ pub struct MinimapRenderer<'a> {
     squadron_info: HashMap<PlaneId, SquadronInfo>,
     player_species: HashMap<EntityId, String>,
     player_names: HashMap<EntityId, String>,
-    ship_param_ids: HashMap<EntityId, u32>,
+    ship_param_ids: HashMap<EntityId, GameParamId>,
     ship_display_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
     /// Per-ship consumable icon names: (entity_id, Consumable) -> PCY name (e.g. "PCY015_SpeedBoosterPremium")
@@ -309,8 +309,7 @@ impl<'a> MinimapRenderer<'a> {
             if self.squadron_info.contains_key(plane_id) {
                 continue;
             }
-            let param =
-                GameParamProvider::game_param_by_id(self.game_params, plane.params_id.raw());
+            let param = GameParamProvider::game_param_by_id(self.game_params, plane.params_id);
             let aircraft = param.as_ref().and_then(|p| p.aircraft());
             let category = aircraft
                 .map(|a| a.category())
@@ -360,8 +359,7 @@ impl<'a> MinimapRenderer<'a> {
         match weapon {
             WeaponType::Artillery => {
                 let ammo_param_id = controller.selected_ammo().get(entity_id)?;
-                let param =
-                    GameParamProvider::game_param_by_id(self.game_params, ammo_param_id.raw())?;
+                let param = GameParamProvider::game_param_by_id(self.game_params, *ammo_param_id)?;
                 let projectile = param.projectile()?;
                 let color = match projectile.ammo_type() {
                     "AP" => COLOR_AP,
@@ -453,9 +451,66 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
+        // 1b. Team buff indicators (arms race)
+        {
+            let captured = controller.captured_buffs();
+            if !captured.is_empty() {
+                let swap = self.self_team_id == Some(1);
+                let friendly_team = if swap { 1i64 } else { 0i64 };
+
+                // Aggregate: (team_id, marker_name) -> (count, sorting)
+                let mut buff_counts: HashMap<(i64, String), (u32, i64)> = HashMap::new();
+                for buff in captured {
+                    let drop_info =
+                        GameParamProvider::game_param_by_id(self.game_params, buff.params_id)
+                            .and_then(|p| {
+                                let d = p.drop_data()?;
+                                Some((d.marker_name_active().to_string(), d.sorting()))
+                            });
+                    if let Some((marker_name, sorting)) = drop_info {
+                        let entry = buff_counts
+                            .entry((buff.team_id, marker_name))
+                            .or_insert((0, sorting));
+                        entry.0 += 1;
+                    }
+                }
+
+                // Split into friendly and enemy, sorted by sorting
+                let mut friendly_buffs: Vec<(String, u32)> = Vec::new();
+                let mut enemy_buffs: Vec<(String, u32)> = Vec::new();
+                let mut friendly_sorted: Vec<_> = buff_counts
+                    .iter()
+                    .filter(|((team, _), _)| *team == friendly_team)
+                    .collect();
+                friendly_sorted.sort_by_key(|(_, (_, sorting))| *sorting);
+                for ((_, marker), (count, _)) in &friendly_sorted {
+                    friendly_buffs.push((marker.clone(), *count));
+                }
+
+                let mut enemy_sorted: Vec<_> = buff_counts
+                    .iter()
+                    .filter(|((team, _), _)| *team != friendly_team)
+                    .collect();
+                enemy_sorted.sort_by_key(|(_, (_, sorting))| *sorting);
+                for ((_, marker), (count, _)) in &enemy_sorted {
+                    enemy_buffs.push((marker.clone(), *count));
+                }
+
+                if !friendly_buffs.is_empty() || !enemy_buffs.is_empty() {
+                    commands.push(DrawCommand::TeamBuffs {
+                        friendly_buffs,
+                        enemy_buffs,
+                    });
+                }
+            }
+        }
+
         // 2. Capture points (drawn early so they're behind everything)
         if self.options.show_capture_points {
             for cp in controller.capture_points() {
+                if !cp.is_enabled {
+                    continue;
+                }
                 let Some(pos) = cp.position else {
                     continue;
                 };
@@ -483,6 +538,35 @@ impl<'a> MinimapRenderer<'a> {
                     label,
                     progress,
                     invader_color,
+                });
+            }
+        }
+
+        // 2a. Buff zones (arms race powerups, drawn behind ships)
+        if self.options.show_capture_points {
+            for bz in controller.buff_zones().values() {
+                if !bz.is_active {
+                    continue;
+                }
+                let px = map_info.world_to_minimap(bz.position, MINIMAP_SIZE);
+                let px_radius =
+                    (bz.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                let color = cap_point_color(bz.team_id, self.self_team_id);
+                let marker_name = bz.drop_params_id.and_then(|id| {
+                    let param = GameParamProvider::game_param_by_id(self.game_params, id)?;
+                    let drop = param.drop_data()?;
+                    if bz.team_id >= 0 {
+                        Some(drop.marker_name_active().to_string())
+                    } else {
+                        Some(drop.marker_name_inactive().to_string())
+                    }
+                });
+                commands.push(DrawCommand::BuffZone {
+                    pos: px,
+                    radius: px_radius.max(5),
+                    color,
+                    alpha: 0.15,
+                    marker_name,
                 });
             }
         }
@@ -895,8 +979,19 @@ impl<'a> MinimapRenderer<'a> {
                 let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
 
                 let info = self.squadron_info.get(plane_id);
-                // team_id: 0 = recording player's team, 1 = enemy team
-                let is_enemy = plane.team_id == 1;
+                // Use player_relations to determine if the plane is enemy.
+                // PlaneId::owner_id() extracts the ship entity_id from the packed plane ID.
+                let owner_entity = plane.plane_id.owner_id();
+                let is_enemy = self
+                    .player_relations
+                    .get(&owner_entity)
+                    .map(|r| r.is_enemy())
+                    .unwrap_or_else(|| {
+                        // Fallback: compare plane's absolute team_id against self player's team
+                        self.self_team_id
+                            .map(|self_team| plane.team_id != self_team as u32)
+                            .unwrap_or(false)
+                    });
 
                 let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
                 let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
@@ -995,14 +1090,6 @@ impl<'a> MinimapRenderer<'a> {
         // 8b. Ship config circles (detection, main battery, secondary, radar, hydro)
         if self.options.show_ship_config {
             for entity_id in &all_ship_ids {
-                // Only show for the recording player's own ship
-                let Some(relation) = self.player_relations.get(entity_id) else {
-                    continue;
-                };
-                if !relation.is_self() {
-                    continue;
-                }
-
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
                     && clock >= dead.clock

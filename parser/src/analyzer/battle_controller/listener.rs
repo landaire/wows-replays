@@ -5,8 +5,8 @@ use crate::types::{EntityId, GameClock, GameParamId, PlaneId};
 
 use super::controller::{Entity, GameMessage, Player, SharedPlayer};
 use super::state::{
-    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, CapturePointState, DeadShip,
-    KillRecord, MinimapPosition, ShipPosition, TeamScore,
+    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, BuffZoneState, CapturePointState,
+    CapturedBuff, DeadShip, KillRecord, MinimapPosition, ShipPosition, TeamScore,
 };
 
 /// Readonly view into BattleController state.
@@ -34,6 +34,12 @@ pub trait BattleControllerState {
 
     /// Current capture point states
     fn capture_points(&self) -> &[CapturePointState];
+
+    /// Current buff zone states (arms race powerup zones)
+    fn buff_zones(&self) -> &HashMap<EntityId, BuffZoneState>;
+
+    /// Buffs captured so far (arms race)
+    fn captured_buffs(&self) -> &[CapturedBuff];
 
     /// Current team scores
     fn team_scores(&self) -> &[TeamScore];

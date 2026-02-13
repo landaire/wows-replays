@@ -9,7 +9,8 @@ use crate::MINIMAP_SIZE;
 use crate::map_data;
 
 /// Icon size in pixels for rasterized ship icons.
-pub const ICON_SIZE: u32 = 24;
+/// Scales proportionally with minimap size (24px at 768px minimap).
+pub const ICON_SIZE: u32 = MINIMAP_SIZE / 32;
 
 pub fn load_packed_image(
     path: &str,
@@ -303,7 +304,15 @@ pub fn load_plane_icons(
                 let path = format!("{}/{}.png", dir, name);
                 if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
                     let key = format!("{}/{}", dir_name, name);
-                    icons.insert(key, img.to_rgba8());
+                    let rgba = img.to_rgba8();
+                    // Resize to ICON_SIZE to scale with minimap
+                    let resized = image::imageops::resize(
+                        &rgba,
+                        ICON_SIZE,
+                        ICON_SIZE,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    icons.insert(key, resized);
                 }
             }
         }
@@ -353,6 +362,92 @@ pub fn load_consumable_icons(
     }
 
     debug!(count = icons.len(), "Loaded consumable icons");
+    icons
+}
+
+/// Load death cause icons from game files into a HashMap keyed by cause name.
+///
+/// Discovers `icon_frag_*.png` files in `gui/battle_hud/icon_frag/` and stores
+/// them resized to `size x size` pixels, keyed by the base name (e.g. `"main_caliber"`).
+pub fn load_death_cause_icons(
+    file_tree: &FileNode,
+    pkg_loader: &PkgFileLoader,
+    size: u32,
+) -> HashMap<String, RgbaImage> {
+    let mut icons = HashMap::new();
+
+    let frag_dir = file_tree
+        .children()
+        .get("gui")
+        .and_then(|gui| gui.children().get("battle_hud"))
+        .and_then(|bh| bh.children().get("icon_frag"));
+
+    if let Some(dir) = frag_dir {
+        for filename in dir.children().keys() {
+            if let Some(base_name) = filename
+                .strip_prefix("icon_frag_")
+                .and_then(|s| s.strip_suffix(".png"))
+            {
+                let path = format!("gui/battle_hud/icon_frag/{}", filename);
+                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
+                    let resized = image::imageops::resize(
+                        &img,
+                        size,
+                        size,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    icons.insert(base_name.to_string(), resized);
+                }
+            }
+        }
+    }
+
+    debug!(count = icons.len(), "Loaded death cause icons");
+    icons
+}
+
+/// Load powerup (arms race buff) icons from game files.
+///
+/// Discovers `icon_marker_*.png` files in `gui/powerups/drops/` and stores them
+/// resized to `size x size` pixels, keyed by marker name (e.g. `"damage_active"`).
+pub fn load_powerup_icons(
+    file_tree: &FileNode,
+    pkg_loader: &PkgFileLoader,
+    size: u32,
+) -> HashMap<String, RgbaImage> {
+    let mut icons = HashMap::new();
+
+    let drops_dir = file_tree
+        .children()
+        .get("gui")
+        .and_then(|gui| gui.children().get("powerups"))
+        .and_then(|pu| pu.children().get("drops"));
+
+    if let Some(dir) = drops_dir {
+        for filename in dir.children().keys() {
+            if let Some(marker_name) = filename
+                .strip_prefix("icon_marker_")
+                .and_then(|s| s.strip_suffix(".png"))
+            {
+                // Skip _small variants
+                if marker_name.ends_with("_small") {
+                    continue;
+                }
+                let path = format!("gui/powerups/drops/{}", filename);
+                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
+                    let resized = image::imageops::resize(
+                        &img,
+                        size,
+                        size,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    icons.insert(marker_name.to_string(), resized);
+                }
+            }
+        }
+    }
+
+    debug!(count = icons.len(), "Loaded powerup icons");
     icons
 }
 

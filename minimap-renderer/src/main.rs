@@ -13,7 +13,8 @@ use wows_replays::analyzer::battle_controller::BattleController;
 use wows_replays::game_constants::GameConstants;
 
 use wows_minimap_renderer::assets::{
-    load_consumable_icons, load_map_image, load_map_info, load_plane_icons, load_ship_icons,
+    load_consumable_icons, load_death_cause_icons, load_map_image, load_map_info, load_plane_icons,
+    load_powerup_icons, load_ship_icons,
 };
 use wows_minimap_renderer::config::RendererConfig;
 use wows_minimap_renderer::drawing::ImageTarget;
@@ -156,6 +157,16 @@ fn main() -> Result<(), Report> {
     let ship_icons = load_ship_icons(file_tree, pkg_loader);
     let plane_icons = load_plane_icons(file_tree, pkg_loader);
     let consumable_icons = load_consumable_icons(file_tree, pkg_loader);
+    let death_cause_icons = load_death_cause_icons(
+        file_tree,
+        pkg_loader,
+        wows_minimap_renderer::assets::ICON_SIZE * 14 / 24,
+    );
+    let powerup_icons = load_powerup_icons(
+        file_tree,
+        pkg_loader,
+        wows_minimap_renderer::assets::ICON_SIZE,
+    );
 
     // Load game constants from game data (falls back to hardcoded defaults per-field)
     let game_constants = GameConstants::from_pkg(file_tree, pkg_loader);
@@ -171,7 +182,14 @@ fn main() -> Result<(), Report> {
 
     let game_duration = replay_file.meta.duration as f32;
 
-    let mut target = ImageTarget::new(map_image, ship_icons, plane_icons, consumable_icons);
+    let mut target = ImageTarget::new(
+        map_image,
+        ship_icons,
+        plane_icons,
+        consumable_icons,
+        death_cause_icons,
+        powerup_icons,
+    );
 
     // Load config: --config path > exe-adjacent minimap_renderer.toml > defaults
     let mut config = if let Some(config_path) = matches.value_of("CONFIG") {
