@@ -18,7 +18,7 @@ required-features = ["bin"]
 
 [features]
 default = ["bin", "gpu", "arc"]
-bin = ["dep:clap", "dep:gettext"]
+bin = ["dep:clap", "dep:gettext", "dep:toml"]
 gpu = ["dep:vk-video", "dep:wgpu", "dep:yuvutils-rs"]
 cpu = ["dep:openh264"]
 arc = ["wows_replays/arc"]
@@ -32,8 +32,7 @@ ab_glyph = "0.2"
 mp4 = "0.14"
 bytes = "1"
 clap = { version = "2.33.1", optional = true }
-anyhow = "1.0"
-toml = "0.8"
+toml = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"] }
 convert_case = "0.6"
 gettext = { version = "0.4", optional = true }
@@ -48,3 +47,6 @@ yuvutils-rs = { version = "0.8", optional = true }
 
 # CPU encoder (non-default)
 openh264 = { version = "0.9", features = ["source"], optional = true }
+rootcause = "0.12.0"
+tracing = { workspace = true }
+tracing-subscriber = "0.3.22"

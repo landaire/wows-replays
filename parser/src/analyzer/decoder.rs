@@ -437,99 +437,78 @@ impl PlayerStateData {
     /// Updates the PlayerStateData from a dictionary of values.
     /// Only fields present in the dictionary will be updated.
     pub fn update_from_dict(&mut self, values: &HashMap<&'static str, pickled::Value>) {
-        if let Some(v) = values.get(Self::KEY_AVATAR_ID) {
-            if let Some(id) = v.i64_ref() {
-                if let Some(ref mut hp) = self.human_properties {
+        if let Some(v) = values.get(Self::KEY_AVATAR_ID)
+            && let Some(id) = v.i64_ref()
+                && let Some(ref mut hp) = self.human_properties {
                     hp.avatar_id = AccountId::from(*id);
                 }
-            }
-        }
-        if let Some(v) = values.get(Self::KEY_NAME) {
-            if let Some(s) = v.string_ref() {
+        if let Some(v) = values.get(Self::KEY_NAME)
+            && let Some(s) = v.string_ref() {
                 self.username = s.inner().clone();
             }
-        }
-        if let Some(v) = values.get(Self::KEY_CLAN_TAG) {
-            if let Some(s) = v.string_ref() {
+        if let Some(v) = values.get(Self::KEY_CLAN_TAG)
+            && let Some(s) = v.string_ref() {
                 self.clan = s.inner().clone();
             }
-        }
-        if let Some(v) = values.get(Self::KEY_CLAN_ID) {
-            if let Some(id) = v.i64_ref() {
+        if let Some(v) = values.get(Self::KEY_CLAN_ID)
+            && let Some(id) = v.i64_ref() {
                 self.clan_id = *id;
             }
-        }
-        if let Some(v) = values.get(Self::KEY_CLAN_COLOR) {
-            if let Some(id) = v.i64_ref() {
+        if let Some(v) = values.get(Self::KEY_CLAN_COLOR)
+            && let Some(id) = v.i64_ref() {
                 self.clan_color = *id;
             }
-        }
-        if let Some(v) = values.get(Self::KEY_SHIP_ID) {
-            if let Some(id) = v.i64_ref() {
+        if let Some(v) = values.get(Self::KEY_SHIP_ID)
+            && let Some(id) = v.i64_ref() {
                 self.entity_id = EntityId::from(*id);
             }
-        }
-        if let Some(v) = values.get(Self::KEY_ID) {
-            if let Some(id) = v.i64_ref() {
+        if let Some(v) = values.get(Self::KEY_ID)
+            && let Some(id) = v.i64_ref() {
                 self.meta_ship_id = AccountId::from(*id);
             }
-        }
-        if let Some(v) = values.get(Self::KEY_TEAM_ID) {
-            if let Some(id) = v.i64_ref() {
+        if let Some(v) = values.get(Self::KEY_TEAM_ID)
+            && let Some(id) = v.i64_ref() {
                 self.team_id = *id;
             }
-        }
-        if let Some(v) = values.get(Self::KEY_MAX_HEALTH) {
-            if let Some(id) = v.i64_ref() {
+        if let Some(v) = values.get(Self::KEY_MAX_HEALTH)
+            && let Some(id) = v.i64_ref() {
                 self.max_health = *id;
             }
-        }
-        if let Some(v) = values.get(Self::KEY_REALM) {
-            if let Some(s) = v.string_ref() {
+        if let Some(v) = values.get(Self::KEY_REALM)
+            && let Some(s) = v.string_ref() {
                 self.realm = s.inner().clone();
             }
-        }
-        if let Some(v) = values.get(Self::KEY_ACCOUNT_DBID) {
-            if let Some(id) = v.i64_ref() {
+        if let Some(v) = values.get(Self::KEY_ACCOUNT_DBID)
+            && let Some(id) = v.i64_ref() {
                 self.db_id = AccountId::from(*id);
             }
-        }
-        if let Some(v) = values.get(Self::KEY_PREBATTLE_ID) {
-            if let Some(id) = v.i64_ref() {
-                if let Some(ref mut hp) = self.human_properties {
+        if let Some(v) = values.get(Self::KEY_PREBATTLE_ID)
+            && let Some(id) = v.i64_ref()
+                && let Some(ref mut hp) = self.human_properties {
                     hp.prebattle_id = *id;
                 }
-            }
-        }
-        if let Some(v) = values.get(Self::KEY_IS_ABUSER) {
-            if let Some(b) = v.bool_ref() {
+        if let Some(v) = values.get(Self::KEY_IS_ABUSER)
+            && let Some(b) = v.bool_ref() {
                 self.is_abuser = *b;
             }
-        }
-        if let Some(v) = values.get(Self::KEY_IS_HIDDEN) {
-            if let Some(b) = v.bool_ref() {
+        if let Some(v) = values.get(Self::KEY_IS_HIDDEN)
+            && let Some(b) = v.bool_ref() {
                 self.is_hidden = *b;
             }
-        }
-        if let Some(v) = values.get(Self::KEY_IS_CONNECTED) {
-            if let Some(b) = v.bool_ref() {
-                if let Some(ref mut hp) = self.human_properties {
+        if let Some(v) = values.get(Self::KEY_IS_CONNECTED)
+            && let Some(b) = v.bool_ref()
+                && let Some(ref mut hp) = self.human_properties {
                     hp.is_connected = *b;
                 }
-            }
-        }
-        if let Some(v) = values.get(Self::KEY_IS_CLIENT_LOADED) {
-            if let Some(b) = v.bool_ref() {
-                if let Some(ref mut hp) = self.human_properties {
+        if let Some(v) = values.get(Self::KEY_IS_CLIENT_LOADED)
+            && let Some(b) = v.bool_ref()
+                && let Some(ref mut hp) = self.human_properties {
                     hp.is_client_loaded = *b;
                 }
-            }
-        }
-        if let Some(v) = values.get(Self::KEY_IS_BOT) {
-            if let Some(b) = v.bool_ref() {
+        if let Some(v) = values.get(Self::KEY_IS_BOT)
+            && let Some(b) = v.bool_ref() {
                 self.is_bot = *b;
             }
-        }
 
         // Update raw_with_names with any new values
         for (k, v) in values.iter() {
@@ -637,7 +616,7 @@ fn convert_flat_dict_to_real_dict(value: &Value) -> HashMap<i64, Value> {
                     .i64_ref()
                     .expect("tuple first value was not an integer");
 
-                raw_values.insert(key.clone(), kv.inner()[1].clone());
+                raw_values.insert(*key, kv.inner()[1].clone());
             }
         }
     }
@@ -1007,7 +986,7 @@ fn try_convert_hashable_pickle_to_string(
 ) -> pickled::value::HashableValue {
     match value {
         pickled::value::HashableValue::Bytes(b) => {
-            if let Ok(s) = std::str::from_utf8(&b.inner()) {
+            if let Ok(s) = std::str::from_utf8(b.inner()) {
                 pickled::value::HashableValue::String(s.to_owned().into())
             } else {
                 pickled::value::HashableValue::Bytes(b)
@@ -1037,7 +1016,7 @@ fn try_convert_hashable_pickle_to_string(
 fn try_convert_pickle_to_string(value: pickled::value::Value) -> pickled::value::Value {
     match value {
         pickled::value::Value::Bytes(b) => {
-            if let Ok(s) = std::str::from_utf8(&b.inner()) {
+            if let Ok(s) = std::str::from_utf8(b.inner()) {
                 pickled::value::Value::String(s.to_owned().into())
             } else {
                 pickled::value::Value::Bytes(b)
@@ -1528,7 +1507,7 @@ where
             }
         } else if *method == "onGameRoomStateChanged" {
             let player_states = pickled::de::value_from_slice(
-                &args[0].blob_ref().expect("player_states arg is not a blob"),
+                args[0].blob_ref().expect("player_states arg is not a blob"),
                 pickled::de::DeOptions::new(),
             )
             .expect("failed to deserialize player_states");
@@ -1584,7 +1563,7 @@ where
                                 .map(|(k, v)| {
                                     let k = match k {
                                         pickled::value::HashableValue::Bytes(b) => {
-                                            std::str::from_utf8(&b.inner()).unwrap().to_string()
+                                            std::str::from_utf8(b.inner()).unwrap().to_string()
                                         }
                                         _ => panic!(),
                                     };
@@ -1618,8 +1597,8 @@ where
             }
 
             let mut bots_out = vec![];
-            if let Some(ArgValue::Blob(blob)) = args.get(4) {
-                if let Ok(value) =
+            if let Some(ArgValue::Blob(blob)) = args.get(4)
+                && let Ok(value) =
                     pickled::de::value_from_slice(blob, pickled::de::DeOptions::new())
                 {
                     let value = try_convert_pickle_to_string(value);
@@ -1629,7 +1608,6 @@ where
                         }
                     }
                 }
-            }
 
             DecodedPacketPayload::OnArenaStateReceived {
                 arena_id: arg0,

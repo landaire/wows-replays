@@ -1,6 +1,7 @@
 use image::{RgbImage, RgbaImage};
 use std::collections::HashMap;
 use std::path::Path;
+use tracing::{debug, warn};
 use wowsunpack::data::idx::FileNode;
 use wowsunpack::data::pkg::PkgFileLoader;
 
@@ -20,11 +21,9 @@ pub fn load_packed_image(
     if file_tree
         .read_file_at_path(file_path, pkg_loader, &mut buf)
         .is_ok()
-    {
-        if let Ok(img) = image::load_from_memory(&buf) {
+        && let Ok(img) = image::load_from_memory(&buf) {
             return Some(img);
         }
-    }
     None
 }
 
@@ -51,26 +50,23 @@ pub fn load_map_image(
             let mut base = water_img.to_rgba8();
             let overlay = land_img.to_rgba8();
             image::imageops::overlay(&mut base, &overlay, 0, 0);
-            println!(
-                "Loaded map image: {}x{} (water + land composited)",
-                base.width(),
-                base.height()
+            debug!(
+                width = base.width(),
+                height = base.height(),
+                "Loaded map image (water + land composited)"
             );
             image::DynamicImage::ImageRgba8(base).to_rgb8()
         }
         (Some(water_img), None) => {
-            println!("Loaded map image: water only");
+            debug!("Loaded map image: water only");
             water_img.to_rgb8()
         }
         (None, Some(land_img)) => {
-            println!("Loaded map image: land only (no water background)");
+            debug!("Loaded map image: land only (no water background)");
             land_img.to_rgb8()
         }
         (None, None) => {
-            println!(
-                "Warning: Could not load map image for '{}', using blank background",
-                map_name
-            );
+            warn!(map = %map_name, "Could not load map image, using blank background");
             return None;
         }
     };
@@ -109,16 +105,13 @@ pub fn load_map_info(
             .is_ok()
             && !buf.is_empty()
         {
-            println!("Loaded space.settings from: {}", candidate);
+            debug!(path = %candidate, "Loaded space.settings");
             found = true;
             break;
         }
     }
     if !found {
-        println!(
-            "Warning: Could not load space.settings for '{}' (tried: {:?})",
-            bare_name, candidates
-        );
+        warn!(map = %bare_name, tried = ?candidates, "Could not load space.settings, using defaults");
         return None;
     }
 
@@ -162,9 +155,13 @@ pub fn load_map_info(
     // Use the larger dimension as space_size (maps should be square)
     let space_size = space_w.max(space_h);
 
-    println!(
-        "Map '{}': bounds ({},{})..({},{}), chunk_size={}, space_size={}",
-        bare_name, min_x, min_y, max_x, max_y, chunk_size, space_size
+    debug!(
+        map = %bare_name,
+        bounds_min = ?(min_x, min_y),
+        bounds_max = ?(max_x, max_y),
+        chunk_size,
+        space_size,
+        "Map metadata"
     );
 
     Some(map_data::MapInfo { space_size })
@@ -206,12 +203,10 @@ pub fn load_ship_icons(
             .read_file_at_path(file_path, pkg_loader, &mut buf)
             .is_ok()
             && !buf.is_empty()
-        {
-            if let Some(img) = rasterize_svg(&buf, ICON_SIZE) {
+            && let Some(img) = rasterize_svg(&buf, ICON_SIZE) {
                 icons.insert(key.to_string(), img);
                 return true;
             }
-        }
         false
     };
     for name in &species_names {
@@ -254,9 +249,9 @@ pub fn load_ship_icons(
             }
         }
     }
-    println!("Loaded {} ship icon variants", icons.len());
+    debug!(count = icons.len(), "Loaded ship icons");
     if icons.is_empty() {
-        println!("Warning: No ship icons loaded, using fallback circles");
+        warn!("No ship icons loaded, using fallback circles");
     }
     icons
 }
@@ -311,7 +306,7 @@ pub fn load_plane_icons(
             }
         }
     }
-    println!("Loaded {} plane icons", icons.len());
+    debug!(count = icons.len(), "Loaded plane icons");
     icons
 }
 
@@ -332,7 +327,7 @@ pub fn load_consumable_icons(
         .and_then(|gui| gui.children().get("consumables"));
 
     if let Some(dir) = consumables_dir {
-        for (filename, _node) in dir.children() {
+        for filename in dir.children().keys() {
             // Match files like "consumable_PCY009_CrashCrewPremium.png"
             if let Some(pcy_name) = filename
                 .strip_prefix("consumable_")
@@ -355,7 +350,7 @@ pub fn load_consumable_icons(
         }
     }
 
-    println!("Loaded {} consumable icons", icons.len());
+    debug!(count = icons.len(), "Loaded consumable icons");
     icons
 }
 

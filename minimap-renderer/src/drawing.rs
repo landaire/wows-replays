@@ -229,8 +229,8 @@ fn draw_capture_point(
     draw_smoke(image, x, y, radius, color, alpha);
 
     // If capture in progress, draw a pie-slice fill in the invader's color
-    if progress > 0.001 {
-        if let Some(inv_color) = invader_color {
+    if progress > 0.001
+        && let Some(inv_color) = invader_color {
             let fill_alpha = alpha + 0.10;
             // Pie-slice from top (-PI/2), sweeping clockwise by progress * 2*PI
             let start_angle = -std::f32::consts::FRAC_PI_2;
@@ -267,7 +267,6 @@ fn draw_capture_point(
                 }
             }
         }
-    }
 
     // Circle outline — use invader color when contested, owner color otherwise
     let outline_color = if invader_color.is_some() && progress > 0.001 {
@@ -1006,12 +1005,11 @@ fn draw_ship_icon_outline(
                     let ns_y = -ndx_f * sin_r + ndy_f * cos_r + cy;
                     let nsx = ns_x.round() as i32;
                     let nsy = ns_y.round() as i32;
-                    if nsx >= 0 && nsx < iw && nsy >= 0 && nsy < ih {
-                        if icon.get_pixel(nsx as u32, nsy as u32)[3] > 128 {
+                    if nsx >= 0 && nsx < iw && nsy >= 0 && nsy < ih
+                        && icon.get_pixel(nsx as u32, nsy as u32)[3] > 128 {
                             has_opaque_neighbor = true;
                             break 'outer;
                         }
-                    }
                 }
             }
 

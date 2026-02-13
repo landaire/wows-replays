@@ -1,7 +1,8 @@
-use anyhow::anyhow;
 use clap::{App, Arg};
+use rootcause::prelude::*;
 use std::fs::File;
 use std::path::Path;
+use tracing::{info, warn};
 use wowsunpack::data::Version;
 use wowsunpack::game_data;
 use wowsunpack::game_params::provider::GameMetadataProvider;
@@ -19,7 +20,7 @@ use wows_minimap_renderer::drawing::ImageTarget;
 use wows_minimap_renderer::renderer::MinimapRenderer;
 use wows_minimap_renderer::video::{DumpMode, VideoEncoder};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Report> {
     let matches = App::new("Minimap Renderer")
         .about("Generates a minimap timelapse video from a WoWS replay")
         .arg(
@@ -103,6 +104,8 @@ fn main() -> anyhow::Result<()> {
         )
         .get_matches();
 
+    tracing_subscriber::fmt().with_target(false).init();
+
     // Handle --generate-config before anything else
     if matches.is_present("GENERATE_CONFIG") {
         print!("{}", RendererConfig::generate_default_toml());
@@ -121,38 +124,35 @@ fn main() -> anyhow::Result<()> {
         None => None,
     };
 
-    println!("Parsing replay...");
+    info!("Parsing replay");
     let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(replay_path))?;
     let replay_version = Version::from_client_exe(&replay_file.meta.clientVersionFromExe);
 
-    println!("Loading game data for build {}...", replay_version.build);
+    info!(build = %replay_version.build, "Loading game data");
     let wows_dir = Path::new(game_dir);
     let resources =
-        game_data::load_game_resources(wows_dir, &replay_version).map_err(|e| anyhow!("{}", e))?;
+        game_data::load_game_resources(wows_dir, &replay_version).map_err(|e| report!("{e}"))?;
     let file_tree = &resources.file_tree;
     let pkg_loader = &resources.pkg_loader;
     let specs = &resources.specs;
 
-    println!("Loading game params...");
+    info!("Loading game params");
     let mut game_params = GameMetadataProvider::from_pkg(file_tree, pkg_loader)
-        .map_err(|e| anyhow!("Failed to load GameParams: {:?}", e))?;
+        .map_err(|e| report!("Failed to load GameParams: {e:?}"))?;
     let controller_game_params = GameMetadataProvider::from_pkg(file_tree, pkg_loader)
-        .map_err(|e| anyhow!("Failed to load GameParams for controller: {:?}", e))?;
+        .map_err(|e| report!("Failed to load GameParams for controller: {e:?}"))?;
 
     // Load translations for ship name localization
     let mo_path = game_data::translations_path(wows_dir, replay_version.build);
     if mo_path.exists() {
         let catalog = gettext::Catalog::parse(File::open(&mo_path)?)
-            .map_err(|e| anyhow!("Failed to parse global.mo: {:?}", e))?;
+            .map_err(|e| report!("Failed to parse global.mo: {e:?}"))?;
         game_params.set_translations(catalog);
     } else {
-        eprintln!(
-            "Warning: translations not found at {:?}, ship names will be unavailable",
-            mo_path
-        );
+        warn!(path = ?mo_path, "Translations not found, ship names will be unavailable");
     }
 
-    println!("Loading icons...");
+    info!("Loading icons");
     let ship_icons = load_ship_icons(file_tree, pkg_loader);
     let plane_icons = load_plane_icons(file_tree, pkg_loader);
     let consumable_icons = load_consumable_icons(file_tree, pkg_loader);
@@ -161,13 +161,13 @@ fn main() -> anyhow::Result<()> {
     let game_constants = GameConstants::from_pkg(file_tree, pkg_loader);
 
     if let Some(mode_name) = game_constants.game_mode_name(replay_file.meta.gameMode as i32) {
-        println!("Game mode: {} ({})", mode_name, replay_file.meta.gameMode);
+        info!(mode = %mode_name, id = replay_file.meta.gameMode, "Game mode");
     }
 
     // Load map image and metadata from game files
     let map_name = &replay_file.meta.mapName;
-    let map_image = load_map_image(map_name, &file_tree, &pkg_loader);
-    let map_info = load_map_info(map_name, &file_tree, &pkg_loader);
+    let map_image = load_map_image(map_name, file_tree, pkg_loader);
+    let map_info = load_map_info(map_name, file_tree, pkg_loader);
 
     let game_duration = replay_file.meta.duration as f32;
 
@@ -183,7 +183,7 @@ fn main() -> anyhow::Result<()> {
             .and_then(|p| p.parent().map(|d| d.join("minimap_renderer.toml")));
         match exe_config {
             Some(path) if path.exists() => {
-                eprintln!("Loading config from {:?}", path);
+                info!(path = ?path, "Loading config");
                 RendererConfig::load(&path)?
             }
             _ => RendererConfig::default(),
@@ -201,14 +201,14 @@ fn main() -> anyhow::Result<()> {
         Some(&game_constants),
     );
 
-    let mut parser = wows_replays::packet2::Parser::new(&specs);
+    let mut parser = wows_replays::packet2::Parser::new(specs);
     let mut remaining = &replay_file.packet_data[..];
     let mut prev_clock = wows_replays::types::GameClock(0.0);
 
     while !remaining.is_empty() {
         let (rest, packet) = parser
             .parse_packet(remaining)
-            .map_err(|e| anyhow!("Packet parse error: {:?}", e))?;
+            .map_err(|e| report!("Packet parse error: {e:?}"))?;
         remaining = rest;
 
         // Render when clock changes (all prev_clock packets have been processed)
@@ -237,6 +237,6 @@ fn main() -> anyhow::Result<()> {
     controller.finish();
     encoder.finish(&controller, &mut renderer, &mut target)?;
 
-    println!("Done!");
+    info!("Done");
     Ok(())
 }

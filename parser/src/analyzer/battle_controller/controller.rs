@@ -8,7 +8,7 @@ use std::{
 use nom::{multi::count, number::complete::le_u32, sequence::pair};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumString;
-use tracing::{Level, debug, span, trace, warn};
+use tracing::{Level, debug, span, trace};
 use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
@@ -868,16 +868,15 @@ where
         let action = &update.update_cmd.action;
 
         // Match: state -> missions -> teamsScore -> [N] -> SetKey{score}
-        if levels.len() == 3 {
-            if let PropertyNestLevel::DictKey("missions") = &levels[0] {
-                if let PropertyNestLevel::DictKey("teamsScore") = &levels[1] {
-                    if let PropertyNestLevel::ArrayIndex(team_idx) = &levels[2] {
-                        if let UpdateAction::SetKey {
+        if levels.len() == 3
+            && let PropertyNestLevel::DictKey("missions") = &levels[0]
+                && let PropertyNestLevel::DictKey("teamsScore") = &levels[1]
+                    && let PropertyNestLevel::ArrayIndex(team_idx) = &levels[2]
+                        && let UpdateAction::SetKey {
                             key: "score",
                             value,
                         } = action
-                        {
-                            if let Some(score) = TryInto::<i32>::try_into(value).ok() {
+                            && let Ok(score) = TryInto::<i32>::try_into(value) {
                                 while self.team_scores.len() <= *team_idx {
                                     self.team_scores.push(TeamScore {
                                         team_index: self.team_scores.len(),
@@ -886,11 +885,6 @@ where
                                 }
                                 self.team_scores[*team_idx].score = score as i64;
                             }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     fn handle_entity_create_with_clock(
@@ -1028,11 +1022,11 @@ where
                 let mut progress: f64 = 0.0;
                 let mut both_inside = false;
 
-                if let Some(cs) = packet.props.get("componentsState") {
-                    if let Some(cs_dict) = Self::as_dict(cs) {
+                if let Some(cs) = packet.props.get("componentsState")
+                    && let Some(cs_dict) = Self::as_dict(cs) {
                         // Extract control point index and type
-                        if let Some(cp) = cs_dict.get("controlPoint") {
-                            if let Some(cp_dict) = Self::as_dict(cp) {
+                        if let Some(cp) = cs_dict.get("controlPoint")
+                            && let Some(cp_dict) = Self::as_dict(cp) {
                                 if let Some(idx) = cp_dict.get("index") {
                                     cp_index = Self::arg_to_i64(idx).map(|v| v as usize);
                                 }
@@ -1040,10 +1034,9 @@ where
                                     cp_type = Self::arg_to_i64(t).unwrap_or(0) as i32;
                                 }
                             }
-                        }
                         // Extract initial capture logic state
-                        if let Some(cl) = cs_dict.get("captureLogic") {
-                            if let Some(cl_dict) = Self::as_dict(cl) {
+                        if let Some(cl) = cs_dict.get("captureLogic")
+                            && let Some(cl_dict) = Self::as_dict(cl) {
                                 if let Some(v) = cl_dict.get("hasInvaders") {
                                     has_invaders = Self::arg_to_i64(v).unwrap_or(0) != 0;
                                 }
@@ -1057,9 +1050,7 @@ where
                                     both_inside = Self::arg_to_i64(v).unwrap_or(0) != 0;
                                 }
                             }
-                        }
                     }
-                }
 
                 if let Some(idx) = cp_index {
                     // Ensure capture_points vec is large enough
@@ -2214,31 +2205,27 @@ where
             }
             crate::analyzer::decoder::DecodedPacketPayload::EntityProperty(prop) => {
                 let entity_id = prop.entity_id;
-                if let Some(entity) = self.entities_by_id.get(&entity_id) {
-                    if let Some(vehicle) = entity.vehicle_ref() {
+                if let Some(entity) = self.entities_by_id.get(&entity_id)
+                    && let Some(vehicle) = entity.vehicle_ref() {
                         let mut vehicle = RefCell::borrow_mut(vehicle);
                         vehicle
                             .props
                             .update_by_name(prop.property, &prop.value, self.version);
                     }
-                }
                 // Handle targetLocalPos — packed turret aim direction
-                if prop.property == "targetLocalPos" {
-                    if let Some(val) = Self::arg_to_i64(&prop.value) {
+                if prop.property == "targetLocalPos"
+                    && let Some(val) = Self::arg_to_i64(&prop.value) {
                         let lo = (val & 0xFF) as f32;
                         // lo byte encodes world-space yaw: (lo/256)*2*PI - PI
                         let yaw = (lo / 256.0) * std::f32::consts::TAU - std::f32::consts::PI;
                         self.target_yaws.insert(entity_id, yaw);
                     }
-                }
                 // Handle InteractiveZone teamId changes (packet type 0x7)
-                if prop.property == "teamId" {
-                    if let Some(&cp_idx) = self.interactive_zone_indices.get(&entity_id) {
-                        if let Some(v) = Self::arg_to_i64(&prop.value) {
+                if prop.property == "teamId"
+                    && let Some(&cp_idx) = self.interactive_zone_indices.get(&entity_id)
+                        && let Some(v) = Self::arg_to_i64(&prop.value) {
                             self.capture_points[cp_idx].team_id = v;
                         }
-                    }
-                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::BasePlayerCreate(_base) => {
                 trace!("BASE PLAYER CREATE");
@@ -2364,9 +2351,9 @@ where
                     debug!("PROPERTY UPDATE: {:#?}", update);
                 }
                 // Handle smoke screen point mutations
-                if update.property == "points" {
-                    if let Some(entity) = self.entities_by_id.get(&update.entity_id) {
-                        if let Some(smoke_ref) = entity.smoke_screen_ref() {
+                if update.property == "points"
+                    && let Some(entity) = self.entities_by_id.get(&update.entity_id)
+                        && let Some(smoke_ref) = entity.smoke_screen_ref() {
                             let mut smoke = RefCell::borrow_mut(smoke_ref);
                             match &update.update_cmd.action {
                                 UpdateAction::SetRange { start, values, .. } => {
@@ -2391,17 +2378,15 @@ where
                             }
                             drop(smoke);
                         }
-                    }
-                }
                 // Handle InteractiveZone (capture point) state updates
                 // PropertyUpdates arrive as: property="componentsState", levels=[captureLogic], action=SetKey{key, value}
-                if update.property == "componentsState" {
-                    if let Some(&cp_idx) = self.interactive_zone_indices.get(&update.entity_id) {
-                        if matches!(
+                if update.property == "componentsState"
+                    && let Some(&cp_idx) = self.interactive_zone_indices.get(&update.entity_id)
+                        && matches!(
                             update.update_cmd.levels.first(),
                             Some(PropertyNestLevel::DictKey("captureLogic"))
-                        ) {
-                            if let UpdateAction::SetKey { key, value } = &update.update_cmd.action {
+                        )
+                            && let UpdateAction::SetKey { key, value } = &update.update_cmd.action {
                                 match *key {
                                     "hasInvaders" => {
                                         if let Some(v) = Self::arg_to_i64(value) {
@@ -2431,9 +2416,6 @@ where
                                     _ => {}
                                 }
                             }
-                        }
-                    }
-                }
 
                 self.handle_property_update(packet.clock, update);
             }
@@ -2544,12 +2526,11 @@ where
                 entity_id,
                 weapon_type,
                 ammo_param_id,
-                is_reload,
+                is_reload: _,
             } => {
                 // Track artillery ammo selection (weapon_type 0 = artillery)
                 if weapon_type == 0 {
-                    self.selected_ammo
-                        .insert(entity_id, ammo_param_id);
+                    self.selected_ammo.insert(entity_id, ammo_param_id);
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::CruiseState { .. } => {
@@ -2603,12 +2584,12 @@ where
                     let Some(player) = self.player_entities.values().find(|player| {
                         player.initial_state().meta_ship_id() == AccountId::from(meta_ship_id)
                     }) else {
-                        warn!("Failed to find player with meta ship ID {meta_ship_id:?}");
+                        debug!("Failed to find player with meta ship ID {meta_ship_id:?}");
                         continue;
                     };
 
                     {
-                        player.end_state_mut().update_from_dict(&player_state);
+                        player.end_state_mut().update_from_dict(player_state);
                     }
 
                     let player_has_died = self

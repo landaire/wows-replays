@@ -185,8 +185,8 @@ impl<'a> MinimapRenderer<'a> {
             // Iterate ship ability slots, look up each ability's consumableType from GameParams.
             let ship_id = player.vehicle().id();
             let ship_param = GameParamProvider::game_param_by_id(self.game_params, ship_id);
-            if let Some(vehicle) = ship_param.as_ref().and_then(|p| p.vehicle()) {
-                if let Some(abilities) = vehicle.abilities() {
+            if let Some(vehicle) = ship_param.as_ref().and_then(|p| p.vehicle())
+                && let Some(abilities) = vehicle.abilities() {
                     for slot in abilities {
                         for (ability_name, variant_name) in slot {
                             let Some(param) = GameParamProvider::game_param_by_name(
@@ -215,7 +215,6 @@ impl<'a> MinimapRenderer<'a> {
                         }
                     }
                 }
-            }
         }
         self.players_populated = true;
     }
@@ -381,11 +380,10 @@ impl<'a> MinimapRenderer<'a> {
     pub fn record_position(&mut self, entity_id: EntityId, pos: map_data::MinimapPos) {
         let history = self.position_history.entry(entity_id).or_default();
         // Deduplicate: skip if same pixel as last recorded position
-        if let Some(last) = history.last() {
-            if last.x == pos.x && last.y == pos.y {
+        if let Some(last) = history.last()
+            && last.x == pos.x && last.y == pos.y {
                 return;
             }
-        }
         history.push(pos);
     }
 
@@ -621,11 +619,10 @@ impl<'a> MinimapRenderer<'a> {
 
         for entity_id in &all_ship_ids {
             // Skip dead ships (they get an X marker below)
-            if let Some(dead) = dead_ships.get(entity_id) {
-                if clock >= dead.clock {
+            if let Some(dead) = dead_ships.get(entity_id)
+                && clock >= dead.clock {
                     continue;
                 }
-            }
 
             let relation = self
                 .player_relations
@@ -665,7 +662,7 @@ impl<'a> MinimapRenderer<'a> {
                 .entities_by_id()
                 .get(entity_id)
                 .and_then(|e| e.vehicle_ref())
-                .map(|v| {
+                .and_then(|v| {
                     let v = v.borrow();
                     let max = v.props().max_health();
                     if max > 0.0 {
@@ -673,8 +670,7 @@ impl<'a> MinimapRenderer<'a> {
                     } else {
                         None
                     }
-                })
-                .flatten();
+                });
 
             // Compute yaw: prefer minimap heading (more accurate for icon rotation)
             let minimap_yaw =
@@ -712,8 +708,8 @@ impl<'a> MinimapRenderer<'a> {
                         is_detected_teammate,
                         name_color,
                     });
-                    if self.options.show_hp_bars {
-                        if let Some(frac) = health_fraction {
+                    if self.options.show_hp_bars
+                        && let Some(frac) = health_fraction {
                             let fill_color = hp_bar_color(frac);
                             commands.push(DrawCommand::HealthBar {
                                 pos: px,
@@ -723,7 +719,6 @@ impl<'a> MinimapRenderer<'a> {
                                 background_alpha: HP_BAR_BG_ALPHA,
                             });
                         }
-                    }
                 } else if let Some(mm) = minimap {
                     // Minimap-only position
                     let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
@@ -742,8 +737,8 @@ impl<'a> MinimapRenderer<'a> {
                         is_detected_teammate,
                         name_color,
                     });
-                    if self.options.show_hp_bars {
-                        if let Some(frac) = health_fraction {
+                    if self.options.show_hp_bars
+                        && let Some(frac) = health_fraction {
                             let fill_color = hp_bar_color(frac);
                             commands.push(DrawCommand::HealthBar {
                                 pos: px,
@@ -753,7 +748,6 @@ impl<'a> MinimapRenderer<'a> {
                                 background_alpha: HP_BAR_BG_ALPHA,
                             });
                         }
-                    }
                 }
             } else {
                 // Undetected — prefer world position, fall back to minimap
@@ -786,11 +780,10 @@ impl<'a> MinimapRenderer<'a> {
             let target_yaws = controller.target_yaws();
             for (entity_id, &world_yaw) in target_yaws {
                 // Skip dead ships
-                if let Some(dead) = dead_ships.get(entity_id) {
-                    if clock >= dead.clock {
+                if let Some(dead) = dead_ships.get(entity_id)
+                    && clock >= dead.clock {
                         continue;
                     }
-                }
                 // Skip undetected ships — aim data is stale
                 let detected = minimap_positions
                     .get(entity_id)
@@ -891,19 +884,14 @@ impl<'a> MinimapRenderer<'a> {
             let all_consumables = controller.active_consumables();
             for (entity_id, consumables) in all_consumables {
                 // Skip dead ships
-                if let Some(dead) = dead_ships.get(entity_id) {
-                    if clock >= dead.clock {
+                if let Some(dead) = dead_ships.get(entity_id)
+                    && clock >= dead.clock {
                         continue;
                     }
-                }
                 // Get ship position (prefer world position, fall back to minimap)
                 let pos = if let Some(sp) = ship_positions.get(entity_id) {
                     Some(map_info.world_to_minimap(sp.position, MINIMAP_SIZE))
-                } else if let Some(mm) = minimap_positions.get(entity_id) {
-                    Some(map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE))
-                } else {
-                    None
-                };
+                } else { minimap_positions.get(entity_id).map(|mm| map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)) };
                 let Some(pos) = pos else { continue };
 
                 let relation = self
@@ -983,11 +971,10 @@ impl<'a> MinimapRenderer<'a> {
                 }
 
                 // Skip dead ships
-                if let Some(dead) = dead_ships.get(entity_id) {
-                    if clock >= dead.clock {
+                if let Some(dead) = dead_ships.get(entity_id)
+                    && clock >= dead.clock {
                         continue;
                     }
-                }
 
                 // Get ship position
                 let pos = if let Some(ship_pos) = ship_positions.get(entity_id) {
@@ -1070,8 +1057,8 @@ impl<'a> MinimapRenderer<'a> {
                         if let Some(crew_param) = GameParamProvider::game_param_by_id(
                             self.game_params,
                             crew_params.params_id(),
-                        ) {
-                            if let Some(crew) = crew_param.crew() {
+                        )
+                            && let Some(crew) = crew_param.crew() {
                                 for &skill_id in crew_params.learned_skills().for_species(species) {
                                     let Some(skill) = crew.skill_by_type(skill_id as u32) else {
                                         continue;
@@ -1095,7 +1082,6 @@ impl<'a> MinimapRenderer<'a> {
                                     }
                                 }
                             }
-                        }
                     }
 
                     // Apply coefficients

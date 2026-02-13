@@ -55,9 +55,11 @@ impl Default for RendererConfig {
 
 impl RendererConfig {
     /// Load config from a TOML file.
-    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
-        let contents = std::fs::read_to_string(path)?;
-        let config: Self = toml::from_str(&contents)?;
+    #[cfg(feature = "bin")]
+    pub fn load(path: &std::path::Path) -> Result<Self, rootcause::Report> {
+        use rootcause::prelude::*;
+        let contents = std::fs::read_to_string(path).context("Failed to read config file")?;
+        let config: Self = toml::from_str(&contents).context("Failed to parse config file")?;
         Ok(config)
     }
 

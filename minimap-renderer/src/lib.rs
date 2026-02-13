@@ -2,6 +2,7 @@ pub mod assets;
 pub mod config;
 pub mod draw_command;
 pub mod drawing;
+pub mod error;
 pub mod map_data;
 pub mod renderer;
 pub mod video;
