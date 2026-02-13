@@ -8,7 +8,7 @@ use wows_replays::analyzer::decoder::{DepthState, WeaponType};
 
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
-use wows_replays::types::{EntityId, GameParamId, PlaneId, Relation};
+use wows_replays::types::{EntityId, GameClock, GameParamId, PlaneId, Relation};
 
 use crate::draw_command::{DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipVisibility};
 use crate::map_data::{self, WorldPos};
@@ -53,6 +53,8 @@ pub struct RenderOptions {
     pub show_consumables: bool,
     pub show_armament: bool,
     pub show_trails: bool,
+    pub show_dead_trails: bool,
+    pub show_speed_trails: bool,
     pub show_ship_config: bool,
     pub show_dead_ship_names: bool,
 }
@@ -76,6 +78,8 @@ impl Default for RenderOptions {
             show_consumables: true,
             show_armament: false,
             show_trails: false,
+            show_dead_trails: true,
+            show_speed_trails: false,
             show_ship_config: false,
             show_dead_ship_names: false,
         }
@@ -114,8 +118,8 @@ pub struct MinimapRenderer<'a> {
     /// Raw team_id of the recording player (0 or 1). Used to map cap point/building
     /// team_ids to relative colors (friendly vs enemy).
     self_team_id: Option<i64>,
-    /// Position history per entity for trail rendering
-    position_history: HashMap<EntityId, Vec<map_data::MinimapPos>>,
+    /// Position history per entity for trail rendering: (position, game_clock, speed_raw)
+    position_history: HashMap<EntityId, Vec<(map_data::MinimapPos, GameClock, u16)>>,
 }
 
 impl<'a> MinimapRenderer<'a> {
@@ -394,34 +398,51 @@ impl<'a> MinimapRenderer<'a> {
     }
 
     /// Record a position in the trail history for an entity.
-    pub fn record_position(&mut self, entity_id: EntityId, pos: map_data::MinimapPos) {
+    pub fn record_position(
+        &mut self,
+        entity_id: EntityId,
+        pos: map_data::MinimapPos,
+        clock: GameClock,
+        speed_raw: u16,
+    ) {
         let history = self.position_history.entry(entity_id).or_default();
         // Deduplicate: skip if same pixel as last recorded position
         if let Some(last) = history.last()
-            && last.x == pos.x
-            && last.y == pos.y
+            && last.0.x == pos.x
+            && last.0.y == pos.y
         {
             return;
         }
-        history.push(pos);
+        history.push((pos, clock, speed_raw));
     }
 
     /// Record ship positions from controller state without emitting draw commands.
     /// Called during replay parsing to accumulate trail history.
-    pub fn record_positions(&mut self, controller: &dyn BattleControllerState) {
+    pub fn record_positions(&mut self, controller: &dyn BattleControllerState, clock: GameClock) {
         let Some(map_info) = self.map_info.clone() else {
             return;
         };
+        let entities = controller.entities_by_id();
         let ship_positions = controller.ship_positions();
         let minimap_positions = controller.minimap_positions();
         for (entity_id, ship_pos) in ship_positions {
             let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
-            self.record_position(*entity_id, px);
+            let speed_raw = entities
+                .get(entity_id)
+                .and_then(|e| e.vehicle_ref())
+                .map(|v| v.borrow().props().server_speed_raw())
+                .unwrap_or(0);
+            self.record_position(*entity_id, px, clock, speed_raw);
         }
         for (entity_id, mm) in minimap_positions {
             if !ship_positions.contains_key(entity_id) {
                 let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
-                self.record_position(*entity_id, px);
+                let speed_raw = entities
+                    .get(entity_id)
+                    .and_then(|e| e.vehicle_ref())
+                    .map(|v| v.borrow().props().server_speed_raw())
+                    .unwrap_or(0);
+                self.record_position(*entity_id, px, clock, speed_raw);
             }
         }
     }
@@ -572,26 +593,64 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         // 2b. Position trails (drawn early so they appear behind everything else)
-        if self.options.show_trails {
+        if self.options.show_trails || self.options.show_speed_trails {
+            let dead_ships = controller.dead_ships();
             for (entity_id, history) in &self.position_history {
                 if history.len() < 2 {
                     continue;
                 }
-                let len = history.len();
-                let points: Vec<_> = history
-                    .iter()
-                    .enumerate()
-                    .map(|(i, pos)| {
-                        let frac = i as f32 / (len - 1) as f32;
-                        let color = hue_to_rgb(240.0 * (1.0 - frac));
-                        (*pos, color)
-                    })
-                    .collect();
+                // Skip dead ship trails if disabled
+                if !self.options.show_dead_trails {
+                    if let Some(dead) = dead_ships.get(entity_id) {
+                        if clock >= dead.clock {
+                            continue;
+                        }
+                    }
+                }
+
                 let player_name = self.player_names.get(entity_id).cloned();
-                commands.push(DrawCommand::PositionTrail {
-                    player_name,
-                    points,
-                });
+
+                if self.options.show_speed_trails {
+                    // Speed trail: color by serverSpeedRaw relative to observed max
+                    let max_speed = history
+                        .iter()
+                        .map(|(_, _, s)| *s as f32)
+                        .fold(0.0f32, f32::max);
+
+                    let points: Vec<_> = history
+                        .iter()
+                        .map(|(pos, _, speed_raw)| {
+                            let frac = if max_speed > 0.0 {
+                                (*speed_raw as f32 / max_speed).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            // Cold (blue) = 0 speed, Hot (red) = max speed
+                            let color = hue_to_rgb(240.0 * (1.0 - frac));
+                            (*pos, color)
+                        })
+                        .collect();
+                    commands.push(DrawCommand::PositionTrail {
+                        player_name,
+                        points,
+                    });
+                } else {
+                    // Time trail: blue (oldest) → red (newest)
+                    let len = history.len();
+                    let points: Vec<_> = history
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (pos, _, _))| {
+                            let frac = i as f32 / (len - 1) as f32;
+                            let color = hue_to_rgb(240.0 * (1.0 - frac));
+                            (*pos, color)
+                        })
+                        .collect();
+                    commands.push(DrawCommand::PositionTrail {
+                        player_name,
+                        points,
+                    });
+                }
             }
         }
 
@@ -799,7 +858,13 @@ impl<'a> MinimapRenderer<'a> {
                     // Have world position — use it (higher precision than minimap)
                     let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
                     // Always record positions so trails are available when toggled on mid-replay
-                    self.record_position(*entity_id, px);
+                    let speed_raw = controller
+                        .entities_by_id()
+                        .get(entity_id)
+                        .and_then(|e| e.vehicle_ref())
+                        .map(|v| v.borrow().props().server_speed_raw())
+                        .unwrap_or(0);
+                    self.record_position(*entity_id, px, clock, speed_raw);
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
@@ -829,7 +894,13 @@ impl<'a> MinimapRenderer<'a> {
                     // Minimap-only position
                     let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
                     // Always record positions so trails are available when toggled on mid-replay
-                    self.record_position(*entity_id, px);
+                    let speed_raw = controller
+                        .entities_by_id()
+                        .get(entity_id)
+                        .and_then(|e| e.vehicle_ref())
+                        .map(|v| v.borrow().props().server_speed_raw())
+                        .unwrap_or(0);
+                    self.record_position(*entity_id, px, clock, speed_raw);
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,

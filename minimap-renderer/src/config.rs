@@ -26,6 +26,8 @@ pub struct RendererConfig {
     // New features (default false)
     pub show_armament: bool,
     pub show_trails: bool,
+    pub show_dead_trails: bool,
+    pub show_speed_trails: bool,
     pub show_ship_config: bool,
 }
 
@@ -48,6 +50,8 @@ impl Default for RendererConfig {
             show_consumables: true,
             show_armament: false,
             show_trails: false,
+            show_dead_trails: true,
+            show_speed_trails: false,
             show_ship_config: false,
         }
     }
@@ -82,6 +86,8 @@ impl RendererConfig {
             show_consumables: self.show_consumables,
             show_armament: self.show_armament,
             show_trails: self.show_trails,
+            show_dead_trails: self.show_dead_trails,
+            show_speed_trails: self.show_speed_trails,
             show_ship_config: self.show_ship_config,
             show_dead_ship_names: false,
         }
@@ -143,6 +149,12 @@ show_armament = false
 # Show position trail heatmap (rainbow: blue=oldest, red=newest)
 show_trails = false
 
+# Show trails for dead ships (only relevant when show_trails or show_speed_trails is true)
+show_dead_trails = true
+
+# Show speed-based position trails (blue=slow, red=fast relative to ship max speed)
+show_speed_trails = false
+
 # Show ship config range circles (detection, main battery, secondary, etc.)
 show_ship_config = false
 "#
@@ -172,6 +184,12 @@ show_ship_config = false
         }
         if matches.is_present("SHOW_TRAILS") {
             self.show_trails = true;
+        }
+        if matches.is_present("NO_DEAD_TRAILS") {
+            self.show_dead_trails = false;
+        }
+        if matches.is_present("SHOW_SPEED_TRAILS") {
+            self.show_speed_trails = true;
         }
         if matches.is_present("SHOW_SHIP_CONFIG") {
             self.show_ship_config = true;

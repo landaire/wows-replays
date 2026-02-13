@@ -82,6 +82,16 @@ fn main() -> Result<(), Report> {
                 .long("show-trails"),
         )
         .arg(
+            Arg::with_name("NO_DEAD_TRAILS")
+                .help("Hide trails for dead ships")
+                .long("no-dead-trails"),
+        )
+        .arg(
+            Arg::with_name("SHOW_SPEED_TRAILS")
+                .help("Show speed-based trails (blue=slow, red=fast)")
+                .long("show-speed-trails"),
+        )
+        .arg(
             Arg::with_name("SHOW_SHIP_CONFIG")
                 .help("Show ship config range circles (detection, battery, etc.)")
                 .long("show-ship-config"),
