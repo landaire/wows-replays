@@ -1,16 +1,13 @@
 use anyhow::{anyhow, Context};
 use clap::{App, Arg, SubCommand};
 use std::borrow::Cow;
-use std::fs::read_dir;
-use std::io::{Cursor, Write};
+use std::io::Write;
 use std::{collections::HashMap, path::Path};
-use wowsunpack::data::idx;
-use wowsunpack::data::pkg::PkgFileLoader;
+use wowsunpack::data::DataFileWithCallback;
+use wowsunpack::data::Version;
+use wowsunpack::game_data;
+use wowsunpack::rpc::entitydefs::parse_scripts;
 use wowsunpack::rpc::entitydefs::EntitySpec;
-use wowsunpack::{
-    data::{DataFileWithCallback, Version},
-    rpc::entitydefs::parse_scripts,
-};
 
 use wows_replays::{analyzer::Analyzer, types::EntityId, ErrorKind, ReplayFile};
 
@@ -149,83 +146,9 @@ fn load_game_data(
 ) -> anyhow::Result<Vec<EntitySpec>> {
     let specs = match (game_dir, extracted_dir) {
         (Some(game_dir), _) => {
-            let mut idx_files = Vec::new();
-            let wows_directory = Path::new(game_dir);
-
-            let mut latest_build = None;
-            for file in read_dir(wows_directory.join("bin"))? {
-                if file.is_err() {
-                    continue;
-                }
-
-                let file = file.unwrap();
-                if let Ok(ty) = file.file_type() {
-                    if ty.is_file() {
-                        continue;
-                    }
-
-                    if let Some(build_num) = file
-                        .file_name()
-                        .to_str()
-                        .and_then(|name| name.parse::<usize>().ok())
-                    {
-                        if latest_build.is_none()
-                            || latest_build
-                                .map(|number| number < build_num)
-                                .unwrap_or(false)
-                        {
-                            latest_build = Some(build_num)
-                        }
-                    }
-                }
-            }
-
-            if latest_build.is_none() {
-                return Err(anyhow!(
-                    "Could not determine latest WoWs build from the provided game directory"
-                ));
-            }
-
-            for file in read_dir(
-                wows_directory
-                    .join("bin")
-                    .join(latest_build.unwrap().to_string())
-                    .join("idx"),
-            )
-            .context("failed to read wows idx directory")?
-            {
-                let file = file.unwrap();
-                if file.file_type().unwrap().is_file() {
-                    let file_data = std::fs::read(file.path()).unwrap();
-                    let mut file = Cursor::new(file_data.as_slice());
-                    idx_files.push(idx::parse(&mut file).unwrap());
-                }
-            }
-
-            let pkgs_path = wows_directory.join("res_packages");
-            if !pkgs_path.exists() {
-                return Err(anyhow!("Invalid wows directory -- res_packages not found"));
-            }
-
-            let pkg_loader = PkgFileLoader::new(pkgs_path);
-
-            let file_tree = idx::build_file_tree(idx_files.as_slice());
-
-            let loader = DataFileWithCallback::new(|path| {
-                let path = Path::new(path);
-
-                let mut file_data = Vec::new();
-                file_tree
-                    .read_file_at_path(path, &pkg_loader, &mut file_data)
-                    .with_context(|| {
-                        format!("failed to read file from packed game files: {:?}", path)
-                    })
-                    .unwrap();
-
-                Ok(Cow::Owned(file_data))
-            });
-
-            parse_scripts(&loader).unwrap()
+            let resources = game_data::load_game_resources(Path::new(game_dir), replay_version)
+                .map_err(|e| anyhow!("{}", e))?;
+            resources.specs
         }
         (None, Some(extracted)) => {
             let extracted_dir = Path::new(extracted).join(replay_version.to_path());

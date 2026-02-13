@@ -1,14 +1,10 @@
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use clap::{App, Arg};
-use std::borrow::Cow;
-use std::fs::{File, read_dir};
-use std::io::Cursor;
+use std::fs::File;
 use std::path::Path;
-use wowsunpack::data::DataFileWithCallback;
-use wowsunpack::data::idx::{self, FileNode};
-use wowsunpack::data::pkg::PkgFileLoader;
+use wowsunpack::data::Version;
+use wowsunpack::game_data;
 use wowsunpack::game_params::provider::GameMetadataProvider;
-use wowsunpack::rpc::entitydefs::{EntitySpec, parse_scripts};
 
 use wows_replays::ReplayFile;
 use wows_replays::analyzer::Analyzer;
@@ -21,73 +17,6 @@ use wows_minimap_renderer::assets::{
 use wows_minimap_renderer::drawing::ImageTarget;
 use wows_minimap_renderer::renderer::{MinimapRenderer, RenderOptions};
 use wows_minimap_renderer::video::{DumpMode, VideoEncoder};
-
-fn find_latest_build(game_dir: &Path) -> anyhow::Result<usize> {
-    let mut latest_build: Option<usize> = None;
-    for file in read_dir(game_dir.join("bin"))? {
-        let file = file?;
-        if file.file_type()?.is_file() {
-            continue;
-        }
-        if let Some(build_num) = file
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<usize>().ok())
-        {
-            if latest_build.map(|n| n < build_num).unwrap_or(true) {
-                latest_build = Some(build_num);
-            }
-        }
-    }
-    latest_build.ok_or_else(|| anyhow!("Could not determine latest WoWs build"))
-}
-
-fn load_game_resources(
-    game_dir: &str,
-) -> anyhow::Result<(Vec<EntitySpec>, FileNode, PkgFileLoader)> {
-    let wows_directory = Path::new(game_dir);
-
-    let mut idx_files = Vec::new();
-    let latest_build = find_latest_build(wows_directory)?;
-
-    for file in read_dir(
-        wows_directory
-            .join("bin")
-            .join(latest_build.to_string())
-            .join("idx"),
-    )
-    .context("failed to read idx directory")?
-    {
-        let file = file?;
-        if file.file_type()?.is_file() {
-            let file_data = std::fs::read(file.path())?;
-            let mut cursor = Cursor::new(file_data.as_slice());
-            idx_files.push(idx::parse(&mut cursor)?);
-        }
-    }
-
-    let pkgs_path = wows_directory.join("res_packages");
-    if !pkgs_path.exists() {
-        return Err(anyhow!("Invalid wows directory -- res_packages not found"));
-    }
-
-    let pkg_loader = PkgFileLoader::new(pkgs_path);
-    let file_tree = idx::build_file_tree(idx_files.as_slice());
-
-    let specs = {
-        let loader = DataFileWithCallback::new(|path| {
-            let path = Path::new(path);
-            let mut file_data = Vec::new();
-            file_tree
-                .read_file_at_path(path, &pkg_loader, &mut file_data)
-                .unwrap();
-            Ok(Cow::Owned(file_data))
-        });
-        parse_scripts(&loader)?
-    };
-
-    Ok((specs, file_tree, pkg_loader))
-}
 
 fn main() -> anyhow::Result<()> {
     let matches = App::new("Minimap Renderer")
@@ -159,22 +88,26 @@ fn main() -> anyhow::Result<()> {
         None => None,
     };
 
-    println!("Loading game data...");
-    let (specs, file_tree, pkg_loader) = load_game_resources(game_dir)?;
+    println!("Parsing replay...");
+    let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(replay_path))?;
+    let replay_version = Version::from_client_exe(&replay_file.meta.clientVersionFromExe);
+
+    println!("Loading game data for build {}...", replay_version.build);
+    let wows_dir = Path::new(game_dir);
+    let resources =
+        game_data::load_game_resources(wows_dir, &replay_version).map_err(|e| anyhow!("{}", e))?;
+    let file_tree = &resources.file_tree;
+    let pkg_loader = &resources.pkg_loader;
+    let specs = &resources.specs;
 
     println!("Loading game params...");
-    let mut game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
+    let mut game_params = GameMetadataProvider::from_pkg(file_tree, pkg_loader)
         .map_err(|e| anyhow!("Failed to load GameParams: {:?}", e))?;
-    let controller_game_params = GameMetadataProvider::from_pkg(&file_tree, &pkg_loader)
+    let controller_game_params = GameMetadataProvider::from_pkg(file_tree, pkg_loader)
         .map_err(|e| anyhow!("Failed to load GameParams for controller: {:?}", e))?;
 
     // Load translations for ship name localization
-    let wows_dir = Path::new(game_dir);
-    let latest_build = find_latest_build(wows_dir)?;
-    let mo_path = wows_dir
-        .join("bin")
-        .join(latest_build.to_string())
-        .join("res/texts/en/LC_MESSAGES/global.mo");
+    let mo_path = game_data::translations_path(wows_dir, replay_version.build);
     if mo_path.exists() {
         let catalog = gettext::Catalog::parse(File::open(&mo_path)?)
             .map_err(|e| anyhow!("Failed to parse global.mo: {:?}", e))?;
@@ -187,15 +120,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Loading icons...");
-    let ship_icons = load_ship_icons(&file_tree, &pkg_loader);
-    let plane_icons = load_plane_icons(&file_tree, &pkg_loader);
-    let consumable_icons = load_consumable_icons(&file_tree, &pkg_loader);
+    let ship_icons = load_ship_icons(file_tree, pkg_loader);
+    let plane_icons = load_plane_icons(file_tree, pkg_loader);
+    let consumable_icons = load_consumable_icons(file_tree, pkg_loader);
 
     // Load game constants from game data (falls back to hardcoded defaults per-field)
-    let game_constants = GameConstants::from_pkg(&file_tree, &pkg_loader);
-
-    println!("Parsing replay...");
-    let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(replay_path))?;
+    let game_constants = GameConstants::from_pkg(file_tree, pkg_loader);
 
     if let Some(mode_name) = game_constants.game_mode_name(replay_file.meta.gameMode as i32) {
         println!("Game mode: {} ({})", mode_name, replay_file.meta.gameMode);
