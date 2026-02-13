@@ -111,6 +111,9 @@ pub struct MinimapRenderer<'a> {
     /// Track which entities we've already resolved ability icons for
     resolved_entities: std::collections::HashSet<EntityId>,
     players_populated: bool,
+    /// Raw team_id of the recording player (0 or 1). Used to map cap point/building
+    /// team_ids to relative colors (friendly vs enemy).
+    self_team_id: Option<i64>,
     /// Position history per entity for trail rendering
     position_history: HashMap<EntityId, Vec<map_data::MinimapPos>>,
 }
@@ -135,6 +138,7 @@ impl<'a> MinimapRenderer<'a> {
             ship_ability_variants: HashMap::new(),
             resolved_entities: std::collections::HashSet::new(),
             players_populated: false,
+            self_team_id: None,
             position_history: HashMap::new(),
         }
     }
@@ -151,6 +155,7 @@ impl<'a> MinimapRenderer<'a> {
         self.ship_ability_variants.clear();
         self.resolved_entities.clear();
         self.players_populated = false;
+        self.self_team_id = None;
         self.position_history.clear();
     }
 
@@ -186,36 +191,50 @@ impl<'a> MinimapRenderer<'a> {
             let ship_id = player.vehicle().id();
             let ship_param = GameParamProvider::game_param_by_id(self.game_params, ship_id);
             if let Some(vehicle) = ship_param.as_ref().and_then(|p| p.vehicle())
-                && let Some(abilities) = vehicle.abilities() {
-                    for slot in abilities {
-                        for (ability_name, variant_name) in slot {
-                            let Some(param) = GameParamProvider::game_param_by_name(
-                                self.game_params,
-                                ability_name,
-                            ) else {
-                                continue;
-                            };
-                            let Some(ability) = param.ability() else {
-                                continue;
-                            };
+                && let Some(abilities) = vehicle.abilities()
+            {
+                for slot in abilities {
+                    for (ability_name, variant_name) in slot {
+                        let Some(param) =
+                            GameParamProvider::game_param_by_name(self.game_params, ability_name)
+                        else {
+                            continue;
+                        };
+                        let Some(ability) = param.ability() else {
+                            continue;
+                        };
 
-                            let Some(consumable) = ability
-                                .categories()
-                                .values()
-                                .next()
-                                .and_then(AbilityCategory::consumable_type)
-                            else {
-                                continue;
-                            };
+                        let Some(consumable) = ability
+                            .categories()
+                            .values()
+                            .next()
+                            .and_then(AbilityCategory::consumable_type)
+                        else {
+                            continue;
+                        };
 
-                            self.ship_ability_variants.insert(
-                                (*entity_id, consumable),
-                                (ability_name.clone(), variant_name.clone()),
-                            );
-                        }
+                        self.ship_ability_variants.insert(
+                            (*entity_id, consumable),
+                            (ability_name.clone(), variant_name.clone()),
+                        );
                     }
                 }
+            }
         }
+        // Determine the recording player's raw team_id for relative coloring
+        if self.self_team_id.is_none() {
+            for (entity_id, player) in players {
+                if player.relation().is_self() {
+                    if let Some(entity) = controller.entities_by_id().get(entity_id)
+                        && let Some(vehicle) = entity.vehicle_ref()
+                    {
+                        self.self_team_id = Some(vehicle.borrow().props().team_id() as i64);
+                    }
+                    break;
+                }
+            }
+        }
+
         self.players_populated = true;
     }
 
@@ -381,9 +400,11 @@ impl<'a> MinimapRenderer<'a> {
         let history = self.position_history.entry(entity_id).or_default();
         // Deduplicate: skip if same pixel as last recorded position
         if let Some(last) = history.last()
-            && last.x == pos.x && last.y == pos.y {
-                return;
-            }
+            && last.x == pos.x
+            && last.y == pos.y
+        {
+            return;
+        }
         history.push(pos);
     }
 
@@ -420,9 +441,12 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_score {
             let scores = controller.team_scores();
             if scores.len() >= 2 {
+                // Show friendly score on left (green), enemy on right (red)
+                let swap = self.self_team_id == Some(1);
+                let (friendly_idx, enemy_idx) = if swap { (1, 0) } else { (0, 1) };
                 commands.push(DrawCommand::ScoreBar {
-                    team0: scores[0].score as i32,
-                    team1: scores[1].score as i32,
+                    team0: scores[friendly_idx].score as i32,
+                    team1: scores[enemy_idx].score as i32,
                     team0_color: TEAM0_COLOR,
                     team1_color: TEAM1_COLOR,
                 });
@@ -438,7 +462,7 @@ impl<'a> MinimapRenderer<'a> {
                 let px = map_info.world_to_minimap(pos, MINIMAP_SIZE);
                 let px_radius =
                     (cp.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
-                let color = cap_point_color(cp.team_id);
+                let color = cap_point_color(cp.team_id, self.self_team_id);
                 let label = if cp.control_point_type == 5 {
                     "\u{2691}".to_string() // flag character
                 } else {
@@ -447,7 +471,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 let progress = cp.progress.0 as f32;
                 let invader_color = if cp.has_invaders && cp.invader_team >= 0 {
-                    Some(cap_point_color(cp.invader_team))
+                    Some(cap_point_color(cp.invader_team, self.self_team_id))
                 } else {
                     None
                 };
@@ -589,7 +613,7 @@ impl<'a> MinimapRenderer<'a> {
                     }
                     let px = map_info.world_to_minimap(building.position, MINIMAP_SIZE);
                     let color = if building.is_alive {
-                        cap_point_color(building.team_id as i64)
+                        cap_point_color(building.team_id as i64, self.self_team_id)
                     } else {
                         [40, 40, 40]
                     };
@@ -620,9 +644,10 @@ impl<'a> MinimapRenderer<'a> {
         for entity_id in &all_ship_ids {
             // Skip dead ships (they get an X marker below)
             if let Some(dead) = dead_ships.get(entity_id)
-                && clock >= dead.clock {
-                    continue;
-                }
+                && clock >= dead.clock
+            {
+                continue;
+            }
 
             let relation = self
                 .player_relations
@@ -709,16 +734,17 @@ impl<'a> MinimapRenderer<'a> {
                         name_color,
                     });
                     if self.options.show_hp_bars
-                        && let Some(frac) = health_fraction {
-                            let fill_color = hp_bar_color(frac);
-                            commands.push(DrawCommand::HealthBar {
-                                pos: px,
-                                fraction: frac,
-                                fill_color,
-                                background_color: HP_BAR_BG_COLOR,
-                                background_alpha: HP_BAR_BG_ALPHA,
-                            });
-                        }
+                        && let Some(frac) = health_fraction
+                    {
+                        let fill_color = hp_bar_color(frac);
+                        commands.push(DrawCommand::HealthBar {
+                            pos: px,
+                            fraction: frac,
+                            fill_color,
+                            background_color: HP_BAR_BG_COLOR,
+                            background_alpha: HP_BAR_BG_ALPHA,
+                        });
+                    }
                 } else if let Some(mm) = minimap {
                     // Minimap-only position
                     let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
@@ -738,16 +764,17 @@ impl<'a> MinimapRenderer<'a> {
                         name_color,
                     });
                     if self.options.show_hp_bars
-                        && let Some(frac) = health_fraction {
-                            let fill_color = hp_bar_color(frac);
-                            commands.push(DrawCommand::HealthBar {
-                                pos: px,
-                                fraction: frac,
-                                fill_color,
-                                background_color: HP_BAR_BG_COLOR,
-                                background_alpha: HP_BAR_BG_ALPHA,
-                            });
-                        }
+                        && let Some(frac) = health_fraction
+                    {
+                        let fill_color = hp_bar_color(frac);
+                        commands.push(DrawCommand::HealthBar {
+                            pos: px,
+                            fraction: frac,
+                            fill_color,
+                            background_color: HP_BAR_BG_COLOR,
+                            background_alpha: HP_BAR_BG_ALPHA,
+                        });
+                    }
                 }
             } else {
                 // Undetected — prefer world position, fall back to minimap
@@ -781,9 +808,10 @@ impl<'a> MinimapRenderer<'a> {
             for (entity_id, &world_yaw) in target_yaws {
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
-                    && clock >= dead.clock {
-                        continue;
-                    }
+                    && clock >= dead.clock
+                {
+                    continue;
+                }
                 // Skip undetected ships — aim data is stale
                 let detected = minimap_positions
                     .get(entity_id)
@@ -885,13 +913,18 @@ impl<'a> MinimapRenderer<'a> {
             for (entity_id, consumables) in all_consumables {
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
-                    && clock >= dead.clock {
-                        continue;
-                    }
+                    && clock >= dead.clock
+                {
+                    continue;
+                }
                 // Get ship position (prefer world position, fall back to minimap)
                 let pos = if let Some(sp) = ship_positions.get(entity_id) {
                     Some(map_info.world_to_minimap(sp.position, MINIMAP_SIZE))
-                } else { minimap_positions.get(entity_id).map(|mm| map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)) };
+                } else {
+                    minimap_positions
+                        .get(entity_id)
+                        .map(|mm| map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE))
+                };
                 let Some(pos) = pos else { continue };
 
                 let relation = self
@@ -972,9 +1005,10 @@ impl<'a> MinimapRenderer<'a> {
 
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
-                    && clock >= dead.clock {
-                        continue;
-                    }
+                    && clock >= dead.clock
+                {
+                    continue;
+                }
 
                 // Get ship position
                 let pos = if let Some(ship_pos) = ship_positions.get(entity_id) {
@@ -1057,31 +1091,31 @@ impl<'a> MinimapRenderer<'a> {
                         if let Some(crew_param) = GameParamProvider::game_param_by_id(
                             self.game_params,
                             crew_params.params_id(),
-                        )
-                            && let Some(crew) = crew_param.crew() {
-                                for &skill_id in crew_params.learned_skills().for_species(species) {
-                                    let Some(skill) = crew.skill_by_type(skill_id as u32) else {
-                                        continue;
-                                    };
-                                    let Some(modifiers) = skill.modifiers() else {
-                                        continue;
-                                    };
-                                    for modifier in modifiers {
-                                        match modifier.name() {
-                                            "visibilityDistCoeff" => {
-                                                vis_coeff *= modifier.get_for_species(species)
-                                            }
-                                            "GMMaxDist" => {
-                                                gm_max_dist *= modifier.get_for_species(species)
-                                            }
-                                            "GSMaxDist" => {
-                                                gs_max_dist *= modifier.get_for_species(species)
-                                            }
-                                            _ => {}
+                        ) && let Some(crew) = crew_param.crew()
+                        {
+                            for &skill_id in crew_params.learned_skills().for_species(species) {
+                                let Some(skill) = crew.skill_by_type(skill_id as u32) else {
+                                    continue;
+                                };
+                                let Some(modifiers) = skill.modifiers() else {
+                                    continue;
+                                };
+                                for modifier in modifiers {
+                                    match modifier.name() {
+                                        "visibilityDistCoeff" => {
+                                            vis_coeff *= modifier.get_for_species(species)
                                         }
+                                        "GMMaxDist" => {
+                                            gm_max_dist *= modifier.get_for_species(species)
+                                        }
+                                        "GSMaxDist" => {
+                                            gs_max_dist *= modifier.get_for_species(species)
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
+                        }
                     }
 
                     // Apply coefficients
@@ -1214,14 +1248,24 @@ impl<'a> MinimapRenderer<'a> {
     }
 }
 
-/// Get the capture point / building color based on team_id.
+/// Get the capture point / building color relative to the recording player.
 ///
-/// Team 0 = recording player's team (green), team 1 = enemy (red), -1 = neutral (white).
-fn cap_point_color(team_id: i64) -> [u8; 3] {
-    match team_id {
-        0 => TEAM0_COLOR,
-        1 => TEAM1_COLOR,
-        _ => [255, 255, 255], // neutral
+/// `team_id` is the raw game team (0 or 1), `self_team_id` is the recording player's
+/// raw team. Same team = green (friendly), other team = red (enemy), neutral = white.
+fn cap_point_color(team_id: i64, self_team_id: Option<i64>) -> [u8; 3] {
+    if team_id < 0 {
+        return [255, 255, 255]; // neutral
+    }
+    match self_team_id {
+        Some(self_team) if team_id == self_team => TEAM0_COLOR, // friendly
+        Some(_) => TEAM1_COLOR,                                 // enemy
+        None => {
+            // Fallback before we know self_team_id: use raw mapping
+            match team_id {
+                0 => TEAM0_COLOR,
+                _ => TEAM1_COLOR,
+            }
+        }
     }
 }
 
