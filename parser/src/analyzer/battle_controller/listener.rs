@@ -70,7 +70,7 @@ pub trait BattleControllerState {
     /// Updated frequently (~6000 times per match). Values are radians in [-PI, PI].
     fn target_yaws(&self) -> &HashMap<EntityId, f32>;
 
-    /// Currently selected ammo per entity. Maps entity_id -> (ammo_param_id, is_reload).
+    /// Currently selected ammo per entity. Maps entity_id -> ammo_param_id.
     /// Only tracked for artillery (weapon_type 0).
-    fn selected_ammo(&self) -> &HashMap<EntityId, (GameParamId, bool)>;
+    fn selected_ammo(&self) -> &HashMap<EntityId, GameParamId>;
 }

@@ -511,8 +511,8 @@ pub struct BattleController<'res, 'replay, G> {
     /// Main battery turret yaws per entity (group 0 only).
     /// Maps entity_id -> vec of turret yaws in radians (relative to ship heading).
     turret_yaws: HashMap<EntityId, Vec<f32>>,
-    /// Currently selected ammo per entity. Maps entity_id -> (ammo_param_id, is_reload).
-    selected_ammo: HashMap<EntityId, (GameParamId, bool)>,
+    /// Currently selected ammo per entity. Maps entity_id -> ammo_param_id.
+    selected_ammo: HashMap<EntityId, GameParamId>,
 
     /// World-space gun aim yaw per entity, decoded from `targetLocalPos` EntityProperty.
     /// The value is a packed u16: lo byte = yaw, hi byte = pitch.
@@ -2103,7 +2103,7 @@ where
         &self.target_yaws
     }
 
-    fn selected_ammo(&self) -> &HashMap<EntityId, (GameParamId, bool)> {
+    fn selected_ammo(&self) -> &HashMap<EntityId, GameParamId> {
         &self.selected_ammo
     }
 }
@@ -2549,7 +2549,7 @@ where
                 // Track artillery ammo selection (weapon_type 0 = artillery)
                 if weapon_type == 0 {
                     self.selected_ammo
-                        .insert(entity_id, (ammo_param_id, is_reload));
+                        .insert(entity_id, ammo_param_id);
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::CruiseState { .. } => {

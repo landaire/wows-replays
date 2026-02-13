@@ -321,13 +321,12 @@ impl<'a> MinimapRenderer<'a> {
     }
 
     /// Get the armament/ammo label for a ship based on its selected weapon and ammo.
-    /// Get the armament color and reload state for a ship.
-    /// Returns (color, is_reloading) based on selected weapon/ammo.
+    /// Get the armament color for a ship based on its selected weapon/ammo.
     fn get_armament_color(
         &self,
         entity_id: &EntityId,
         controller: &dyn BattleControllerState,
-    ) -> Option<([u8; 3], bool)> {
+    ) -> Option<[u8; 3]> {
         const COLOR_AP: [u8; 3] = [140, 200, 255]; // light blue
         const COLOR_HE: [u8; 3] = [255, 180, 80]; // orange
         const COLOR_SAP: [u8; 3] = [255, 100, 100]; // pinkish red
@@ -340,7 +339,7 @@ impl<'a> MinimapRenderer<'a> {
         let weapon = vehicle.props().selected_weapon();
         match weapon {
             WeaponType::Artillery => {
-                let (ammo_param_id, is_reload) = controller.selected_ammo().get(entity_id)?;
+                let ammo_param_id = controller.selected_ammo().get(entity_id)?;
                 let param =
                     GameParamProvider::game_param_by_id(self.game_params, ammo_param_id.raw())?;
                 let projectile = param.projectile()?;
@@ -350,12 +349,12 @@ impl<'a> MinimapRenderer<'a> {
                     "CS" => COLOR_SAP,
                     _ => COLOR_AP,
                 };
-                Some((color, *is_reload))
+                Some(color)
             }
-            WeaponType::Torpedoes => Some((COLOR_TORP, false)),
-            WeaponType::Planes => Some((COLOR_PLANES, false)),
-            WeaponType::Pinger => Some((COLOR_SONAR, false)),
-            WeaponType::Secondaries => Some((COLOR_HE, false)),
+            WeaponType::Torpedoes => Some(COLOR_TORP),
+            WeaponType::Planes => Some(COLOR_PLANES),
+            WeaponType::Pinger => Some(COLOR_SONAR),
+            WeaponType::Secondaries => Some(COLOR_HE),
             _ => None,
         }
     }
@@ -649,24 +648,10 @@ impl<'a> MinimapRenderer<'a> {
                 None
             };
 
-            let (name_color, is_reloading) = if self.options.show_armament {
+            let name_color = if self.options.show_armament {
                 self.get_armament_color(entity_id, controller)
-                    .map(|(c, r)| (Some(c), r))
-                    .unwrap_or((None, false))
             } else {
-                (None, false)
-            };
-
-            // Append asterisk to the colored label when switching ammo
-            // (ship_name if shown, otherwise player_name)
-            let (player_name, ship_name) = if is_reloading {
-                if ship_name.is_some() {
-                    (player_name, ship_name.map(|n| format!("{}*", n)))
-                } else {
-                    (player_name.map(|n| format!("{}*", n)), ship_name)
-                }
-            } else {
-                (player_name, ship_name)
+                None
             };
 
             let minimap = minimap_positions.get(entity_id);
