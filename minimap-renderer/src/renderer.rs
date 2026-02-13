@@ -756,11 +756,7 @@ impl<'a> MinimapRenderer<'a> {
                 None
             };
 
-            let name_color = if self.options.show_armament {
-                self.get_armament_color(entity_id, controller)
-            } else {
-                None
-            };
+            let name_color = self.get_armament_color(entity_id, controller);
 
             let minimap = minimap_positions.get(entity_id);
             let world = ship_positions.get(entity_id);
@@ -1088,7 +1084,7 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         // 8b. Ship config circles (detection, main battery, secondary, radar, hydro)
-        if self.options.show_ship_config {
+        {
             for entity_id in &all_ship_ids {
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
@@ -1110,6 +1106,11 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 };
                 let player_name = player_name.clone();
+                let is_self = self
+                    .player_relations
+                    .get(entity_id)
+                    .map(|r| r.is_self())
+                    .unwrap_or(false);
 
                 let Some(&ship_param_id) = self.ship_param_ids.get(entity_id) else {
                     continue;
@@ -1233,6 +1234,7 @@ impl<'a> MinimapRenderer<'a> {
                         label: Some(format!("{:.1} km", detection_km)),
                         kind: ShipConfigCircleKind::Detection,
                         player_name: player_name.clone(),
+                        is_self,
                     });
                 }
 
@@ -1247,6 +1249,7 @@ impl<'a> MinimapRenderer<'a> {
                         label: Some(format!("{:.1} km", main_battery_m / 1000.0)),
                         kind: ShipConfigCircleKind::MainBattery,
                         player_name: player_name.clone(),
+                        is_self,
                     });
                 }
 
@@ -1261,6 +1264,7 @@ impl<'a> MinimapRenderer<'a> {
                         label: Some(format!("{:.1} km", secondary_m / 1000.0)),
                         kind: ShipConfigCircleKind::SecondaryBattery,
                         player_name: player_name.clone(),
+                        is_self,
                     });
                 }
 
@@ -1275,6 +1279,7 @@ impl<'a> MinimapRenderer<'a> {
                         label: Some(format!("{:.1} km", radar_m / 1000.0)),
                         kind: ShipConfigCircleKind::Radar,
                         player_name: player_name.clone(),
+                        is_self,
                     });
                 }
 
@@ -1289,6 +1294,7 @@ impl<'a> MinimapRenderer<'a> {
                         label: Some(format!("{:.1} km", hydro_m / 1000.0)),
                         kind: ShipConfigCircleKind::Hydro,
                         player_name: player_name.clone(),
+                        is_self,
                     });
                 }
             }

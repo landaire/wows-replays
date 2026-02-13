@@ -197,6 +197,8 @@ pub enum DrawCommand {
         kind: ShipConfigCircleKind,
         /// Player name for filtering per-ship
         player_name: String,
+        /// Whether this is the replay player's own ship
+        is_self: bool,
     },
     /// Position trail showing historical movement as colored dots
     PositionTrail {

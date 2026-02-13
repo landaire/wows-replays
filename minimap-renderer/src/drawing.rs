@@ -1411,8 +1411,12 @@ impl RenderTarget for ImageTarget {
                 alpha,
                 dashed,
                 label,
+                is_self,
                 ..
             } => {
+                if !is_self {
+                    return;
+                }
                 let x = pos.x as f32;
                 let y = pos.y as f32 + y_off;
                 let r = *radius_px;
