@@ -81,6 +81,7 @@ impl RendererConfig {
             show_armament: self.show_armament,
             show_trails: self.show_trails,
             show_ship_config: self.show_ship_config,
+            show_dead_ship_names: false,
         }
     }
 
