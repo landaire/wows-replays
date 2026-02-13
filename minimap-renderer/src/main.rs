@@ -14,8 +14,9 @@ use wows_replays::game_constants::GameConstants;
 use wows_minimap_renderer::assets::{
     load_consumable_icons, load_map_image, load_map_info, load_plane_icons, load_ship_icons,
 };
+use wows_minimap_renderer::config::RendererConfig;
 use wows_minimap_renderer::drawing::ImageTarget;
-use wows_minimap_renderer::renderer::{MinimapRenderer, RenderOptions};
+use wows_minimap_renderer::renderer::MinimapRenderer;
 use wows_minimap_renderer::video::{DumpMode, VideoEncoder};
 
 fn main() -> anyhow::Result<()> {
@@ -27,7 +28,7 @@ fn main() -> anyhow::Result<()> {
                 .short("g")
                 .long("game")
                 .takes_value(true)
-                .required(true),
+                .required_unless("GENERATE_CONFIG"),
         )
         .arg(
             Arg::with_name("OUTPUT")
@@ -35,7 +36,7 @@ fn main() -> anyhow::Result<()> {
                 .short("o")
                 .long("output")
                 .takes_value(true)
-                .required(true),
+                .required_unless("GENERATE_CONFIG"),
         )
         .arg(
             Arg::with_name("DUMP_FRAME")
@@ -69,12 +70,39 @@ fn main() -> anyhow::Result<()> {
                 .long("no-turret-direction"),
         )
         .arg(
+            Arg::with_name("SHOW_ARMAMENT")
+                .help("Show selected armament/ammo type below ship icons")
+                .long("show-armament"),
+        )
+        .arg(
+            Arg::with_name("SHOW_TRAILS")
+                .help("Show position trail heatmap (rainbow coloring)")
+                .long("show-trails"),
+        )
+        .arg(
+            Arg::with_name("CONFIG")
+                .help("Path to TOML config file")
+                .long("config")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("GENERATE_CONFIG")
+                .help("Print default TOML config to stdout and exit")
+                .long("generate-config"),
+        )
+        .arg(
             Arg::with_name("REPLAY")
                 .help("The replay file to process")
-                .required(true)
+                .required_unless("GENERATE_CONFIG")
                 .index(1),
         )
         .get_matches();
+
+    // Handle --generate-config before anything else
+    if matches.is_present("GENERATE_CONFIG") {
+        print!("{}", RendererConfig::generate_default_toml());
+        return Ok(());
+    }
 
     let game_dir = matches.value_of("GAME_DIRECTORY").unwrap();
     let output = matches.value_of("OUTPUT").unwrap();
@@ -140,12 +168,24 @@ fn main() -> anyhow::Result<()> {
 
     let mut target = ImageTarget::new(map_image, ship_icons, plane_icons, consumable_icons);
 
-    let mut options = RenderOptions::default();
-    options.show_player_names = !matches.is_present("NO_PLAYER_NAMES");
-    options.show_ship_names = !matches.is_present("NO_SHIP_NAMES");
-    options.show_capture_points = !matches.is_present("NO_CAPTURE_POINTS");
-    options.show_buildings = !matches.is_present("NO_BUILDINGS");
-    options.show_turret_direction = !matches.is_present("NO_TURRET_DIRECTION");
+    // Load config: --config path > exe-adjacent minimap_renderer.toml > defaults
+    let mut config = if let Some(config_path) = matches.value_of("CONFIG") {
+        RendererConfig::load(Path::new(config_path))?
+    } else {
+        // Try exe-adjacent config file
+        let exe_config = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("minimap_renderer.toml")));
+        match exe_config {
+            Some(path) if path.exists() => {
+                eprintln!("Loading config from {:?}", path);
+                RendererConfig::load(&path)?
+            }
+            _ => RendererConfig::default(),
+        }
+    };
+    config.apply_cli_overrides(&matches);
+    let options = config.into_render_options();
 
     let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, options);
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);

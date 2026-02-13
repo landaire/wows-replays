@@ -4,6 +4,8 @@ use wowsunpack::data::ResourceLoader as _;
 use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::game_params::types::{GameParamProvider, PlaneCategory, Species};
 
+use wows_replays::analyzer::decoder::{DepthState, WeaponType};
+
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::{EntityId, PlaneId, Relation};
@@ -49,6 +51,8 @@ pub struct RenderOptions {
     pub show_buildings: bool,
     pub show_turret_direction: bool,
     pub show_consumables: bool,
+    pub show_armament: bool,
+    pub show_trails: bool,
 }
 
 impl Default for RenderOptions {
@@ -68,6 +72,8 @@ impl Default for RenderOptions {
             show_buildings: true,
             show_turret_direction: true,
             show_consumables: true,
+            show_armament: false,
+            show_trails: false,
         }
     }
 }
@@ -100,6 +106,8 @@ pub struct MinimapRenderer<'a> {
     /// Track which entities we've already resolved ability icons for
     resolved_entities: std::collections::HashSet<EntityId>,
     players_populated: bool,
+    /// Position history per entity for trail rendering
+    position_history: HashMap<EntityId, Vec<map_data::MinimapPos>>,
 }
 
 /// Key for consumable variant lookup (simplified consumable type for detection consumables)
@@ -130,6 +138,7 @@ impl<'a> MinimapRenderer<'a> {
             ship_ability_icons: HashMap::new(),
             resolved_entities: std::collections::HashSet::new(),
             players_populated: false,
+            position_history: HashMap::new(),
         }
     }
 
@@ -144,6 +153,7 @@ impl<'a> MinimapRenderer<'a> {
         self.ship_ability_icons.clear();
         self.resolved_entities.clear();
         self.players_populated = false;
+        self.position_history.clear();
     }
 
     /// Populate player info from controller state (once).
@@ -350,9 +360,77 @@ impl<'a> MinimapRenderer<'a> {
         }
     }
 
+    /// Get the armament/ammo label for a ship based on its selected weapon and ammo.
+    /// Get the armament color and reload state for a ship.
+    /// Returns (color, is_reloading) based on selected weapon/ammo.
+    fn get_armament_color(
+        &self,
+        entity_id: &EntityId,
+        controller: &dyn BattleControllerState,
+    ) -> Option<([u8; 3], bool)> {
+        const COLOR_AP: [u8; 3] = [140, 200, 255]; // light blue
+        const COLOR_HE: [u8; 3] = [255, 180, 80]; // orange
+        const COLOR_SAP: [u8; 3] = [255, 100, 100]; // pinkish red
+        const COLOR_TORP: [u8; 3] = [100, 255, 160]; // green
+        const COLOR_PLANES: [u8; 3] = [200, 160, 255]; // lavender
+        const COLOR_SONAR: [u8; 3] = [100, 220, 255]; // cyan
+
+        let vehicle = controller.entities_by_id().get(entity_id)?.vehicle_ref()?;
+        let vehicle = vehicle.borrow();
+        let weapon = vehicle.props().selected_weapon();
+        match weapon {
+            WeaponType::Artillery => {
+                let (ammo_param_id, is_reload) = controller.selected_ammo().get(entity_id)?;
+                let param =
+                    GameParamProvider::game_param_by_id(self.game_params, ammo_param_id.raw())?;
+                let projectile = param.projectile()?;
+                let color = match projectile.ammo_type() {
+                    "AP" => COLOR_AP,
+                    "HE" => COLOR_HE,
+                    "CS" => COLOR_SAP,
+                    _ => COLOR_AP,
+                };
+                Some((color, *is_reload))
+            }
+            WeaponType::Torpedoes => Some((COLOR_TORP, false)),
+            WeaponType::Planes => Some((COLOR_PLANES, false)),
+            WeaponType::Pinger => Some((COLOR_SONAR, false)),
+            WeaponType::Secondaries => Some((COLOR_HE, false)),
+            _ => None,
+        }
+    }
+
+    /// Get the depth suffix for a submarine (e.g. " (Scope)", " (30m)").
+    fn get_depth_suffix(
+        &self,
+        entity_id: &EntityId,
+        controller: &dyn BattleControllerState,
+    ) -> Option<&'static str> {
+        let vehicle = controller.entities_by_id().get(entity_id)?.vehicle_ref()?;
+        let vehicle = vehicle.borrow();
+        match vehicle.props().buoyancy_current_state() {
+            DepthState::Periscope => Some(" (Scope)"),
+            DepthState::Working => Some(" (30m)"),
+            DepthState::Invulnerable => Some(" (60m)"),
+            _ => None,
+        }
+    }
+
+    /// Record a position in the trail history for an entity.
+    pub fn record_position(&mut self, entity_id: EntityId, pos: map_data::MinimapPos) {
+        let history = self.position_history.entry(entity_id).or_default();
+        // Deduplicate: skip if same pixel as last recorded position
+        if let Some(last) = history.last() {
+            if last.x == pos.x && last.y == pos.y {
+                return;
+            }
+        }
+        history.push(pos);
+    }
+
     /// Produce draw commands for the current frame from controller state.
-    pub fn draw_frame(&self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
-        let map_info = match self.map_info.as_ref() {
+    pub fn draw_frame(&mut self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
+        let map_info = match self.map_info.clone() {
             Some(info) => info,
             None => return Vec::new(),
         };
@@ -405,6 +483,26 @@ impl<'a> MinimapRenderer<'a> {
                     progress,
                     invader_color,
                 });
+            }
+        }
+
+        // 2b. Position trails (drawn early so they appear behind everything else)
+        if self.options.show_trails {
+            for (_entity_id, history) in &self.position_history {
+                if history.len() < 2 {
+                    continue;
+                }
+                let len = history.len();
+                let points: Vec<_> = history
+                    .iter()
+                    .enumerate()
+                    .map(|(i, pos)| {
+                        let frac = i as f32 / (len - 1) as f32;
+                        let color = hue_to_rgb(240.0 * (1.0 - frac));
+                        (*pos, color)
+                    })
+                    .collect();
+                commands.push(DrawCommand::PositionTrail { points });
             }
         }
 
@@ -559,9 +657,34 @@ impl<'a> MinimapRenderer<'a> {
                 None
             };
             let ship_name = if self.options.show_ship_names {
-                self.ship_display_names.get(entity_id).cloned()
+                let base = self.ship_display_names.get(entity_id).cloned();
+                // Append depth suffix for submarines
+                match (base, self.get_depth_suffix(entity_id, controller)) {
+                    (Some(name), Some(suffix)) => Some(format!("{}{}", name, suffix)),
+                    (base, _) => base,
+                }
             } else {
                 None
+            };
+
+            let (name_color, is_reloading) = if self.options.show_armament {
+                self.get_armament_color(entity_id, controller)
+                    .map(|(c, r)| (Some(c), r))
+                    .unwrap_or((None, false))
+            } else {
+                (None, false)
+            };
+
+            // Append asterisk to the colored label when switching ammo
+            // (ship_name if shown, otherwise player_name)
+            let (player_name, ship_name) = if is_reloading {
+                if ship_name.is_some() {
+                    (player_name, ship_name.map(|n| format!("{}*", n)))
+                } else {
+                    (player_name.map(|n| format!("{}*", n)), ship_name)
+                }
+            } else {
+                (player_name, ship_name)
             };
 
             let minimap = minimap_positions.get(entity_id);
@@ -605,6 +728,9 @@ impl<'a> MinimapRenderer<'a> {
                 if let Some(ship_pos) = world {
                     // Have world position — use it (higher precision than minimap)
                     let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
+                    if self.options.show_trails {
+                        self.record_position(*entity_id, px);
+                    }
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
@@ -616,6 +742,7 @@ impl<'a> MinimapRenderer<'a> {
                         player_name: player_name.clone(),
                         ship_name: ship_name.clone(),
                         is_detected_teammate,
+                        name_color,
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -632,6 +759,9 @@ impl<'a> MinimapRenderer<'a> {
                 } else if let Some(mm) = minimap {
                     // Minimap-only position
                     let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
+                    if self.options.show_trails {
+                        self.record_position(*entity_id, px);
+                    }
                     commands.push(DrawCommand::Ship {
                         pos: px,
                         yaw,
@@ -643,6 +773,7 @@ impl<'a> MinimapRenderer<'a> {
                         player_name: player_name.clone(),
                         ship_name: ship_name.clone(),
                         is_detected_teammate,
+                        name_color,
                     });
                     if self.options.show_hp_bars {
                         if let Some(frac) = health_fraction {
@@ -677,7 +808,8 @@ impl<'a> MinimapRenderer<'a> {
                     is_self: relation.is_self(),
                     player_name: None,
                     ship_name: None,
-                    is_detected_teammate: false, // Undetected ships can't be detected teammates
+                    is_detected_teammate: false,
+                    name_color: None,
                 });
             }
         }
@@ -938,6 +1070,24 @@ fn hp_bar_color(fraction: f32) -> [u8; 3] {
         HP_BAR_MID_COLOR
     } else {
         HP_BAR_LOW_COLOR
+    }
+}
+
+/// Convert HSV hue (0-360) to RGB with full saturation and value.
+/// Used for position trail rainbow coloring (240=blue → 0=red).
+fn hue_to_rgb(hue: f32) -> [u8; 3] {
+    let h = hue / 60.0;
+    let i = h.floor() as i32;
+    let f = h - i as f32;
+    let q = (1.0 - f) * 255.0;
+    let t = f * 255.0;
+    match i % 6 {
+        0 => [255, t as u8, 0],
+        1 => [q as u8, 255, 0],
+        2 => [0, 255, t as u8],
+        3 => [0, q as u8, 255],
+        4 => [t as u8, 0, 255],
+        _ => [255, 0, q as u8],
     }
 }
 

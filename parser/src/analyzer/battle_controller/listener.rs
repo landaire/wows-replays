@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::Rc;
-use crate::types::{EntityId, GameClock, PlaneId};
+use crate::types::{EntityId, GameClock, GameParamId, PlaneId};
 
 use super::controller::{Entity, GameMessage, Player, SharedPlayer};
 use super::state::{
@@ -69,4 +69,8 @@ pub trait BattleControllerState {
     /// World-space gun aim yaw per entity, decoded from `targetLocalPos` EntityProperty.
     /// Updated frequently (~6000 times per match). Values are radians in [-PI, PI].
     fn target_yaws(&self) -> &HashMap<EntityId, f32>;
+
+    /// Currently selected ammo per entity. Maps entity_id -> (ammo_param_id, is_reload).
+    /// Only tracked for artillery (weapon_type 0).
+    fn selected_ammo(&self) -> &HashMap<EntityId, (GameParamId, bool)>;
 }

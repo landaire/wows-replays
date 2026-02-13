@@ -54,6 +54,9 @@ pub enum DrawCommand {
         ship_name: Option<String>,
         /// Whether this ship is a detected teammate (ally visible but not self)
         is_detected_teammate: bool,
+        /// Override color for player name based on selected armament
+        /// (e.g. orange=HE, light blue=AP, green=torp). None = default white.
+        name_color: Option<[u8; 3]>,
     },
     /// Health bar above a ship
     HealthBar {
@@ -132,6 +135,11 @@ pub enum DrawCommand {
         is_friendly: bool,
         /// Whether a health bar is rendered below this ship (affects vertical offset)
         has_hp_bar: bool,
+    },
+    /// Position trail showing historical movement as colored dots
+    PositionTrail {
+        /// Points with interpolated colors (oldest=blue, newest=red)
+        points: Vec<(MinimapPos, [u8; 3])>,
     },
     /// Score bar
     ScoreBar {

@@ -274,6 +274,7 @@ fn draw_ship_labels(
     y: i32,
     player_name: Option<&str>,
     ship_name: Option<&str>,
+    name_color: Option<[u8; 3]>,
     font: &FontRef,
 ) {
     let scale = PxScale::from(10.0);
@@ -283,11 +284,19 @@ fn draw_ship_labels(
         return;
     }
 
+    // Apply armament color to ship_name if shown, otherwise player_name
+    let color_on_ship = ship_name.is_some();
+
     // Position lines above the icon (icon radius ~12px)
     let base_y = y - 14 - line_count * line_height;
     let mut cur_y = base_y;
 
     if let Some(name) = player_name {
+        let color = if !color_on_ship {
+            name_color.map(Rgb).unwrap_or(COLOR_TEXT)
+        } else {
+            COLOR_TEXT
+        };
         let (w, _) = text_size(scale, font, name);
         let tx = x - w as i32 / 2;
         draw_text_mut(
@@ -299,10 +308,11 @@ fn draw_ship_labels(
             font,
             name,
         );
-        draw_text_mut(image, COLOR_TEXT, tx, cur_y, scale, font, name);
+        draw_text_mut(image, color, tx, cur_y, scale, font, name);
         cur_y += line_height;
     }
     if let Some(name) = ship_name {
+        let color = name_color.map(Rgb).unwrap_or(COLOR_TEXT);
         let (w, _) = text_size(scale, font, name);
         let tx = x - w as i32 / 2;
         draw_text_mut(
@@ -314,7 +324,7 @@ fn draw_ship_labels(
             font,
             name,
         );
-        draw_text_mut(image, COLOR_TEXT, tx, cur_y, scale, font, name);
+        draw_text_mut(image, color, tx, cur_y, scale, font, name);
     }
 }
 
@@ -479,6 +489,7 @@ impl RenderTarget for ImageTarget {
                 player_name,
                 ship_name,
                 is_detected_teammate,
+                name_color,
             } => {
                 let rgb = color.map(Rgb);
                 let x = pos.x;
@@ -514,6 +525,7 @@ impl RenderTarget for ImageTarget {
                     y,
                     player_name.as_deref(),
                     ship_name.as_deref(),
+                    *name_color,
                     &self.font,
                 );
             }
@@ -623,6 +635,19 @@ impl RenderTarget for ImageTarget {
             }
             DrawCommand::Timer { seconds } => {
                 draw_timer(&mut self.canvas, *seconds, &self.font);
+            }
+            DrawCommand::PositionTrail { points } => {
+                for (pos, color) in points {
+                    let px = pos.x;
+                    let py = pos.y + y_off;
+                    if px >= 0
+                        && (px as u32) < self.canvas.width()
+                        && py >= 0
+                        && (py as u32) < self.canvas.height()
+                    {
+                        self.canvas.put_pixel(px as u32, py as u32, Rgb(*color));
+                    }
+                }
             }
             DrawCommand::KillFeed { entries } => {
                 draw_kill_feed(&mut self.canvas, entries, &self.font);

@@ -1618,6 +1618,16 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         x: f32,
         y: f32,
     },
+    /// Ammo type selected for a weapon group
+    SetAmmoForWeapon {
+        entity_id: EntityId,
+        /// 0 = artillery, 2 = torpedo
+        weapon_type: u32,
+        /// GameParamId of the projectile (look up ammoType in GameParams)
+        ammo_param_id: GameParamId,
+        /// True if the player just switched ammo and is reloading
+        is_reload: bool,
+    },
     // ========================================================================
     // The following variants were identified through AI-assisted analysis of
     // raw replay data. Their semantics are best-effort interpretations.
@@ -2856,6 +2866,37 @@ where
                 turret,
                 yaw,
                 pitch,
+            }
+        } else if *method == "setAmmoForWeapon" {
+            // args: [weaponType: u8, ammoParamsId: u32, isReload: bool (optional in older replays)]
+            let weapon_type = match &args[0] {
+                ArgValue::Uint8(v) => *v as u32,
+                ArgValue::Int8(v) => *v as u32,
+                ArgValue::Uint32(v) => *v,
+                ArgValue::Int32(v) => *v as u32,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let ammo_param_id = match &args[1] {
+                ArgValue::Uint32(v) => GameParamId::from(*v),
+                ArgValue::Int32(v) => GameParamId::from(*v as u32),
+                ArgValue::Uint64(v) => GameParamId::from(*v),
+                ArgValue::Int64(v) => GameParamId::from(*v),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let is_reload = if args.len() > 2 {
+                match &args[2] {
+                    ArgValue::Uint8(v) => *v != 0,
+                    ArgValue::Int8(v) => *v != 0,
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            DecodedPacketPayload::SetAmmoForWeapon {
+                entity_id: *entity_id,
+                weapon_type,
+                ammo_param_id,
+                is_reload,
             }
         } else {
             DecodedPacketPayload::EntityMethod(packet)
