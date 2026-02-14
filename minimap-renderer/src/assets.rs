@@ -9,8 +9,8 @@ use crate::MINIMAP_SIZE;
 use crate::map_data;
 
 /// Icon size in pixels for rasterized ship icons.
-/// Scales proportionally with minimap size (24px at 768px minimap).
-pub const ICON_SIZE: u32 = MINIMAP_SIZE / 32;
+/// Scales proportionally with minimap size (18px at 768px minimap).
+pub const ICON_SIZE: u32 = MINIMAP_SIZE * 3 / 128;
 
 pub fn load_packed_image(
     path: &str,
