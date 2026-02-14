@@ -171,7 +171,7 @@ fn main() -> Result<(), Report> {
     let death_cause_icons = load_death_cause_icons(
         file_tree,
         pkg_loader,
-        wows_minimap_renderer::assets::ICON_SIZE * 14 / 24,
+        wows_minimap_renderer::assets::ICON_SIZE,
     );
     let powerup_icons = load_powerup_icons(
         file_tree,

@@ -5,9 +5,25 @@ use nom::number::complete::le_u32;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
+use wowsunpack::game_types::BattleType;
 
 use crate::error::*;
 use crate::types::{AccountId, GameParamId};
+
+fn deserialize_battle_type<'de, D>(deserializer: D) -> Result<BattleType, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(BattleType::from_value(&s))
+}
+
+fn serialize_battle_type<S>(bt: &BattleType, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&format!("{:?}", bt))
+}
 
 #[allow(non_snake_case)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -23,7 +39,11 @@ pub struct VehicleInfoMeta {
 pub struct ReplayMeta {
     pub matchGroup: String,
     pub gameMode: u32,
-    pub gameType: String,
+    #[serde(
+        deserialize_with = "deserialize_battle_type",
+        serialize_with = "serialize_battle_type"
+    )]
+    pub gameType: BattleType,
     pub clientVersionFromExe: String,
     pub scenarioUiCategoryId: u32,
     pub mapDisplayName: String,

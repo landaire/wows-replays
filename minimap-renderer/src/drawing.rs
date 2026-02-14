@@ -684,18 +684,21 @@ fn draw_kill_feed(
     ship_icons: &HashMap<String, ShipIcon>,
     death_cause_icons: &HashMap<String, RgbaImage>,
 ) {
-    let name_scale = PxScale::from(10.0);
-    let ship_scale = PxScale::from(9.0);
-    let line_height = 18i32;
+    let name_scale = PxScale::from(12.0);
+    let ship_scale = name_scale;
+    let line_height = 20i32;
     let right_margin = 4i32;
-    let icon_size = (crate::assets::ICON_SIZE * 14 / 24) as i32;
+    let icon_size = crate::assets::ICON_SIZE as i32;
     let cause_icon_size = icon_size;
     let gap = 2i32; // gap between elements
     let width = pm.width() as i32;
 
+    let (_, text_h) = text_size(name_scale, font, "Ag");
+    let text_h = text_h as i32;
+
     for (i, entry) in entries.iter().take(5).enumerate() {
         let y = 22 + i as i32 * line_height;
-        let icon_y = y - (line_height - icon_size) / 2;
+        let icon_y = y + (text_h - icon_size) / 2;
 
         // Get death cause icon key
         let cause_key = death_cause_icon_key(&entry.cause);
@@ -790,27 +793,16 @@ fn draw_kill_feed(
 
         // Killer ship name
         if killer_ship_w > 0 {
-            draw_text_shadow(
-                pm,
-                entry.killer_color,
-                x,
-                y + 1,
-                ship_scale,
-                font,
-                killer_ship,
-            );
+            draw_text_shadow(pm, entry.killer_color, x, y, ship_scale, font, killer_ship);
             x += killer_ship_w as i32;
         }
 
         // Death cause icon (or fallback gap)
         x += gap * 2;
         if let Some(cause_icon) = death_cause_icons.get(cause_key) {
-            draw_icon(
-                pm,
-                cause_icon,
-                x + cause_icon_size / 2,
-                icon_y + cause_icon_size / 2,
-            );
+            // draw_icon takes center coords; use same vertical center as ship icons
+            let cause_center_y = icon_y + cause_icon_size / 2;
+            draw_icon(pm, cause_icon, x + cause_icon_size / 2, cause_center_y);
         }
         x += cause_w as i32 + gap * 2;
 
@@ -838,15 +830,7 @@ fn draw_kill_feed(
 
         // Victim ship name
         if victim_ship_w > 0 {
-            draw_text_shadow(
-                pm,
-                entry.victim_color,
-                x,
-                y + 1,
-                ship_scale,
-                font,
-                victim_ship,
-            );
+            draw_text_shadow(pm, entry.victim_color, x, y, ship_scale, font, victim_ship);
         }
     }
 }
@@ -922,15 +906,28 @@ fn word_wrap(text: &str, max_width: u32, scale: PxScale, font: &FontRef) -> Vec<
 
     for word in text.split_whitespace() {
         if current_line.is_empty() {
-            // First word on the line — always accept it even if it overflows
-            current_line = word.to_string();
+            // First word on the line — force-break if it alone exceeds max_width
+            let (w, _) = text_size(scale, font, word);
+            if w > max_width {
+                force_break_word(word, max_width, scale, font, &mut lines);
+                current_line = lines.pop().unwrap_or_default();
+            } else {
+                current_line = word.to_string();
+            }
         } else {
             let candidate = format!("{} {}", current_line, word);
             let (w, _) = text_size(scale, font, &candidate);
             if w > max_width {
                 // Push the current line and start a new one
                 lines.push(current_line);
-                current_line = word.to_string();
+                // The new word itself might also be too wide
+                let (ww, _) = text_size(scale, font, word);
+                if ww > max_width {
+                    force_break_word(word, max_width, scale, font, &mut lines);
+                    current_line = lines.pop().unwrap_or_default();
+                } else {
+                    current_line = word.to_string();
+                }
             } else {
                 current_line = candidate;
             }
@@ -945,11 +942,63 @@ fn word_wrap(text: &str, max_width: u32, scale: PxScale, font: &FontRef) -> Vec<
     lines
 }
 
+/// Break a single word into lines that each fit within `max_width`.
+/// Completed lines are pushed to `lines`; the last (possibly partial) segment
+/// is also pushed so the caller can pop it to continue accumulating.
+fn force_break_word(
+    word: &str,
+    max_width: u32,
+    scale: PxScale,
+    font: &FontRef,
+    lines: &mut Vec<String>,
+) {
+    let mut segment = String::new();
+    for ch in word.chars() {
+        let candidate = format!("{}{}", segment, ch);
+        let (w, _) = text_size(scale, font, &candidate);
+        if w > max_width && !segment.is_empty() {
+            lines.push(segment);
+            segment = ch.to_string();
+        } else {
+            segment = candidate;
+        }
+    }
+    if !segment.is_empty() {
+        lines.push(segment);
+    }
+}
+
+/// Truncate `text` with ellipsis so it fits within `max_width` pixels.
+/// Returns the original string if it already fits.
+fn truncate_to_fit(text: &str, max_width: u32, scale: PxScale, font: &FontRef) -> String {
+    let (w, _) = text_size(scale, font, text);
+    if w <= max_width {
+        return text.to_string();
+    }
+    let ellipsis = "..";
+    let (ew, _) = text_size(scale, font, ellipsis);
+    if ew >= max_width {
+        return ellipsis.to_string();
+    }
+    let target = max_width - ew;
+    let mut truncated = String::new();
+    for ch in text.chars() {
+        let candidate = format!("{}{}", truncated, ch);
+        let (cw, _) = text_size(scale, font, &candidate);
+        if cw > target {
+            break;
+        }
+        truncated = candidate;
+    }
+    format!("{}{}", truncated, ellipsis)
+}
+
 /// Draw the chat overlay on the left side of the minimap.
 ///
-/// Each entry shows: `[CLAN] PlayerName <ship_icon> ShipName:`
-/// followed by the message text on the next line(s), word-wrapped.
-/// Division chat is gold, all other channels are orange.
+/// Each entry shows:
+///   Line 1: `[CLAN] PlayerName` (truncated to fit)
+///   Line 2: `<ship_icon> ShipName:`
+///   Line 3+: message text, word-wrapped
 /// The whole thing sits in a semi-translucent dark box.
 fn draw_chat_overlay(
     pm: &mut Pixmap,
@@ -971,11 +1020,19 @@ fn draw_chat_overlay(
     let line_height = 14i32;
     let entry_gap = 6i32;
     let icon_size = 12i32;
-    let icon_gap = 2i32;
 
-    // Pre-compute layout: for each entry, compute header segments and wrapped message lines
+    // Pre-compute layout for each entry
     struct EntryLayout {
-        header_height: i32,
+        /// Line 1: truncated "[CLAN] PlayerName"
+        name_line: String,
+        /// Color for clan tag portion (if present)
+        clan_color: Option<[u8; 3]>,
+        /// Length of clan tag prefix (including brackets and space), 0 if none
+        clan_prefix_len: usize,
+        /// Line 2: ship species key for icon + ship name
+        ship_line: Option<String>,
+        ship_species: Option<String>,
+        /// Message lines (word-wrapped)
         msg_lines: Vec<String>,
         total_height: i32,
     }
@@ -984,19 +1041,41 @@ fn draw_chat_overlay(
     let mut total_height = margin; // top padding
 
     for entry in entries {
-        // Header: "[CLAN] PlayerName <icon> ShipName:"
-        // We measure it but it will always fit in one line at this scale given the small box.
-        // Actually, the header may overflow — but at 9px font and 88px inner width, we just let it.
-        let header_height = line_height;
+        // Line 1: "[CLAN] PlayerName" — truncated to fit
+        let clan_prefix = if !entry.clan_tag.is_empty() {
+            format!("[{}] ", entry.clan_tag)
+        } else {
+            String::new()
+        };
+        let full_name_line = format!("{}{}", clan_prefix, entry.player_name);
+        let name_line = truncate_to_fit(&full_name_line, inner_width, header_scale, font);
+        let clan_color = if !entry.clan_tag.is_empty() {
+            Some(entry.clan_color.unwrap_or(entry.team_color))
+        } else {
+            None
+        };
+
+        // Line 2: ship icon + ship name (if available)
+        let has_ship_line = entry.ship_name.is_some();
+        let ship_line = entry.ship_name.as_ref().map(|name| {
+            let icon_reserved = (icon_size + 2) as u32;
+            let available = inner_width.saturating_sub(icon_reserved);
+            truncate_to_fit(name, available, header_scale, font)
+        });
 
         // Message lines (word-wrapped)
         let msg_lines = word_wrap(&entry.message, inner_width, msg_scale, font);
-        let msg_height = msg_lines.len() as i32 * line_height;
-        let entry_height = header_height + msg_height;
+
+        let line_count = 1 + has_ship_line as i32 + msg_lines.len() as i32;
+        let entry_height = line_count * line_height;
 
         total_height += entry_height + entry_gap;
         layouts.push(EntryLayout {
-            header_height,
+            name_line,
+            clan_color,
+            clan_prefix_len: clan_prefix.len(),
+            ship_line,
+            ship_species: entry.ship_species.clone(),
             msg_lines,
             total_height: entry_height,
         });
@@ -1032,9 +1111,7 @@ fn draw_chat_overlay(
             continue;
         }
 
-        // Apply opacity to colors
         let apply_opacity = |color: [u8; 3], op: f32| -> [u8; 3] {
-            // We can't truly do opacity on the text easily, so we blend toward black
             [
                 (color[0] as f32 * op) as u8,
                 (color[1] as f32 * op) as u8,
@@ -1042,51 +1119,81 @@ fn draw_chat_overlay(
             ]
         };
 
-        let mut x = box_x + margin;
-
-        // Clan tag: "[CLAN] " in clan color (or team color if no clan color)
-        if !entry.clan_tag.is_empty() {
-            let clan_display = format!("[{}] ", entry.clan_tag);
-            let clan_rgb = entry.clan_color.unwrap_or(entry.team_color);
-            let clan_rgb = apply_opacity(clan_rgb, opacity);
-            draw_text(pm, clan_rgb, x, cur_y, header_scale, font, &clan_display);
-            let (cw, _) = text_size(header_scale, font, &clan_display);
-            x += cw as i32;
+        // Line 1: [CLAN] PlayerName
+        let x = box_x + margin;
+        if let Some(clan_rgb) = layout.clan_color {
+            // Draw clan prefix in clan color, rest in team color
+            let clan_text: String = layout
+                .name_line
+                .chars()
+                .take(layout.clan_prefix_len)
+                .collect();
+            let name_text: String = layout
+                .name_line
+                .chars()
+                .skip(layout.clan_prefix_len)
+                .collect();
+            let (cw, _) = text_size(header_scale, font, &clan_text);
+            draw_text(
+                pm,
+                apply_opacity(clan_rgb, opacity),
+                x,
+                cur_y,
+                header_scale,
+                font,
+                &clan_text,
+            );
+            draw_text(
+                pm,
+                apply_opacity(entry.team_color, opacity),
+                x + cw as i32,
+                cur_y,
+                header_scale,
+                font,
+                &name_text,
+            );
+        } else {
+            draw_text(
+                pm,
+                apply_opacity(entry.team_color, opacity),
+                x,
+                cur_y,
+                header_scale,
+                font,
+                &layout.name_line,
+            );
         }
+        cur_y += line_height;
 
-        // Player name in team color
-        let name_color = apply_opacity(entry.team_color, opacity);
-        draw_text(
-            pm,
-            name_color,
-            x,
-            cur_y,
-            header_scale,
-            font,
-            &entry.player_name,
-        );
-        let (nw, _) = text_size(header_scale, font, &entry.player_name);
-        x += nw as i32;
-
-        // Ship icon (small, tinted with team color)
-        if let Some(ref species) = entry.ship_species {
-            if let Some(icon) = ship_icons.get(species) {
-                x += icon_gap;
-                let icon_y = cur_y;
-                // Draw a tiny version of the ship icon
-                draw_kill_feed_icon(pm, icon, x, icon_y, icon_size, name_color, false);
-                x += icon_size + icon_gap;
+        // Line 2: ship icon + ship name
+        if let Some(ref ship_name) = layout.ship_line {
+            let mut sx = x;
+            if let Some(ref species_key) = layout.ship_species {
+                if let Some(icon) = ship_icons.get(species_key) {
+                    let icon_y = cur_y + (line_height - icon_size) / 2;
+                    draw_kill_feed_icon(
+                        pm,
+                        icon,
+                        sx,
+                        icon_y,
+                        icon_size,
+                        apply_opacity(entry.team_color, opacity),
+                        false,
+                    );
+                }
+                sx += icon_size + 2;
             }
+            draw_text(
+                pm,
+                apply_opacity(entry.team_color, opacity),
+                sx,
+                cur_y,
+                header_scale,
+                font,
+                ship_name,
+            );
+            cur_y += line_height;
         }
-
-        // Ship name
-        if let Some(ref ship_name) = entry.ship_name {
-            let ship_display = format!(" {}:", ship_name);
-            let ship_color = apply_opacity(entry.team_color, opacity);
-            draw_text(pm, ship_color, x, cur_y, header_scale, font, &ship_display);
-        }
-
-        cur_y += layout.header_height;
 
         // Message lines
         let msg_color = apply_opacity(entry.message_color, opacity);

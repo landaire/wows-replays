@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use wowsunpack::data::ResourceLoader as _;
 use wowsunpack::game_params::provider::GameMetadataProvider;
@@ -128,7 +128,9 @@ pub struct MinimapRenderer<'a> {
     /// Per-player clan color: entity_id -> RGB color (None = use team color)
     player_clan_colors: HashMap<EntityId, Option<[u8; 3]>>,
     /// Track which entities we've already resolved ability icons for
-    resolved_entities: std::collections::HashSet<EntityId>,
+    resolved_entities: HashSet<EntityId>,
+    /// Entity IDs of players in the recording player's division (excluding self).
+    division_mates: HashSet<EntityId>,
     players_populated: bool,
     /// Raw team_id of the recording player (0 or 1). Used to map cap point/building
     /// team_ids to relative colors (friendly vs enemy).
@@ -157,7 +159,8 @@ impl<'a> MinimapRenderer<'a> {
             ship_ability_variants: HashMap::new(),
             player_clan_tags: HashMap::new(),
             player_clan_colors: HashMap::new(),
-            resolved_entities: std::collections::HashSet::new(),
+            resolved_entities: HashSet::new(),
+            division_mates: HashSet::new(),
             players_populated: false,
             self_team_id: None,
             position_history: HashMap::new(),
@@ -177,6 +180,7 @@ impl<'a> MinimapRenderer<'a> {
         self.player_clan_tags.clear();
         self.player_clan_colors.clear();
         self.resolved_entities.clear();
+        self.division_mates.clear();
         self.players_populated = false;
         self.self_team_id = None;
         self.position_history.clear();
@@ -270,6 +274,21 @@ impl<'a> MinimapRenderer<'a> {
                         self.self_team_id = Some(vehicle.borrow().props().team_id() as i64);
                     }
                     break;
+                }
+            }
+        }
+
+        // Cache division mate entity IDs (skip in clan battles where the whole team is one div)
+        if !controller.battle_type().is_clan_battle() {
+            let self_state = players
+                .values()
+                .find(|p| p.relation().is_self())
+                .map(|p| p.initial_state());
+            if let Some(self_state) = self_state {
+                for (entity_id, player) in players {
+                    if self_state.is_division_mate(player.initial_state()) {
+                        self.division_mates.insert(*entity_id);
+                    }
                 }
             }
         }
@@ -836,7 +855,7 @@ impl<'a> MinimapRenderer<'a> {
                 .get(entity_id)
                 .copied()
                 .unwrap_or(Relation::new(2));
-            let color = ship_color_rgb(relation);
+            let color = ship_color_rgb(relation, self.division_mates.contains(entity_id));
             let species = self.player_species.get(entity_id).cloned();
             let player_name = if self.options.show_player_names {
                 self.player_names.get(entity_id).cloned()
@@ -1026,7 +1045,7 @@ impl<'a> MinimapRenderer<'a> {
                     .get(entity_id)
                     .copied()
                     .unwrap_or(Relation::new(2));
-                let color = ship_color_rgb(relation);
+                let color = ship_color_rgb(relation, self.division_mates.contains(entity_id));
                 commands.push(DrawCommand::TurretDirection {
                     pos: px,
                     yaw: screen_yaw,
@@ -1455,11 +1474,17 @@ impl<'a> MinimapRenderer<'a> {
                         killer_name,
                         killer_species: self.player_species.get(&kill.killer).cloned(),
                         killer_ship_name: self.ship_display_names.get(&kill.killer).cloned(),
-                        killer_color: ship_color_rgb(killer_relation),
+                        killer_color: ship_color_rgb(
+                            killer_relation,
+                            self.division_mates.contains(&kill.killer),
+                        ),
                         victim_name,
                         victim_species: self.player_species.get(&kill.victim).cloned(),
                         victim_ship_name: self.ship_display_names.get(&kill.victim).cloned(),
-                        victim_color: ship_color_rgb(victim_relation),
+                        victim_color: ship_color_rgb(
+                            victim_relation,
+                            self.division_mates.contains(&kill.victim),
+                        ),
                         cause: kill.cause.clone(),
                     });
                     if recent_kills.len() >= 5 {
@@ -1497,9 +1522,13 @@ impl<'a> MinimapRenderer<'a> {
                 } else {
                     1.0
                 };
+                let sender_entity = msg.player.as_ref().map(|p| p.initial_state().entity_id());
+                let is_div_mate = sender_entity
+                    .map(|eid| self.division_mates.contains(&eid))
+                    .unwrap_or(false);
                 let team_color = msg
                     .sender_relation
-                    .map(ship_color_rgb)
+                    .map(|r| ship_color_rgb(r, is_div_mate))
                     .unwrap_or([255, 255, 255]);
                 let (clan_tag, clan_color, ship_species, ship_name) =
                     if let Some(ref player) = msg.player {
@@ -1624,10 +1653,12 @@ fn cap_point_color(team_id: i64, self_team_id: Option<i64>) -> [u8; 3] {
     }
 }
 
-/// Get the ship color as an RGB array based on relation.
-fn ship_color_rgb(relation: Relation) -> [u8; 3] {
+/// Get the ship color as an RGB array based on relation and division membership.
+fn ship_color_rgb(relation: Relation, is_division_mate: bool) -> [u8; 3] {
     if relation.is_self() {
         [255, 255, 255]
+    } else if is_division_mate {
+        [255, 215, 0] // Gold
     } else if relation.is_ally() {
         [76, 232, 170]
     } else {

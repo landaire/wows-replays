@@ -13,6 +13,7 @@ use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
     game_params::types::{BigWorldDistance, CrewSkill, Param, Species},
+    game_types::BattleType,
     rpc::typedefs::ArgValue,
 };
 
@@ -389,7 +390,7 @@ pub struct BattleReport {
     version: Version,
     map_name: String,
     game_mode: String,
-    game_type: String,
+    game_type: BattleType,
     match_group: String,
     players: Vec<Rc<Player>>,
     game_chat: Vec<GameMessage>,
@@ -429,8 +430,8 @@ impl BattleReport {
         self.game_mode.as_ref()
     }
 
-    pub fn game_type(&self) -> &str {
-        self.game_type.as_ref()
+    pub fn game_type(&self) -> BattleType {
+        self.game_type
     }
 
     pub fn battle_results(&self) -> Option<&str> {
@@ -669,11 +670,8 @@ where
         self.game_meta.clientVersionFromExe.as_ref()
     }
 
-    pub fn game_type(&self) -> String {
-        let id = format!("IDS_{}", self.game_meta.gameType.to_ascii_uppercase());
-        self.game_resources
-            .localized_name_from_id(&id)
-            .unwrap_or_else(|| self.game_meta.gameType.clone())
+    pub fn game_type(&self) -> BattleType {
+        self.game_meta.gameType
     }
 
     fn handle_chat_message<'packet>(
@@ -2277,6 +2275,10 @@ where
 
     fn selected_ammo(&self) -> &HashMap<EntityId, GameParamId> {
         &self.selected_ammo
+    }
+
+    fn battle_type(&self) -> BattleType {
+        self.game_meta.gameType
     }
 }
 

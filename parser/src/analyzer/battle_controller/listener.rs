@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use wowsunpack::game_types::BattleType;
+
 use crate::Rc;
 use crate::analyzer::decoder::FinishType;
 use crate::types::{EntityId, GameClock, GameParamId, PlaneId};
@@ -90,4 +92,7 @@ pub trait BattleControllerState {
     /// Currently selected ammo per entity. Maps entity_id -> ammo_param_id.
     /// Only tracked for artillery (weapon_type 0).
     fn selected_ammo(&self) -> &HashMap<EntityId, GameParamId>;
+
+    /// The battle type (Random, Ranked, Clan, Co-op, etc.)
+    fn battle_type(&self) -> BattleType;
 }

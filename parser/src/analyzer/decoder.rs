@@ -580,6 +580,13 @@ impl PlayerStateData {
             .unwrap_or(0)
     }
 
+    /// Returns true if `other` is in the same division as `self` (and is not `self`).
+    pub fn is_division_mate(&self, other: &PlayerStateData) -> bool {
+        self.db_id() != other.db_id()
+            && self.division_id() > 0
+            && other.division_id() == self.division_id()
+    }
+
     pub fn max_health(&self) -> i64 {
         self.max_health
     }
