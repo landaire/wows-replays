@@ -439,76 +439,93 @@ impl PlayerStateData {
     pub fn update_from_dict(&mut self, values: &HashMap<&'static str, pickled::Value>) {
         if let Some(v) = values.get(Self::KEY_AVATAR_ID)
             && let Some(id) = v.i64_ref()
-                && let Some(ref mut hp) = self.human_properties {
-                    hp.avatar_id = AccountId::from(*id);
-                }
+            && let Some(ref mut hp) = self.human_properties
+        {
+            hp.avatar_id = AccountId::from(*id);
+        }
         if let Some(v) = values.get(Self::KEY_NAME)
-            && let Some(s) = v.string_ref() {
-                self.username = s.inner().clone();
-            }
+            && let Some(s) = v.string_ref()
+        {
+            self.username = s.inner().clone();
+        }
         if let Some(v) = values.get(Self::KEY_CLAN_TAG)
-            && let Some(s) = v.string_ref() {
-                self.clan = s.inner().clone();
-            }
+            && let Some(s) = v.string_ref()
+        {
+            self.clan = s.inner().clone();
+        }
         if let Some(v) = values.get(Self::KEY_CLAN_ID)
-            && let Some(id) = v.i64_ref() {
-                self.clan_id = *id;
-            }
+            && let Some(id) = v.i64_ref()
+        {
+            self.clan_id = *id;
+        }
         if let Some(v) = values.get(Self::KEY_CLAN_COLOR)
-            && let Some(id) = v.i64_ref() {
-                self.clan_color = *id;
-            }
+            && let Some(id) = v.i64_ref()
+        {
+            self.clan_color = *id;
+        }
         if let Some(v) = values.get(Self::KEY_SHIP_ID)
-            && let Some(id) = v.i64_ref() {
-                self.entity_id = EntityId::from(*id);
-            }
+            && let Some(id) = v.i64_ref()
+        {
+            self.entity_id = EntityId::from(*id);
+        }
         if let Some(v) = values.get(Self::KEY_ID)
-            && let Some(id) = v.i64_ref() {
-                self.meta_ship_id = AccountId::from(*id);
-            }
+            && let Some(id) = v.i64_ref()
+        {
+            self.meta_ship_id = AccountId::from(*id);
+        }
         if let Some(v) = values.get(Self::KEY_TEAM_ID)
-            && let Some(id) = v.i64_ref() {
-                self.team_id = *id;
-            }
+            && let Some(id) = v.i64_ref()
+        {
+            self.team_id = *id;
+        }
         if let Some(v) = values.get(Self::KEY_MAX_HEALTH)
-            && let Some(id) = v.i64_ref() {
-                self.max_health = *id;
-            }
+            && let Some(id) = v.i64_ref()
+        {
+            self.max_health = *id;
+        }
         if let Some(v) = values.get(Self::KEY_REALM)
-            && let Some(s) = v.string_ref() {
-                self.realm = s.inner().clone();
-            }
+            && let Some(s) = v.string_ref()
+        {
+            self.realm = s.inner().clone();
+        }
         if let Some(v) = values.get(Self::KEY_ACCOUNT_DBID)
-            && let Some(id) = v.i64_ref() {
-                self.db_id = AccountId::from(*id);
-            }
+            && let Some(id) = v.i64_ref()
+        {
+            self.db_id = AccountId::from(*id);
+        }
         if let Some(v) = values.get(Self::KEY_PREBATTLE_ID)
             && let Some(id) = v.i64_ref()
-                && let Some(ref mut hp) = self.human_properties {
-                    hp.prebattle_id = *id;
-                }
+            && let Some(ref mut hp) = self.human_properties
+        {
+            hp.prebattle_id = *id;
+        }
         if let Some(v) = values.get(Self::KEY_IS_ABUSER)
-            && let Some(b) = v.bool_ref() {
-                self.is_abuser = *b;
-            }
+            && let Some(b) = v.bool_ref()
+        {
+            self.is_abuser = *b;
+        }
         if let Some(v) = values.get(Self::KEY_IS_HIDDEN)
-            && let Some(b) = v.bool_ref() {
-                self.is_hidden = *b;
-            }
+            && let Some(b) = v.bool_ref()
+        {
+            self.is_hidden = *b;
+        }
         if let Some(v) = values.get(Self::KEY_IS_CONNECTED)
             && let Some(b) = v.bool_ref()
-                && let Some(ref mut hp) = self.human_properties {
-                    hp.is_connected = *b;
-                }
+            && let Some(ref mut hp) = self.human_properties
+        {
+            hp.is_connected = *b;
+        }
         if let Some(v) = values.get(Self::KEY_IS_CLIENT_LOADED)
             && let Some(b) = v.bool_ref()
-                && let Some(ref mut hp) = self.human_properties {
-                    hp.is_client_loaded = *b;
-                }
+            && let Some(ref mut hp) = self.human_properties
+        {
+            hp.is_client_loaded = *b;
+        }
         if let Some(v) = values.get(Self::KEY_IS_BOT)
-            && let Some(b) = v.bool_ref() {
-                self.is_bot = *b;
-            }
+            && let Some(b) = v.bool_ref()
+        {
+            self.is_bot = *b;
+        }
 
         // Update raw_with_names with any new values
         for (k, v) in values.iter() {
@@ -1600,14 +1617,14 @@ where
             if let Some(ArgValue::Blob(blob)) = args.get(4)
                 && let Ok(value) =
                     pickled::de::value_from_slice(blob, pickled::de::DeOptions::new())
-                {
-                    let value = try_convert_pickle_to_string(value);
-                    if let pickled::value::Value::List(bots) = &value {
-                        for bot in bots.inner().iter() {
-                            bots_out.push(PlayerStateData::from_pickle(bot, version, true));
-                        }
+            {
+                let value = try_convert_pickle_to_string(value);
+                if let pickled::value::Value::List(bots) = &value {
+                    for bot in bots.inner().iter() {
+                        bots_out.push(PlayerStateData::from_pickle(bot, version, true));
                     }
                 }
+            }
 
             DecodedPacketPayload::OnArenaStateReceived {
                 arena_id: arg0,
@@ -1849,20 +1866,19 @@ where
                 arg1: args1,
             }
         } else if *method == "onBattleEnd" {
-            let (winning_team, finish_type) =
-                if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
-                    (None, None)
+            let (winning_team, finish_type) = if args.len() >= 2 {
+                let (winning_team, raw_finish) = unpack_rpc_args!(args, i8, u8);
+                let ft = if let Some(name) =
+                    battle_constants.and_then(|bc| bc.finish_type(raw_finish as i32))
+                {
+                    FinishType::from_name(name)
                 } else {
-                    let (winning_team, raw_finish) = unpack_rpc_args!(args, i8, u8);
-                    let ft = if let Some(name) =
-                        battle_constants.and_then(|bc| bc.finish_type(raw_finish as i32))
-                    {
-                        FinishType::from_name(name)
-                    } else {
-                        FinishType::from_id(raw_finish)
-                    };
-                    (Some(winning_team), Some(ft))
+                    FinishType::from_id(raw_finish)
                 };
+                (Some(winning_team), Some(ft))
+            } else {
+                (None, None)
+            };
             DecodedPacketPayload::BattleEnd {
                 winning_team,
                 finish_type,

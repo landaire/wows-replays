@@ -129,6 +129,7 @@ fn main() -> Result<(), Report> {
 
     let dump_mode = match matches.value_of("DUMP_FRAME") {
         Some("mid") => Some(DumpMode::Midpoint),
+        Some("last") => Some(DumpMode::Last),
         Some(n) => Some(DumpMode::Frame(
             n.parse::<usize>().expect("invalid frame number"),
         )),

@@ -22,6 +22,7 @@ pub const FPS: f64 = 30.0;
 pub enum DumpMode {
     Frame(usize),
     Midpoint,
+    Last,
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +386,9 @@ impl VideoEncoder {
                 let dump_frame = match dump_mode {
                     DumpMode::Frame(n) => *n as i64,
                     DumpMode::Midpoint => TOTAL_FRAMES as i64 / 2,
+                    DumpMode::Last => -1, // handled in finish()
                 };
-                if self.last_rendered_frame == dump_frame {
+                if dump_frame >= 0 && self.last_rendered_frame == dump_frame {
                     target.begin_frame();
                     for cmd in &commands {
                         target.draw(cmd);
@@ -447,7 +449,29 @@ impl VideoEncoder {
         let end_clock = controller.battle_end_clock().unwrap_or(controller.clock());
         self.advance_clock(end_clock, controller, renderer, target);
 
-        if self.dump_mode.is_some() {
+        if let Some(ref dump_mode) = self.dump_mode {
+            if matches!(dump_mode, DumpMode::Last) {
+                // Dump the final frame (includes result overlay if winner is known)
+                let commands = renderer.draw_frame(controller);
+                target.begin_frame();
+                for cmd in &commands {
+                    target.draw(cmd);
+                }
+                target.end_frame();
+
+                let png_path = self.output_path.replace(".mp4", ".png");
+                let png_path = if png_path == self.output_path {
+                    format!("{}.png", self.output_path)
+                } else {
+                    png_path
+                };
+                if let Err(e) = target.frame().save(&png_path) {
+                    error!(error = %e, "Failed to save frame");
+                } else {
+                    let (w, h) = target.canvas_size();
+                    info!(path = %png_path, width = w, height = h, "Result frame saved");
+                }
+            }
             return Ok(());
         }
 

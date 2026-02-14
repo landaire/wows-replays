@@ -225,6 +225,14 @@ pub enum DrawCommand {
     Timer { seconds: f32 },
     /// Kill feed entries with rich data
     KillFeed { entries: Vec<KillFeedEntry> },
+    /// Battle result overlay (shown at end of match)
+    BattleResultOverlay {
+        text: String,
+        /// Subtitle (e.g. finish reason like "All enemy ships destroyed")
+        subtitle: Option<String>,
+        /// Glow/shadow color behind the text
+        color: [u8; 3],
+    },
 }
 
 /// Trait for rendering backends that consume `DrawCommand`s.

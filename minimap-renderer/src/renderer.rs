@@ -4,7 +4,7 @@ use wowsunpack::data::ResourceLoader as _;
 use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::game_params::types::{AbilityCategory, GameParamProvider, PlaneCategory, Species};
 
-use wows_replays::analyzer::decoder::{DepthState, WeaponType};
+use wows_replays::analyzer::decoder::{DepthState, FinishType, WeaponType};
 
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
@@ -1428,7 +1428,46 @@ impl<'a> MinimapRenderer<'a> {
             });
         }
 
+        // 11. Battle result overlay (shown as soon as winner is known)
+        if let Some(wt) = controller.winning_team() {
+            let (text, color) = match (self.self_team_id, wt) {
+                (Some(self_t), wt) if wt >= 0 && wt == self_t as i8 => {
+                    ("VICTORY".to_string(), [76, 232, 170]) // green
+                }
+                (Some(_), wt) if wt >= 0 => {
+                    ("DEFEAT".to_string(), [254, 77, 42]) // red
+                }
+                _ => ("DRAW".to_string(), [255, 165, 0]), // orange
+            };
+            let subtitle = controller
+                .finish_type()
+                .map(|ft| finish_type_description(ft).to_uppercase());
+            commands.push(DrawCommand::BattleResultOverlay {
+                text,
+                subtitle,
+                color,
+            });
+        }
+
         commands
+    }
+}
+
+/// Human-readable description for how the battle ended.
+fn finish_type_description(ft: &FinishType) -> String {
+    match ft {
+        FinishType::Extermination => "All enemy ships destroyed".into(),
+        FinishType::BaseCaptured => "Base captured".into(),
+        FinishType::Timeout => "Time expired".into(),
+        FinishType::Score => "Score limit reached".into(),
+        FinishType::ScoreOnTimeout => "Leading on points at timeout".into(),
+        FinishType::ScoreZero => "Points depleted".into(),
+        FinishType::ScoreExcess => "Score limit exceeded".into(),
+        FinishType::Failure => "Mission failed".into(),
+        FinishType::Technical => "Technical finish".into(),
+        FinishType::PveMainTaskSucceeded => "Mission accomplished".into(),
+        FinishType::PveMainTaskFailed => "Mission failed".into(),
+        FinishType::Unknown | FinishType::Other(_) => "Battle ended".into(),
     }
 }
 

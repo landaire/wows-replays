@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::Rc;
+use crate::analyzer::decoder::FinishType;
 use crate::types::{EntityId, GameClock, GameParamId, PlaneId};
 
 use super::controller::{Entity, GameMessage, Player, SharedPlayer};
@@ -67,6 +68,12 @@ pub trait BattleControllerState {
 
     /// Clock time when the battle ended, if it has ended
     fn battle_end_clock(&self) -> Option<GameClock>;
+
+    /// Which team won the match (0 or 1), or negative for draw. None if match hasn't ended.
+    fn winning_team(&self) -> Option<i8>;
+
+    /// How the battle ended (extermination, score, timeout, etc.). None if not yet decided.
+    fn finish_type(&self) -> Option<&FinishType>;
 
     /// Main battery turret yaws per entity (group 0 only).
     /// Each entry maps entity_id -> vec of turret yaws in radians (relative to ship heading).

@@ -963,6 +963,87 @@ fn draw_grid(pm: &mut Pixmap, minimap_size: u32, y_off: u32, font: &FontRef) {
     }
 }
 
+/// Draw a large centered battle result text with a colored glow effect.
+///
+/// The glow is created by drawing the text multiple times at increasing offsets
+/// with decreasing opacity in the glow color, creating a soft halo effect.
+fn draw_battle_result_overlay(
+    pm: &mut Pixmap,
+    text: &str,
+    subtitle: Option<&str>,
+    glow_color: [u8; 3],
+    font: &FontRef,
+) {
+    let w = pm.width();
+    let h = pm.height();
+
+    let font_height = w as f32 / 8.0;
+    let scale = PxScale::from(font_height);
+    let (tw, th) = text_size(scale, font, text);
+
+    // If there's a subtitle, shift the main text up a bit to make room
+    let sub_scale = PxScale::from(font_height / 4.0);
+    let sub_height = subtitle
+        .map(|s| text_size(sub_scale, font, s).1)
+        .unwrap_or(0);
+    let gap = if subtitle.is_some() { 8 } else { 0 };
+    let total_height = th + gap as u32 + sub_height;
+
+    let x = (w as i32 - tw as i32) / 2;
+    let y = (h as i32 - total_height as i32) / 2;
+
+    // Dark shadow behind text for contrast, then colored glow, then white text
+    let glow_layers: &[(i32, [u8; 3], f32)] = &[
+        (8, [0, 0, 0], 0.15),
+        (6, [0, 0, 0], 0.25),
+        (4, glow_color, 0.30),
+        (3, glow_color, 0.45),
+        (2, glow_color, 0.60),
+        (1, glow_color, 0.80),
+    ];
+    let offsets: &[(i32, i32)] = &[
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (1, -1),
+        (-1, 1),
+        (1, 1),
+    ];
+    for &(dist, color, opacity) in glow_layers {
+        let c = [
+            (color[0] as f32 * opacity) as u8,
+            (color[1] as f32 * opacity) as u8,
+            (color[2] as f32 * opacity) as u8,
+        ];
+        for &(dx, dy) in offsets {
+            draw_text(pm, c, x + dx * dist, y + dy * dist, scale, font, text);
+        }
+    }
+    draw_text(pm, [255, 255, 255], x, y, scale, font, text);
+
+    // Subtitle below main text
+    if let Some(sub) = subtitle {
+        let (sw, _) = text_size(sub_scale, font, sub);
+        let sx = (w as i32 - sw as i32) / 2;
+        let sy = y + th as i32 + gap;
+        // Subtle dark outline for readability
+        for &(dx, dy) in offsets {
+            draw_text(
+                pm,
+                [0, 0, 0],
+                sx + dx * 2,
+                sy + dy * 2,
+                sub_scale,
+                font,
+                sub,
+            );
+        }
+        draw_text(pm, [200, 200, 200], sx, sy, sub_scale, font, sub);
+    }
+}
+
 // ── ImageTarget (RenderTarget implementation) ──────────────────────────────
 
 use crate::{CANVAS_HEIGHT, HUD_HEIGHT, MINIMAP_SIZE};
@@ -1439,6 +1520,19 @@ impl RenderTarget for ImageTarget {
                     &self.font,
                     &self.ship_icons,
                     &self.death_cause_icons,
+                );
+            }
+            DrawCommand::BattleResultOverlay {
+                text,
+                subtitle,
+                color,
+            } => {
+                draw_battle_result_overlay(
+                    &mut self.canvas,
+                    text,
+                    subtitle.as_deref(),
+                    *color,
+                    &self.font,
                 );
             }
         }

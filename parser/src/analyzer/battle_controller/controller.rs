@@ -2253,6 +2253,14 @@ where
         self.battle_end_clock
     }
 
+    fn winning_team(&self) -> Option<i8> {
+        self.winning_team
+    }
+
+    fn finish_type(&self) -> Option<&FinishType> {
+        self.finish_type.as_ref()
+    }
+
     fn turret_yaws(&self) -> &HashMap<EntityId, Vec<f32>> {
         &self.turret_yaws
     }
@@ -2395,6 +2403,22 @@ where
                     && let Some(v) = Self::arg_to_i64(&prop.value)
                 {
                     self.capture_points[cp_idx].team_id = v;
+                }
+                // Handle BattleLogic battleResult property (winning team + finish reason)
+                if prop.property == "battleResult"
+                    && let Some(dict) = Self::as_dict(&prop.value)
+                {
+                    // winnerTeamId: -2 = undecided (initial), -1 = draw, 0/1 = team won
+                    if let Some(winner) = dict.get("winnerTeamId").and_then(|v| Self::arg_to_i64(v))
+                        && winner >= -1
+                    {
+                        self.winning_team = Some(winner as i8);
+                    }
+                    if let Some(reason) = dict.get("finishReason").and_then(|v| Self::arg_to_i64(v))
+                        && reason > 0
+                    {
+                        self.finish_type = Some(FinishType::from_id(reason as u8));
+                    }
                 }
             }
             crate::analyzer::decoder::DecodedPacketPayload::BasePlayerCreate(_base) => {
@@ -2607,8 +2631,14 @@ where
             } => {
                 self.match_finished = true;
                 self.battle_end_clock = Some(packet.clock);
-                self.winning_team = winning_team;
-                self.finish_type = finish_type;
+                // Only overwrite if BattleEnd carries values (modern replays have None;
+                // winning_team is already set from battleResult EntityProperty)
+                if winning_team.is_some() {
+                    self.winning_team = winning_team;
+                }
+                if finish_type.is_some() {
+                    self.finish_type = finish_type;
+                }
             }
             crate::analyzer::decoder::DecodedPacketPayload::Consumable {
                 entity,
