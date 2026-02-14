@@ -1159,6 +1159,7 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         // 8b. Ship config circles (detection, main battery, secondary, radar, hydro)
+        if self.options.show_ship_config
         {
             for entity_id in &all_ship_ids {
                 // Skip dead ships
