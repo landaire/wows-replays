@@ -703,7 +703,11 @@ impl<'a> MinimapRenderer<'a> {
                         }
                         crate::advantage::TeamAdvantage::Even => (String::new(), [255, 255, 255]),
                     };
-                    commands.push(DrawCommand::TeamAdvantage { label, color, breakdown: result.breakdown });
+                    commands.push(DrawCommand::TeamAdvantage {
+                        label,
+                        color,
+                        breakdown: result.breakdown,
+                    });
                 }
             }
         }

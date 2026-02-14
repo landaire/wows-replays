@@ -15,8 +15,9 @@ use crate::drawing::ImageTarget;
 use crate::renderer::MinimapRenderer;
 use crate::{CANVAS_HEIGHT, MINIMAP_SIZE};
 
-pub const TOTAL_FRAMES: usize = 1800;
 pub const FPS: f64 = 30.0;
+/// Target output video duration in seconds. The game is compressed to fit this length.
+pub const OUTPUT_DURATION: f64 = 60.0;
 
 #[derive(Clone, Debug)]
 pub enum DumpMode {
@@ -312,14 +313,20 @@ pub struct VideoEncoder {
 
 impl VideoEncoder {
     pub fn new(output_path: &str, dump_mode: Option<DumpMode>, game_duration: f32) -> Self {
+        let total_frames = (OUTPUT_DURATION * FPS) as usize;
         Self {
             output_path: output_path.to_string(),
             dump_mode,
             game_duration,
             last_rendered_frame: -1,
             backend: None,
-            h264_frames: Vec::with_capacity(TOTAL_FRAMES),
+            h264_frames: Vec::with_capacity(total_frames),
         }
+    }
+
+    /// Total output frames (fixed output duration * FPS).
+    fn total_frames(&self) -> i64 {
+        (OUTPUT_DURATION * FPS) as i64
     }
 
     /// Create the encoder backend on first use.
@@ -329,7 +336,7 @@ impl VideoEncoder {
         }
         self.backend = Some(EncoderBackend::create(MINIMAP_SIZE, CANVAS_HEIGHT)?);
         info!(
-            frames = TOTAL_FRAMES,
+            frames = self.total_frames(),
             width = MINIMAP_SIZE,
             height = CANVAS_HEIGHT,
             duration = self.game_duration,
@@ -368,14 +375,12 @@ impl VideoEncoder {
             return;
         }
 
-        let frame_duration = self.game_duration / TOTAL_FRAMES as f32;
+        let total_frames = self.total_frames();
+        let frame_duration = self.game_duration / total_frames as f32;
         let target_frame = (new_clock.seconds() / frame_duration) as i64;
 
         while self.last_rendered_frame < target_frame {
             self.last_rendered_frame += 1;
-            if self.last_rendered_frame >= TOTAL_FRAMES as i64 {
-                break;
-            }
 
             // Populate player data (idempotent, runs once)
             renderer.populate_players(controller);
@@ -387,7 +392,7 @@ impl VideoEncoder {
             if let Some(ref dump_mode) = self.dump_mode {
                 let dump_frame = match dump_mode {
                     DumpMode::Frame(n) => *n as i64,
-                    DumpMode::Midpoint => TOTAL_FRAMES as i64 / 2,
+                    DumpMode::Midpoint => total_frames / 2,
                     DumpMode::Last => -1, // handled in finish()
                 };
                 if dump_frame >= 0 && self.last_rendered_frame == dump_frame {
@@ -431,7 +436,7 @@ impl VideoEncoder {
                 if self.last_rendered_frame % 100 == 0 {
                     debug!(
                         frame = self.last_rendered_frame,
-                        total = TOTAL_FRAMES,
+                        total = total_frames,
                         "Encoding frame"
                     );
                 }
@@ -449,6 +454,11 @@ impl VideoEncoder {
         // Render up to the actual battle end (or last packet), not meta.duration.
         // This avoids duplicating frozen frames when the match ends early.
         let end_clock = controller.battle_end_clock().unwrap_or(controller.clock());
+        // Extend game_duration if the battle actually ran longer than meta.duration
+        // (e.g. battleResult arrives a few seconds after the nominal duration).
+        if end_clock.seconds() > self.game_duration {
+            self.game_duration = end_clock.seconds();
+        }
         self.advance_clock(end_clock, controller, renderer, target);
 
         if let Some(ref dump_mode) = self.dump_mode {
