@@ -196,6 +196,16 @@ pub enum DrawCommand {
         /// Fill transparency
         alpha: f32,
     },
+    /// Fighter patrol radius circle (filled only, no outline)
+    PatrolRadius {
+        pos: MinimapPos,
+        /// Radius in pixels
+        radius_px: i32,
+        /// Circle color (team-colored)
+        color: [u8; 3],
+        /// Fill transparency
+        alpha: f32,
+    },
     /// Active consumable icons laid out horizontally below a ship
     ConsumableIcons {
         pos: MinimapPos,

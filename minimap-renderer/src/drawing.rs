@@ -1431,7 +1431,7 @@ impl RenderTarget for ImageTarget {
                 let variant_key = match (*visibility, *is_self) {
                     (ShipVisibility::Visible, true) => format!("{}_self", sp),
                     (ShipVisibility::Visible, false) => sp.clone(),
-                    (ShipVisibility::MinimapOnly, _) => format!("{}_last_visible", sp),
+                    (ShipVisibility::MinimapOnly, _) => format!("{}_invisible", sp),
                     (ShipVisibility::Undetected, _) => format!("{}_invisible", sp),
                 };
                 let icon = self
@@ -1536,6 +1536,17 @@ impl RenderTarget for ImageTarget {
                 draw_filled_circle(&mut self.canvas, x, y, *radius_px as f32, *color, *alpha);
                 // Outline for visibility
                 draw_circle_outline(&mut self.canvas, x, y, *radius_px as f32, *color, 0.5, 2.0);
+            }
+            DrawCommand::PatrolRadius {
+                pos,
+                radius_px,
+                color,
+                alpha,
+            } => {
+                let x = pos.x as f32;
+                let y = pos.y as f32 + y_off;
+                // Filled circle only, no outline
+                draw_filled_circle(&mut self.canvas, x, y, *radius_px as f32, *color, *alpha);
             }
             DrawCommand::ConsumableIcons {
                 pos,

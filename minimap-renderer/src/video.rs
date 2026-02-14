@@ -377,6 +377,8 @@ impl VideoEncoder {
                 break;
             }
 
+            // Populate player data (idempotent, runs once)
+            renderer.populate_players(controller);
             // Update squadron info for any new planes
             renderer.update_squadron_info(controller);
 

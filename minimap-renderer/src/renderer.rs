@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use wowsunpack::data::ResourceLoader as _;
 use wowsunpack::game_params::provider::GameMetadataProvider;
-use wowsunpack::game_params::types::{AbilityCategory, GameParamProvider, PlaneCategory, Species};
+use wowsunpack::game_params::types::{
+    AbilityCategory, GameParamProvider, Meters, PlaneCategory, Species,
+};
 
 use wows_replays::analyzer::decoder::{DepthState, FinishType, WeaponType};
 
@@ -98,6 +100,8 @@ impl Default for RenderOptions {
 struct SquadronInfo {
     icon_base: String,
     icon_dir: &'static str,
+    /// Whether this is a CV-controlled fighter (CallFighters) that should show a patrol circle.
+    is_patrol_fighter: bool,
 }
 
 /// Streaming minimap renderer.
@@ -121,6 +125,10 @@ pub struct MinimapRenderer<'a> {
     ship_ability_icons: HashMap<(EntityId, Consumable), String>,
     /// Per-ship consumable variants for detection radius lookup: (entity_id, Consumable) -> (ability_name, variant_name)
     ship_ability_variants: HashMap<(EntityId, Consumable), (String, String)>,
+    /// Per-ship fighter patrol radius in meters (from CatapultFighter ability)
+    fighter_patrol_radius: HashMap<EntityId, Meters>,
+    /// Initial deployment position per patrol fighter plane (stationary circle)
+    fighter_patrol_positions: HashMap<PlaneId, map_data::MinimapPos>,
     /// Per-player clan tag: entity_id -> clan tag string
     player_clan_tags: HashMap<EntityId, String>,
     /// Per-player clan color: entity_id -> RGB color (None = use team color)
@@ -153,6 +161,8 @@ impl<'a> MinimapRenderer<'a> {
             player_relations: HashMap::new(),
             ship_ability_icons: HashMap::new(),
             ship_ability_variants: HashMap::new(),
+            fighter_patrol_radius: HashMap::new(),
+            fighter_patrol_positions: HashMap::new(),
             player_clan_tags: HashMap::new(),
             player_clan_colors: HashMap::new(),
             resolved_entities: std::collections::HashSet::new(),
@@ -172,6 +182,8 @@ impl<'a> MinimapRenderer<'a> {
         self.player_relations.clear();
         self.ship_ability_icons.clear();
         self.ship_ability_variants.clear();
+        self.fighter_patrol_radius.clear();
+        self.fighter_patrol_positions.clear();
         self.player_clan_tags.clear();
         self.player_clan_colors.clear();
         self.resolved_entities.clear();
@@ -254,6 +266,18 @@ impl<'a> MinimapRenderer<'a> {
                             (*entity_id, consumable),
                             (ability_name.clone(), variant_name.clone()),
                         );
+
+                        // Cache fighter patrol radius
+                        if matches!(
+                            consumable,
+                            Consumable::CatapultFighter | Consumable::CallFighters
+                        ) {
+                            if let Some(cat) = ability.get_category(variant_name) {
+                                if let Some(radius) = cat.patrol_radius() {
+                                    self.fighter_patrol_radius.insert(*entity_id, radius);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -328,9 +352,9 @@ impl<'a> MinimapRenderer<'a> {
 
     /// Look up detection radius for a consumable on a specific ship from GameParams.
     ///
-    /// Returns radius in world units (meters), or None if not a detection consumable
+    /// Returns radius in meters, or None if not a detection consumable
     /// or if the lookup fails.
-    fn get_consumable_radius(&self, entity_id: EntityId, consumable: Consumable) -> Option<f32> {
+    fn get_consumable_radius(&self, entity_id: EntityId, consumable: Consumable) -> Option<Meters> {
         // Look up ship-specific ability variant (cached from populate_players)
         let (ability_name, variant_name) =
             self.ship_ability_variants.get(&(entity_id, consumable))?;
@@ -366,11 +390,30 @@ impl<'a> MinimapRenderer<'a> {
                 PlaneCategory::Airsupport => "airsupport",
                 PlaneCategory::Controllable => "controllable",
             };
+            let is_patrol_fighter = matches!(category, PlaneCategory::Consumable)
+                && param
+                    .as_ref()
+                    .and_then(|p| p.species())
+                    .map(|s| matches!(s, Species::Fighter))
+                    .unwrap_or(false);
+            // Record initial deployment position for patrol fighters (circle stays stationary)
+            if is_patrol_fighter {
+                if let Some(ref map_info) = self.map_info {
+                    let world = WorldPos {
+                        x: plane.x,
+                        y: 0.0,
+                        z: plane.y,
+                    };
+                    let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
+                    self.fighter_patrol_positions.insert(*plane_id, px);
+                }
+            }
             self.squadron_info.insert(
                 *plane_id,
                 SquadronInfo {
                     icon_base,
                     icon_dir,
+                    is_patrol_fighter,
                 },
             );
         }
@@ -938,7 +981,7 @@ impl<'a> MinimapRenderer<'a> {
                         pos: px,
                         yaw,
                         species: species.clone(),
-                        color: None,
+                        color: Some(color),
                         visibility: ShipVisibility::MinimapOnly,
                         opacity: 1.0,
                         is_self: relation.is_self(),
@@ -1098,6 +1141,24 @@ impl<'a> MinimapRenderer<'a> {
                 let suffix = if is_enemy { "enemy" } else { "ally" };
                 let icon_key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
 
+                // Draw patrol circle at fighter's initial deployment position
+                if info.map(|i| i.is_patrol_fighter).unwrap_or(false) {
+                    if let Some(patrol_pos) = self.fighter_patrol_positions.get(plane_id) {
+                        if let Some(radius) = self.fighter_patrol_radius.get(&owner_entity) {
+                            let space_size = map_info.space_size as f32;
+                            let px_radius =
+                                (radius.value() / 30.0 / space_size * MINIMAP_SIZE as f32) as i32;
+                            let color = if is_enemy { TEAM1_COLOR } else { TEAM0_COLOR };
+                            commands.push(DrawCommand::PatrolRadius {
+                                pos: *patrol_pos,
+                                radius_px: px_radius,
+                                color,
+                                alpha: 0.12,
+                            });
+                        }
+                    }
+                }
+
                 commands.push(DrawCommand::Plane { pos: px, icon_key });
             }
         }
@@ -1155,12 +1216,18 @@ impl<'a> MinimapRenderer<'a> {
                         }
 
                         // Emit radius for detection consumables (radar, hydro, hydrophone)
-                        if let Some(radius) =
+                        // Skip fighter consumables — their patrol radius is drawn at the plane position, not the ship
+                        if matches!(
+                            active.consumable,
+                            Consumable::CallFighters | Consumable::CatapultFighter
+                        ) {
+                            // no detection radius for fighters
+                        } else if let Some(radius) =
                             self.get_consumable_radius(*entity_id, active.consumable)
                         {
-                            // distShip from GameParams is already a radius in BigWorld units
+                            let space_size = map_info.space_size as f32;
                             let px_radius =
-                                (radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                                (radius.value() / 30.0 / space_size * MINIMAP_SIZE as f32) as i32;
                             let color = if is_friendly {
                                 TEAM0_COLOR
                             } else {
@@ -1331,11 +1398,11 @@ impl<'a> MinimapRenderer<'a> {
                 if let Some(detection_km) = ranges.detection_km {
                     commands.push(DrawCommand::ShipConfigCircle {
                         pos,
-                        radius_px: km_to_px(detection_km),
+                        radius_px: km_to_px(detection_km.value()),
                         color: [135, 206, 235], // light blue
                         alpha: 0.6,
                         dashed: true,
-                        label: Some(format!("{:.1} km", detection_km)),
+                        label: Some(format!("{:.1} km", detection_km.value())),
                         kind: ShipConfigCircleKind::Detection,
                         player_name: player_name.clone(),
                         is_self,
@@ -1346,11 +1413,11 @@ impl<'a> MinimapRenderer<'a> {
                 if let Some(main_battery_m) = ranges.main_battery_m {
                     commands.push(DrawCommand::ShipConfigCircle {
                         pos,
-                        radius_px: meters_to_px(main_battery_m),
+                        radius_px: meters_to_px(main_battery_m.value()),
                         color: [180, 180, 180], // light gray
                         alpha: 0.5,
                         dashed: false,
-                        label: Some(format!("{:.1} km", main_battery_m / 1000.0)),
+                        label: Some(format!("{:.1} km", main_battery_m.to_km().value())),
                         kind: ShipConfigCircleKind::MainBattery,
                         player_name: player_name.clone(),
                         is_self,
@@ -1361,11 +1428,11 @@ impl<'a> MinimapRenderer<'a> {
                 if let Some(secondary_m) = ranges.secondary_battery_m {
                     commands.push(DrawCommand::ShipConfigCircle {
                         pos,
-                        radius_px: meters_to_px(secondary_m),
+                        radius_px: meters_to_px(secondary_m.value()),
                         color: [255, 165, 0], // orange
                         alpha: 0.5,
                         dashed: false,
-                        label: Some(format!("{:.1} km", secondary_m / 1000.0)),
+                        label: Some(format!("{:.1} km", secondary_m.to_km().value())),
                         kind: ShipConfigCircleKind::SecondaryBattery,
                         player_name: player_name.clone(),
                         is_self,
@@ -1376,11 +1443,11 @@ impl<'a> MinimapRenderer<'a> {
                 if let Some(radar_m) = ranges.radar_m {
                     commands.push(DrawCommand::ShipConfigCircle {
                         pos,
-                        radius_px: meters_to_px(radar_m),
+                        radius_px: meters_to_px(radar_m.value()),
                         color: [255, 255, 100], // yellow
                         alpha: 0.5,
                         dashed: false,
-                        label: Some(format!("{:.1} km", radar_m / 1000.0)),
+                        label: Some(format!("{:.1} km", radar_m.to_km().value())),
                         kind: ShipConfigCircleKind::Radar,
                         player_name: player_name.clone(),
                         is_self,
@@ -1391,11 +1458,11 @@ impl<'a> MinimapRenderer<'a> {
                 if let Some(hydro_m) = ranges.hydro_m {
                     commands.push(DrawCommand::ShipConfigCircle {
                         pos,
-                        radius_px: meters_to_px(hydro_m),
+                        radius_px: meters_to_px(hydro_m.value()),
                         color: [100, 255, 100], // green
                         alpha: 0.5,
                         dashed: false,
-                        label: Some(format!("{:.1} km", hydro_m / 1000.0)),
+                        label: Some(format!("{:.1} km", hydro_m.to_km().value())),
                         kind: ShipConfigCircleKind::Hydro,
                         player_name: player_name.clone(),
                         is_self,
