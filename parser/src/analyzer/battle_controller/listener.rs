@@ -6,8 +6,9 @@ use crate::types::{EntityId, GameClock, GameParamId, PlaneId};
 
 use super::controller::{Entity, GameMessage, Player, SharedPlayer};
 use super::state::{
-    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, BuffZoneState, CapturePointState,
-    CapturedBuff, DeadShip, KillRecord, MinimapPosition, ShipPosition, TeamScore,
+    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, ActiveWard, BuffZoneState,
+    CapturePointState, CapturedBuff, DeadShip, KillRecord, MinimapPosition, ShipPosition,
+    TeamScore,
 };
 
 /// Readonly view into BattleController state.
@@ -59,6 +60,9 @@ pub trait BattleControllerState {
 
     /// Active plane squadrons on the minimap
     fn active_planes(&self) -> &HashMap<PlaneId, ActivePlane>;
+
+    /// Active fighter patrol wards (stationary patrol circles)
+    fn active_wards(&self) -> &HashMap<PlaneId, ActiveWard>;
 
     /// All ship kills that have occurred
     fn kills(&self) -> &[KillRecord];

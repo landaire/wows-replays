@@ -1,6 +1,6 @@
 use crate::IResult;
 use crate::packet2::{EntityMethodPacket, Packet, PacketType};
-use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, PlaneId};
+use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, PlaneId, WorldPos};
 use kinded::Kinded;
 use nom::number::complete::{le_f32, le_u8, le_u16, le_u64};
 use pickled::Value;
@@ -942,6 +942,23 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         params_id: GameParamId,
         x: f32,
         y: f32,
+    },
+    /// A fighter patrol ward is placed (from receive_wardAdded).
+    /// This is the game's mechanism for marking patrol circle areas.
+    WardAdded {
+        entity_id: EntityId,
+        plane_id: PlaneId,
+        /// Patrol center position (world coordinates)
+        position: WorldPos,
+        /// Patrol radius in BigWorld units
+        radius: f32,
+        /// Owner ship entity ID
+        owner_id: EntityId,
+    },
+    /// A fighter patrol ward is removed (from receive_wardRemoved).
+    WardRemoved {
+        entity_id: EntityId,
+        plane_id: PlaneId,
     },
     /// A squadron is removed from the minimap
     PlaneRemoved {
@@ -2174,6 +2191,59 @@ where
                 plane_id,
                 x: position.0,
                 y: position.1,
+            }
+        } else if *method == "receive_wardAdded" {
+            // args: [squadronId, position, unknown, radius, relation, ownerId, unknown2]
+            let plane_id: PlaneId = match &args[0] {
+                ArgValue::Uint64(v) => PlaneId::from(*v),
+                ArgValue::Int64(v) => PlaneId::from(*v),
+                ArgValue::Uint32(v) => PlaneId::from(*v as u64),
+                ArgValue::Int32(v) => PlaneId::from(*v as i64),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let position = match &args[1] {
+                ArgValue::Vector3((x, _y, z)) => WorldPos {
+                    x: *x,
+                    y: 0.0,
+                    z: *z,
+                },
+                ArgValue::Array(a) if a.len() >= 3 => {
+                    let x: f32 = (&a[0]).try_into().unwrap_or(0.0);
+                    let z: f32 = (&a[2]).try_into().unwrap_or(0.0);
+                    WorldPos { x, y: 0.0, z }
+                }
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let radius: f32 = match &args[3] {
+                ArgValue::Float32(v) => *v,
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            let owner_id: EntityId = match &args[5] {
+                ArgValue::Uint32(v) => EntityId::from(*v),
+                ArgValue::Int32(v) => EntityId::from(*v),
+                ArgValue::Uint64(v) => EntityId::from(*v as u32),
+                ArgValue::Int64(v) => EntityId::from(*v as i64),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            DecodedPacketPayload::WardAdded {
+                entity_id: *entity_id,
+                plane_id,
+                position,
+                radius,
+                owner_id,
+            }
+        } else if *method == "receive_wardRemoved" {
+            // args: [squadronId]
+            let plane_id: PlaneId = match &args[0] {
+                ArgValue::Uint64(v) => PlaneId::from(*v),
+                ArgValue::Int64(v) => PlaneId::from(*v),
+                ArgValue::Uint32(v) => PlaneId::from(*v as u64),
+                ArgValue::Int32(v) => PlaneId::from(*v as i64),
+                _ => return DecodedPacketPayload::EntityMethod(packet),
+            };
+            DecodedPacketPayload::WardRemoved {
+                entity_id: *entity_id,
+                plane_id,
             }
         } else if *method == "syncGun" {
             // args: [group: int, turret: int, yaw: f32, pitch: f32, state: int, f32, array]

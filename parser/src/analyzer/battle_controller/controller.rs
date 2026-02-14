@@ -12,7 +12,7 @@ use tracing::{Level, debug, span, trace};
 use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
-    game_params::types::{CrewSkill, Param, Species},
+    game_params::types::{BigWorldDistance, CrewSkill, Param, Species},
     rpc::typedefs::ArgValue,
 };
 
@@ -35,9 +35,9 @@ use crate::{
 
 use super::listener::BattleControllerState;
 use super::state::{
-    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, BuffZoneState, BuildingEntity,
-    CapturePointState, CapturedBuff, DeadShip, KillRecord, MinimapPosition, ShipPosition,
-    SmokeScreenEntity, TeamScore,
+    ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, ActiveWard, BuffZoneState,
+    BuildingEntity, CapturePointState, CapturedBuff, DeadShip, KillRecord, MinimapPosition,
+    ShipPosition, SmokeScreenEntity, TeamScore,
 };
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -523,6 +523,7 @@ pub struct BattleController<'res, 'replay, G> {
     active_shots: Vec<ActiveShot>,
     active_torpedoes: Vec<ActiveTorpedo>,
     active_planes: HashMap<PlaneId, ActivePlane>,
+    active_wards: HashMap<PlaneId, ActiveWard>,
     kills: Vec<KillRecord>,
     dead_ships: HashMap<EntityId, DeadShip>,
     /// Main battery turret yaws per entity (group 0 only).
@@ -595,6 +596,7 @@ where
             active_shots: Vec::new(),
             active_torpedoes: Vec::new(),
             active_planes: HashMap::default(),
+            active_wards: HashMap::default(),
             kills: Vec::new(),
             dead_ships: HashMap::default(),
             turret_yaws: HashMap::default(),
@@ -2241,6 +2243,10 @@ where
         &self.active_planes
     }
 
+    fn active_wards(&self) -> &HashMap<PlaneId, ActiveWard> {
+        &self.active_wards
+    }
+
     fn kills(&self) -> &[KillRecord] {
         &self.kills
     }
@@ -2685,8 +2691,7 @@ where
                 y,
             } => {
                 if let Some(plane) = self.active_planes.get_mut(&plane_id) {
-                    plane.x = x;
-                    plane.y = y;
+                    plane.position = WorldPos { x, y: 0.0, z: y };
                     plane.last_updated = packet.clock;
                 }
             }
@@ -2698,6 +2703,7 @@ where
                 x,
                 y,
             } => {
+                let pos = WorldPos { x, y: 0.0, z: y };
                 self.active_planes.insert(
                     plane_id,
                     ActivePlane {
@@ -2705,8 +2711,7 @@ where
                         owner_id: entity_id,
                         team_id,
                         params_id,
-                        x,
-                        y,
+                        position: pos,
                         last_updated: packet.clock,
                     },
                 );
@@ -2716,6 +2721,26 @@ where
                 plane_id,
             } => {
                 self.active_planes.remove(&plane_id);
+            }
+            crate::analyzer::decoder::DecodedPacketPayload::WardAdded {
+                plane_id,
+                position,
+                radius,
+                owner_id,
+                ..
+            } => {
+                self.active_wards.insert(
+                    plane_id,
+                    ActiveWard {
+                        plane_id,
+                        position,
+                        radius: BigWorldDistance::from(radius),
+                        owner_id,
+                    },
+                );
+            }
+            crate::analyzer::decoder::DecodedPacketPayload::WardRemoved { plane_id, .. } => {
+                self.active_wards.remove(&plane_id);
             }
             crate::analyzer::decoder::DecodedPacketPayload::GunSync {
                 entity_id,

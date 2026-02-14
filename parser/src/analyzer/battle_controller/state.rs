@@ -1,4 +1,5 @@
 use serde::Serialize;
+use wowsunpack::game_params::types::BigWorldDistance;
 
 use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, TorpedoData};
 use crate::types::{EntityId, GameClock, GameParamId, NormalizedPos, PlaneId, WorldPos};
@@ -137,9 +138,22 @@ pub struct ActivePlane {
     pub owner_id: EntityId,
     pub team_id: u32,
     pub params_id: GameParamId,
-    pub x: f32,
-    pub y: f32,
+    /// Current position (world coordinates), updated by minimap updates.
+    pub position: WorldPos,
     pub last_updated: GameClock,
+}
+
+/// A fighter patrol ward — a stationary circle where fighters patrol.
+/// Created by `receive_wardAdded`, removed by `receive_wardRemoved`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveWard {
+    pub plane_id: PlaneId,
+    /// Patrol center position (world coordinates)
+    pub position: WorldPos,
+    /// Patrol radius in BigWorld units
+    pub radius: BigWorldDistance,
+    /// Owner ship entity ID
+    pub owner_id: EntityId,
 }
 
 /// A ship kill event.

@@ -100,8 +100,6 @@ impl Default for RenderOptions {
 struct SquadronInfo {
     icon_base: String,
     icon_dir: &'static str,
-    /// Whether this is a CV-controlled fighter (CallFighters) that should show a patrol circle.
-    is_patrol_fighter: bool,
 }
 
 /// Streaming minimap renderer.
@@ -125,10 +123,6 @@ pub struct MinimapRenderer<'a> {
     ship_ability_icons: HashMap<(EntityId, Consumable), String>,
     /// Per-ship consumable variants for detection radius lookup: (entity_id, Consumable) -> (ability_name, variant_name)
     ship_ability_variants: HashMap<(EntityId, Consumable), (String, String)>,
-    /// Per-ship fighter patrol radius in meters (from CatapultFighter ability)
-    fighter_patrol_radius: HashMap<EntityId, Meters>,
-    /// Initial deployment position per patrol fighter plane (stationary circle)
-    fighter_patrol_positions: HashMap<PlaneId, map_data::MinimapPos>,
     /// Per-player clan tag: entity_id -> clan tag string
     player_clan_tags: HashMap<EntityId, String>,
     /// Per-player clan color: entity_id -> RGB color (None = use team color)
@@ -161,8 +155,6 @@ impl<'a> MinimapRenderer<'a> {
             player_relations: HashMap::new(),
             ship_ability_icons: HashMap::new(),
             ship_ability_variants: HashMap::new(),
-            fighter_patrol_radius: HashMap::new(),
-            fighter_patrol_positions: HashMap::new(),
             player_clan_tags: HashMap::new(),
             player_clan_colors: HashMap::new(),
             resolved_entities: std::collections::HashSet::new(),
@@ -182,8 +174,6 @@ impl<'a> MinimapRenderer<'a> {
         self.player_relations.clear();
         self.ship_ability_icons.clear();
         self.ship_ability_variants.clear();
-        self.fighter_patrol_radius.clear();
-        self.fighter_patrol_positions.clear();
         self.player_clan_tags.clear();
         self.player_clan_colors.clear();
         self.resolved_entities.clear();
@@ -266,18 +256,6 @@ impl<'a> MinimapRenderer<'a> {
                             (*entity_id, consumable),
                             (ability_name.clone(), variant_name.clone()),
                         );
-
-                        // Cache fighter patrol radius
-                        if matches!(
-                            consumable,
-                            Consumable::CatapultFighter | Consumable::CallFighters
-                        ) {
-                            if let Some(cat) = ability.get_category(variant_name) {
-                                if let Some(radius) = cat.patrol_radius() {
-                                    self.fighter_patrol_radius.insert(*entity_id, radius);
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -366,7 +344,11 @@ impl<'a> MinimapRenderer<'a> {
 
     /// Update squadron info for any new planes in the controller.
     pub fn update_squadron_info(&mut self, controller: &dyn BattleControllerState) {
-        for (plane_id, plane) in controller.active_planes() {
+        // Clean up stale entries for removed planes so reused IDs get fresh data
+        let active = controller.active_planes();
+        self.squadron_info.retain(|id, _| active.contains_key(id));
+
+        for (plane_id, plane) in active {
             if self.squadron_info.contains_key(plane_id) {
                 continue;
             }
@@ -390,30 +372,11 @@ impl<'a> MinimapRenderer<'a> {
                 PlaneCategory::Airsupport => "airsupport",
                 PlaneCategory::Controllable => "controllable",
             };
-            let is_patrol_fighter = matches!(category, PlaneCategory::Consumable)
-                && param
-                    .as_ref()
-                    .and_then(|p| p.species())
-                    .map(|s| matches!(s, Species::Fighter))
-                    .unwrap_or(false);
-            // Record initial deployment position for patrol fighters (circle stays stationary)
-            if is_patrol_fighter {
-                if let Some(ref map_info) = self.map_info {
-                    let world = WorldPos {
-                        x: plane.x,
-                        y: 0.0,
-                        z: plane.y,
-                    };
-                    let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
-                    self.fighter_patrol_positions.insert(*plane_id, px);
-                }
-            }
             self.squadron_info.insert(
                 *plane_id,
                 SquadronInfo {
                     icon_base,
                     icon_dir,
-                    is_patrol_fighter,
                 },
             );
         }
@@ -1114,12 +1077,7 @@ impl<'a> MinimapRenderer<'a> {
         // 7. Planes
         if self.options.show_planes {
             for (plane_id, plane) in controller.active_planes() {
-                let world = WorldPos {
-                    x: plane.x,
-                    y: 0.0,
-                    z: plane.y,
-                };
-                let px = map_info.world_to_minimap(world, MINIMAP_SIZE);
+                let px = map_info.world_to_minimap(plane.position, MINIMAP_SIZE);
 
                 let info = self.squadron_info.get(plane_id);
                 // Use player_relations to determine if the plane is enemy.
@@ -1141,22 +1099,18 @@ impl<'a> MinimapRenderer<'a> {
                 let suffix = if is_enemy { "enemy" } else { "ally" };
                 let icon_key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
 
-                // Draw patrol circle at fighter's initial deployment position
-                if info.map(|i| i.is_patrol_fighter).unwrap_or(false) {
-                    if let Some(patrol_pos) = self.fighter_patrol_positions.get(plane_id) {
-                        if let Some(radius) = self.fighter_patrol_radius.get(&owner_entity) {
-                            let space_size = map_info.space_size as f32;
-                            let px_radius =
-                                (radius.value() / 30.0 / space_size * MINIMAP_SIZE as f32) as i32;
-                            let color = if is_enemy { TEAM1_COLOR } else { TEAM0_COLOR };
-                            commands.push(DrawCommand::PatrolRadius {
-                                pos: *patrol_pos,
-                                radius_px: px_radius,
-                                color,
-                                alpha: 0.12,
-                            });
-                        }
-                    }
+                // Draw patrol circle from ward data (if this plane has an active ward)
+                if let Some(ward) = controller.active_wards().get(plane_id) {
+                    let ward_px = map_info.world_to_minimap(ward.position, MINIMAP_SIZE);
+                    let space_size = map_info.space_size as f32;
+                    let px_radius = (ward.radius.value() / space_size * MINIMAP_SIZE as f32) as i32;
+                    let color = if is_enemy { TEAM1_COLOR } else { TEAM0_COLOR };
+                    commands.push(DrawCommand::PatrolRadius {
+                        pos: ward_px,
+                        radius_px: px_radius,
+                        color,
+                        alpha: 0.12,
+                    });
                 }
 
                 commands.push(DrawCommand::Plane { pos: px, icon_key });
