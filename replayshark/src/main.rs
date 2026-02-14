@@ -17,15 +17,14 @@ struct InvestigativePrinter {
     timestamp: Option<f32>,
     entity_id: Option<EntityId>,
     meta: bool,
-    version: Version,
+    packet_decoder: wows_replays::analyzer::decoder::PacketDecoder<'static>,
 }
 
 impl wows_replays::analyzer::Analyzer for InvestigativePrinter {
     fn finish(&mut self) {}
 
     fn process(&mut self, packet: &wows_replays::packet2::Packet<'_, '_>) {
-        let decoded =
-            wows_replays::analyzer::decoder::DecodedPacket::from(&self.version, true, packet, None);
+        let decoded = self.packet_decoder.decode(packet);
 
         if self.meta {
             match &decoded.payload {
@@ -114,7 +113,10 @@ fn build_investigative_printer(
 ) -> Box<dyn Analyzer> {
     let version = Version::from_client_exe(&meta.clientVersionFromExe);
     let decoder = InvestigativePrinter {
-        version,
+        packet_decoder: wows_replays::analyzer::decoder::PacketDecoder::builder()
+            .version(version)
+            .audit(true)
+            .build(),
         filter_packet: filter_packet.map(|s| parse_int::parse::<u32>(s).unwrap()),
         filter_method: filter_method.map(|s| s.to_string()),
         timestamp: timestamp.map(|s| {

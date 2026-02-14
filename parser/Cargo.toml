@@ -29,6 +29,7 @@ strum_macros = "0.25"
 derive_builder = "0.12"
 tracing = { workspace = true }
 wowsunpack = { workspace = true }
+bon = "3.9.0"
 
 [features]
 arc = ["wowsunpack/arc"]

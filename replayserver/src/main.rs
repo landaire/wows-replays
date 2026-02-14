@@ -44,8 +44,10 @@ impl wows_replays::packet2::PacketProcessor for ReplayInfo {
     }
 
     fn process_mut(&mut self, packet: Packet<'_, '_>) {
-        let packet =
-            wows_replays::analyzer::decoder::DecodedPacket::from(&self.version, false, &packet);
+        let packet = wows_replays::analyzer::decoder::DecodedPacket::from()
+            .version(&self.version)
+            .packet(&packet)
+            .call();
         match &packet.payload {
             DecodedPacketPayload::OnArenaStateReceived { players, .. } => {
                 for player in players.iter() {
@@ -350,8 +352,13 @@ impl wows_replays::packet2::PacketProcessor for DecodedResponder {
     }
 
     fn process_mut(&mut self, packet: Packet<'_, '_>) {
-        let packet =
-            wows_replays::analyzer::decoder::DecodedPacket::from(&self.version, false, &packet);
+        let packet = wows_replays::analyzer::decoder::DecodedPacket::from(
+            &self.version,
+            false,
+            &packet,
+            None,
+            None,
+        );
         let encoded = serde_json::to_string(&packet).unwrap();
         self.result.push_str("\n");
         self.result.push_str(&encoded);

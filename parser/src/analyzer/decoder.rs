@@ -37,7 +37,7 @@ impl DecoderBuilder {
             output: self.path.as_ref().map(|path| {
                 Box::new(std::fs::File::create(path).unwrap()) as Box<dyn std::io::Write>
             }),
-            version,
+            packet_decoder: PacketDecoder::builder().version(version).build(),
         };
         if !self.no_meta {
             decoder.write(&serde_json::to_string(&meta).unwrap());
@@ -1205,11 +1205,16 @@ where
         payload: &'rawpacket crate::packet2::PacketType<'replay, 'argtype>,
         packet_type: u32,
         battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
+        common_constants: Option<&wowsunpack::game_constants::CommonConstants>,
     ) -> Self {
         match payload {
-            PacketType::EntityMethod(em) => {
-                DecodedPacketPayload::from_entity_method(version, audit, em, battle_constants)
-            }
+            PacketType::EntityMethod(em) => DecodedPacketPayload::from_entity_method(
+                version,
+                audit,
+                em,
+                battle_constants,
+                common_constants,
+            ),
             PacketType::Camera(camera) => DecodedPacketPayload::Camera(camera),
             PacketType::CameraMode(mode) => {
                 // Try constants lookup first, fall back to hardcoded mapping
@@ -1369,6 +1374,7 @@ where
         audit: bool,
         packet: &'rawpacket EntityMethodPacket<'argtype>,
         battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
+        common_constants: Option<&wowsunpack::game_constants::CommonConstants>,
     ) -> Self {
         let entity_id = &packet.entity_id;
         let method = &packet.method;
@@ -1929,38 +1935,44 @@ where
                 ),
             };
             let raw_consumable = consumable;
-            // Mapping from wows-constants CONSUMABLE_IDS
-            // Verified identical across all known game versions (build 9129736 through 11965230)
-            let consumable = match consumable {
-                0 => Consumable::DamageControl,            // crashCrew
-                1 => Consumable::SpottingAircraft,         // scout
-                2 => Consumable::DefensiveAntiAircraft,    // airDefenseDisp
-                3 => Consumable::SpeedBoost,               // speedBoosters
-                4 => Consumable::MainBatteryReloadBooster, // artilleryBoosters
-                6 => Consumable::Smoke,                    // smokeGenerator
-                8 => Consumable::RepairParty,              // regenCrew
-                9 => Consumable::CatapultFighter,          // fighter
-                10 => Consumable::HydroacousticSearch,     // sonar
-                11 => Consumable::TorpedoReloadBooster,    // torpedoReloader
-                12 => Consumable::Radar,                   // rls
-                19 => Consumable::Invulnerable,            // invulnerable
-                20 => Consumable::HealForsage,             // healForsage
-                21 => Consumable::CallFighters,            // callFighters
-                22 => Consumable::RegenerateHealth,        // regenerateHealth
-                26 => Consumable::DepthCharges,            // depthCharges
-                34 => Consumable::WeaponReloadBooster,     // weaponReloadBooster
-                35 => Consumable::Hydrophone,              // hydrophone
-                36 => Consumable::EnhancedRudders,         // fastRudders
-                37 => Consumable::ReserveBattery,          // subsEnergyFreeze
-                41 => Consumable::SubmarineSurveillance,   // submarineLocator
-                _ => {
-                    if audit {
-                        return DecodedPacketPayload::Audit(format!(
-                            "consumableUsed({},{},{})",
-                            entity_id, raw_consumable, duration
-                        ));
-                    } else {
-                        Consumable::Unknown(consumable)
+            // Try runtime-loaded consumable types from game data first
+            let consumable = if let Some(c) =
+                common_constants.and_then(|cc| cc.consumable_type(consumable as i32))
+            {
+                *c
+            } else {
+                // Fallback: hardcoded mapping from wows-constants CONSUMABLE_IDS
+                match consumable {
+                    0 => Consumable::DamageControl,            // crashCrew
+                    1 => Consumable::SpottingAircraft,         // scout
+                    2 => Consumable::DefensiveAntiAircraft,    // airDefenseDisp
+                    3 => Consumable::SpeedBoost,               // speedBoosters
+                    4 => Consumable::MainBatteryReloadBooster, // artilleryBoosters
+                    6 => Consumable::Smoke,                    // smokeGenerator
+                    8 => Consumable::RepairParty,              // regenCrew
+                    9 => Consumable::CatapultFighter,          // fighter
+                    10 => Consumable::HydroacousticSearch,     // sonar
+                    11 => Consumable::TorpedoReloadBooster,    // torpedoReloader
+                    12 => Consumable::Radar,                   // rls
+                    19 => Consumable::Invulnerable,            // invulnerable
+                    20 => Consumable::HealForsage,             // healForsage
+                    21 => Consumable::CallFighters,            // callFighters
+                    22 => Consumable::RegenerateHealth,        // regenerateHealth
+                    26 => Consumable::DepthCharges,            // depthCharges
+                    34 => Consumable::WeaponReloadBooster,     // weaponReloadBooster
+                    35 => Consumable::Hydrophone,              // hydrophone
+                    36 => Consumable::EnhancedRudders,         // fastRudders
+                    37 => Consumable::ReserveBattery,          // subsEnergyFreeze
+                    41 => Consumable::SubmarineSurveillance,   // submarineLocator
+                    _ => {
+                        if audit {
+                            return DecodedPacketPayload::Audit(format!(
+                                "consumableUsed({},{},{})",
+                                entity_id, raw_consumable, duration
+                            ));
+                        } else {
+                            Consumable::Unknown(consumable)
+                        }
                     }
                 }
             };
@@ -2323,26 +2335,37 @@ pub struct DecodedPacket<'replay, 'argtype, 'rawpacket> {
     pub payload: DecodedPacketPayload<'replay, 'argtype, 'rawpacket>,
 }
 
-impl<'replay, 'argtype, 'rawpacket> DecodedPacket<'replay, 'argtype, 'rawpacket>
-where
-    'rawpacket: 'replay,
-    'rawpacket: 'argtype,
-{
-    pub fn from(
-        version: &Version,
-        audit: bool,
+/// Reusable packet decoder that holds version and optional game constants.
+///
+/// Create once per replay, then call `decode()` for each packet.
+#[derive(bon::Builder)]
+pub struct PacketDecoder<'a> {
+    version: Version,
+    #[builder(default)]
+    audit: bool,
+    battle_constants: Option<&'a wowsunpack::game_constants::BattleConstants>,
+    common_constants: Option<&'a wowsunpack::game_constants::CommonConstants>,
+}
+
+impl<'a> PacketDecoder<'a> {
+    pub fn decode<'replay, 'argtype, 'rawpacket>(
+        &self,
         packet: &'rawpacket Packet<'_, '_>,
-        battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
-    ) -> Self {
-        Self {
+    ) -> DecodedPacket<'replay, 'argtype, 'rawpacket>
+    where
+        'rawpacket: 'replay,
+        'rawpacket: 'argtype,
+    {
+        DecodedPacket {
             clock: packet.clock,
             packet_type: packet.packet_type,
             payload: DecodedPacketPayload::from(
-                version,
-                audit,
+                &self.version,
+                self.audit,
                 &packet.payload,
                 packet.packet_type,
-                battle_constants,
+                self.battle_constants,
+                self.common_constants,
             ),
         }
     }
@@ -2351,7 +2374,7 @@ where
 struct Decoder {
     silent: bool,
     output: Option<Box<dyn std::io::Write>>,
-    version: Version,
+    packet_decoder: PacketDecoder<'static>,
 }
 
 impl Decoder {
@@ -2388,7 +2411,7 @@ impl Analyzer for Decoder {
     fn finish(&mut self) {}
 
     fn process(&mut self, packet: &Packet<'_, '_>) {
-        let decoded = DecodedPacket::from(&self.version, false, packet, None);
+        let decoded = self.packet_decoder.decode(packet);
         //println!("{:#?}", decoded);
         //println!("{}", serde_json::to_string_pretty(&decoded).unwrap());
         let encoded = serde_json::to_string(&decoded).unwrap();

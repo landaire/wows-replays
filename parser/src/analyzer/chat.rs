@@ -1,6 +1,6 @@
 use wowsunpack::data::Version;
 
-use crate::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
+use crate::analyzer::decoder::{DecodedPacketPayload, PacketDecoder};
 use crate::packet2::Packet;
 use crate::types::AccountId;
 use std::collections::HashMap;
@@ -24,21 +24,21 @@ impl ChatLoggerBuilder {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         Box::new(ChatLogger {
             usernames: HashMap::new(),
-            version,
+            packet_decoder: PacketDecoder::builder().version(version).build(),
         })
     }
 }
 
 pub struct ChatLogger {
     usernames: HashMap<AccountId, String>,
-    version: Version,
+    packet_decoder: PacketDecoder<'static>,
 }
 
 impl Analyzer for ChatLogger {
     fn finish(&mut self) {}
 
     fn process(&mut self, packet: &Packet<'_, '_>) {
-        let decoded = DecodedPacket::from(&self.version, false, packet, None);
+        let decoded = self.packet_decoder.decode(packet);
         match decoded.payload {
             DecodedPacketPayload::Chat {
                 sender_id,

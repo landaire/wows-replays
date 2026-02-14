@@ -25,8 +25,7 @@ use crate::{
     analyzer::{
         analyzer::Analyzer,
         decoder::{
-            ChatMessageExtra, DeathCause, DecodedPacket, DepthState, FinishType, PlayerStateData,
-            WeaponType,
+            ChatMessageExtra, DeathCause, DepthState, FinishType, PlayerStateData, WeaponType,
         },
     },
     nested_property_path::{PropertyNestLevel, UpdateAction},
@@ -2292,12 +2291,12 @@ where
 
         self.current_clock = packet.clock;
 
-        let decoded = DecodedPacket::from(
-            &self.version,
-            false,
-            packet,
-            self.game_constants.map(|gc| gc.battle()),
-        );
+        let packet_decoder = crate::analyzer::decoder::PacketDecoder::builder()
+            .version(self.version.clone())
+            .maybe_battle_constants(self.game_constants.map(|gc| gc.battle()))
+            .maybe_common_constants(self.game_constants.map(|gc| gc.common()))
+            .build();
+        let decoded = packet_decoder.decode(packet);
         match decoded.payload {
             crate::analyzer::decoder::DecodedPacketPayload::Chat {
                 entity_id,

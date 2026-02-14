@@ -3,7 +3,7 @@ use image::Pixel;
 use image::{imageops::FilterType, ImageFormat, RgbImage};
 use plotters::prelude::*;
 use std::collections::HashMap;
-use wows_replays::analyzer::decoder::{DecodedPacket, DecodedPacketPayload};
+use wows_replays::analyzer::decoder::{DecodedPacketPayload, PacketDecoder};
 use wows_replays::analyzer::*;
 use wows_replays::packet2::{EntityMethodPacket, Packet, PacketType};
 use wows_replays::types::EntityId;
@@ -23,8 +23,9 @@ impl DamageTrailsBuilder {
     }
 
     pub fn build(self, meta: &ReplayMeta) -> Box<dyn Analyzer> {
+        let version = Version::from_client_exe(&meta.clientVersionFromExe);
         Box::new(DamageMonitor {
-            version: Version::from_client_exe(&meta.clientVersionFromExe),
+            packet_decoder: PacketDecoder::builder().version(version).build(),
             username: meta.playerName.clone(),
             avatarid: None,
             shipid: None,
@@ -53,7 +54,7 @@ struct DamageVector {
 }
 
 struct DamageMonitor {
-    version: Version,
+    packet_decoder: PacketDecoder<'static>,
     username: String,
     avatarid: Option<EntityId>,
     shipid: Option<EntityId>,
@@ -230,7 +231,7 @@ impl Analyzer for DamageMonitor {
         let seconds = (secs - minutes as f32 * 60.0).floor() as i32;
         let time = format!("{:02}:{:02}", minutes, seconds);
 
-        let decoded = DecodedPacket::from(&self.version, false, packet, None);
+        let decoded = self.packet_decoder.decode(packet);
         if let DecodedPacketPayload::OnArenaStateReceived {
             player_states: players,
             ..

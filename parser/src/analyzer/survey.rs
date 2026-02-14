@@ -1,5 +1,4 @@
-use wowsunpack::data::Version;
-
+use crate::analyzer::decoder::PacketDecoder;
 use crate::analyzer::*;
 use crate::packet2::Packet;
 use std::cell::{RefCell, RefMut};
@@ -45,7 +44,7 @@ impl SurveyBuilder {
     }
 
     pub fn build(self, meta: &crate::ReplayMeta) -> Box<dyn Analyzer> {
-        let version = Version::from_client_exe(&meta.clientVersionFromExe);
+        let version = wowsunpack::data::Version::from_client_exe(&meta.clientVersionFromExe);
         {
             let mut stats: RefMut<_> = self.stats.borrow_mut();
             stats.date_time = meta.dateTime.clone();
@@ -54,7 +53,10 @@ impl SurveyBuilder {
             skip_decoder: self.skip_decoder,
             decoder: decoder::DecoderBuilder::new(true, true, None).build(meta),
             stats: self.stats.clone(),
-            version,
+            packet_decoder: PacketDecoder::builder()
+                .version(version)
+                .audit(true)
+                .build(),
         })
     }
 }
@@ -63,7 +65,7 @@ struct Survey {
     skip_decoder: bool,
     decoder: Box<dyn Analyzer>,
     stats: Rc<RefCell<SurveyStats>>,
-    version: Version,
+    packet_decoder: PacketDecoder<'static>,
 }
 
 impl Analyzer for Survey {
@@ -75,8 +77,7 @@ impl Analyzer for Survey {
         // Do stuff and such
         let mut stats: RefMut<_> = self.stats.borrow_mut();
         if !self.skip_decoder {
-            //let decoded = self.decoder.process(packet);
-            let decoded = decoder::DecodedPacket::from(&self.version, true, packet, None);
+            let decoded = self.packet_decoder.decode(packet);
             if let crate::analyzer::decoder::DecodedPacketPayload::Audit(s) = &decoded.payload {
                 stats.audits.push(s.to_string());
             }
