@@ -39,6 +39,22 @@ const UNDETECTED_OPACITY: f32 = 0.4;
 const TEAM0_COLOR: [u8; 3] = [76, 232, 170]; // Green
 const TEAM1_COLOR: [u8; 3] = [254, 77, 42]; // Red
 
+/// Per-consumable radius circle color, with friendly/enemy variants.
+fn consumable_radius_color(consumable: Consumable, is_friendly: bool) -> [u8; 3] {
+    match (consumable, is_friendly) {
+        (Consumable::Radar, true) => [40, 80, 200],  // Dark blue
+        (Consumable::Radar, false) => [180, 40, 50], // Maroon
+        (Consumable::HydroacousticSearch, true) => [40, 180, 170], // Teal
+        (Consumable::HydroacousticSearch, false) => [200, 90, 30], // Dark orange
+        (Consumable::Hydrophone, true) => [70, 110, 180], // Slate blue
+        (Consumable::Hydrophone, false) => [170, 70, 50], // Rust
+        (Consumable::SubmarineSurveillance, true) => [60, 60, 190], // Indigo
+        (Consumable::SubmarineSurveillance, false) => [160, 30, 60], // Dark crimson
+        (_, true) => TEAM0_COLOR,
+        (_, false) => TEAM1_COLOR,
+    }
+}
+
 /// Configurable rendering options.
 #[derive(Clone, Debug)]
 pub struct RenderOptions {
@@ -476,7 +492,14 @@ impl<'a> MinimapRenderer<'a> {
 
     /// Record ship positions from controller state without emitting draw commands.
     /// Called during replay parsing to accumulate trail history.
-    pub fn record_positions(&mut self, controller: &dyn BattleControllerState, clock: GameClock) {
+    /// The `filter` closure is called for each entity ID; only entities for which
+    /// it returns `true` will have their positions recorded.
+    pub fn record_positions(
+        &mut self,
+        controller: &dyn BattleControllerState,
+        clock: GameClock,
+        filter: impl Fn(&EntityId) -> bool,
+    ) {
         let Some(map_info) = self.map_info.clone() else {
             return;
         };
@@ -484,6 +507,9 @@ impl<'a> MinimapRenderer<'a> {
         let ship_positions = controller.ship_positions();
         let minimap_positions = controller.minimap_positions();
         for (entity_id, ship_pos) in ship_positions {
+            if !filter(entity_id) {
+                continue;
+            }
             let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
             let speed_raw = entities
                 .get(entity_id)
@@ -493,6 +519,9 @@ impl<'a> MinimapRenderer<'a> {
             self.record_position(*entity_id, px, clock, speed_raw);
         }
         for (entity_id, mm) in minimap_positions {
+            if !filter(entity_id) {
+                continue;
+            }
             if !ship_positions.contains_key(entity_id) {
                 let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
                 let speed_raw = entities
@@ -1161,11 +1190,7 @@ impl<'a> MinimapRenderer<'a> {
                             let space_size = map_info.space_size as f32;
                             let px_radius =
                                 (radius.value() / 30.0 / space_size * MINIMAP_SIZE as f32) as i32;
-                            let color = if is_friendly {
-                                TEAM0_COLOR
-                            } else {
-                                TEAM1_COLOR
-                            };
+                            let color = consumable_radius_color(active.consumable, is_friendly);
                             commands.push(DrawCommand::ConsumableRadius {
                                 pos,
                                 radius_px: px_radius,
