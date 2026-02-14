@@ -30,7 +30,7 @@ fn main() -> Result<(), Report> {
                 .short("g")
                 .long("game")
                 .takes_value(true)
-                .required_unless("GENERATE_CONFIG"),
+                .required_unless_one(&["GENERATE_CONFIG", "CHECK_ENCODER"]),
         )
         .arg(
             Arg::with_name("OUTPUT")
@@ -38,7 +38,7 @@ fn main() -> Result<(), Report> {
                 .short("o")
                 .long("output")
                 .takes_value(true)
-                .required_unless("GENERATE_CONFIG"),
+                .required_unless_one(&["GENERATE_CONFIG", "CHECK_ENCODER"]),
         )
         .arg(
             Arg::with_name("DUMP_FRAME")
@@ -108,9 +108,19 @@ fn main() -> Result<(), Report> {
                 .long("generate-config"),
         )
         .arg(
+            Arg::with_name("CHECK_ENCODER")
+                .help("Check encoder availability (GPU/CPU) and exit")
+                .long("check-encoder"),
+        )
+        .arg(
+            Arg::with_name("CPU")
+                .help("Use CPU encoder (openh264) instead of GPU")
+                .long("cpu"),
+        )
+        .arg(
             Arg::with_name("REPLAY")
                 .help("The replay file to process")
-                .required_unless("GENERATE_CONFIG")
+                .required_unless_one(&["GENERATE_CONFIG", "CHECK_ENCODER"])
                 .index(1),
         )
         .get_matches();
@@ -120,6 +130,13 @@ fn main() -> Result<(), Report> {
     // Handle --generate-config before anything else
     if matches.is_present("GENERATE_CONFIG") {
         print!("{}", RendererConfig::generate_default_toml());
+        return Ok(());
+    }
+
+    // Handle --check-encoder
+    if matches.is_present("CHECK_ENCODER") {
+        let status = wows_minimap_renderer::check_encoder();
+        print!("{status}");
         return Ok(());
     }
 
@@ -228,6 +245,9 @@ fn main() -> Result<(), Report> {
         options,
     );
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);
+    if matches.is_present("CPU") {
+        encoder.set_prefer_cpu(true);
+    }
 
     let mut controller = BattleController::new(
         &replay_file.meta,

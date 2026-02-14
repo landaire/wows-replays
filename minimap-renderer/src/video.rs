@@ -229,6 +229,88 @@ mod cpu {
 }
 
 // ---------------------------------------------------------------------------
+// Encoder availability check
+// ---------------------------------------------------------------------------
+
+/// Result of checking encoder availability.
+#[derive(Debug)]
+pub struct EncoderStatus {
+    pub gpu_available: bool,
+    pub gpu_error: Option<String>,
+    pub gpu_adapter_name: Option<String>,
+    pub cpu_available: bool,
+}
+
+impl std::fmt::Display for EncoderStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Encoder status:")?;
+        if self.gpu_available {
+            writeln!(
+                f,
+                "  GPU: available ({})",
+                self.gpu_adapter_name.as_deref().unwrap_or("unknown")
+            )?;
+        } else if let Some(ref err) = self.gpu_error {
+            writeln!(f, "  GPU: unavailable - {err}")?;
+        } else {
+            writeln!(f, "  GPU: not compiled in (enable 'gpu' feature)")?;
+        }
+        if self.cpu_available {
+            writeln!(f, "  CPU: available (openh264)")?;
+        } else {
+            writeln!(f, "  CPU: not compiled in (enable 'cpu' feature)")?;
+        }
+        Ok(())
+    }
+}
+
+/// Check which encoder backends are available on this system.
+///
+/// This probes the GPU for Vulkan Video encoding support without actually
+/// creating a full encoder. Useful for diagnostics and UI.
+pub fn check_encoder() -> EncoderStatus {
+    let mut status = EncoderStatus {
+        gpu_available: false,
+        gpu_error: None,
+        gpu_adapter_name: None,
+        cpu_available: cfg!(feature = "cpu"),
+    };
+
+    #[cfg(feature = "gpu")]
+    {
+        use vk_video::VulkanInstance;
+        match VulkanInstance::new() {
+            Err(e) => {
+                status.gpu_error = Some(format!("Vulkan init failed: {e:?}"));
+            }
+            Ok(instance) => match instance.create_adapter(None) {
+                Err(e) => {
+                    status.gpu_error = Some(format!("No Vulkan adapter: {e:?}"));
+                }
+                Ok(adapter) => {
+                    let name = adapter.info().name.clone();
+                    status.gpu_adapter_name = Some(name.clone());
+                    if adapter.supports_encoding() {
+                        status.gpu_available = true;
+                    } else {
+                        status.gpu_error = Some(format!(
+                            "Vulkan adapter '{name}' does not support video encoding"
+                        ));
+                    }
+                }
+            },
+        }
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    {
+        status.gpu_error = Some("GPU feature not compiled in".to_string());
+    }
+
+    status
+}
+
+// ---------------------------------------------------------------------------
 // Encoder backend dispatch
 // ---------------------------------------------------------------------------
 
@@ -240,10 +322,12 @@ enum EncoderBackend {
 }
 
 impl EncoderBackend {
-    fn create(_width: u32, _height: u32) -> rootcause::Result<Self, VideoError> {
-        // Try GPU first when available
+    fn create(_width: u32, _height: u32, prefer_cpu: bool) -> rootcause::Result<Self, VideoError> {
+        let _ = prefer_cpu; // suppress unused warning when neither feature is enabled
+
+        // Try GPU first when available (unless CPU is preferred)
         #[cfg(feature = "gpu")]
-        {
+        if !prefer_cpu {
             match gpu::GpuEncoder::new(_width, _height) {
                 Ok(enc) => {
                     info!("Using GPU (Vulkan Video) encoder");
@@ -267,12 +351,14 @@ impl EncoderBackend {
         #[cfg(feature = "cpu")]
         {
             info!("Using CPU (openh264) encoder");
-            Ok(Self::Cpu(cpu::CpuEncoder::new()?))
+            return Ok(Self::Cpu(cpu::CpuEncoder::new()?));
         }
 
-        #[cfg(not(any(feature = "gpu", feature = "cpu")))]
+        #[cfg(not(feature = "cpu"))]
         {
-            compile_error!("At least one of 'gpu' or 'cpu' features must be enabled");
+            bail!(VideoError::EncoderInit(
+                "CPU encoder requested but 'cpu' feature is not enabled".into()
+            ));
         }
     }
 
@@ -309,6 +395,11 @@ pub struct VideoEncoder {
     last_rendered_frame: i64,
     backend: Option<EncoderBackend>,
     h264_frames: Vec<Vec<u8>>,
+    /// Stored fatal encoder error. Once set, `advance_clock` is a no-op and
+    /// the error is surfaced in `finish()` / `mux_to_mp4()` with full context.
+    encoder_error: Option<String>,
+    /// When true, skip the GPU encoder and use CPU (openh264) directly.
+    prefer_cpu: bool,
 }
 
 impl VideoEncoder {
@@ -321,7 +412,15 @@ impl VideoEncoder {
             last_rendered_frame: -1,
             backend: None,
             h264_frames: Vec::with_capacity(total_frames),
+            encoder_error: None,
+            prefer_cpu: false,
         }
+    }
+
+    /// Skip the GPU encoder and use CPU (openh264) directly.
+    /// Only effective if the `cpu` feature is enabled.
+    pub fn set_prefer_cpu(&mut self, prefer: bool) {
+        self.prefer_cpu = prefer;
     }
 
     /// Total output frames (fixed output duration * FPS).
@@ -334,7 +433,11 @@ impl VideoEncoder {
         if self.backend.is_some() {
             return Ok(());
         }
-        self.backend = Some(EncoderBackend::create(MINIMAP_SIZE, CANVAS_HEIGHT)?);
+        self.backend = Some(EncoderBackend::create(
+            MINIMAP_SIZE,
+            CANVAS_HEIGHT,
+            self.prefer_cpu,
+        )?);
         info!(
             frames = self.total_frames(),
             width = MINIMAP_SIZE,
@@ -371,7 +474,7 @@ impl VideoEncoder {
         renderer: &mut MinimapRenderer,
         target: &mut ImageTarget,
     ) {
-        if self.game_duration <= 0.0 {
+        if self.game_duration <= 0.0 || self.encoder_error.is_some() {
             return;
         }
 
@@ -418,7 +521,8 @@ impl VideoEncoder {
             } else {
                 // Full video mode: render, encode to H.264 immediately
                 if let Err(e) = self.ensure_encoder() {
-                    error!(error = %e, "Encoder error");
+                    error!(error = %e, "Encoder initialization failed");
+                    self.encoder_error = Some(format!("{e}"));
                     return;
                 }
 
@@ -429,7 +533,8 @@ impl VideoEncoder {
                 target.end_frame();
 
                 if let Err(e) = self.encode_frame(target) {
-                    error!(error = %e, "Encode error");
+                    error!(error = %e, "Frame encoding failed");
+                    self.encoder_error = Some(format!("{e}"));
                     return;
                 }
 
@@ -494,6 +599,11 @@ impl VideoEncoder {
     /// Mux pre-encoded H.264 Annex B frames into an MP4 file.
     fn mux_to_mp4(&self) -> rootcause::Result<(), VideoError> {
         if self.h264_frames.is_empty() {
+            if let Some(ref err) = self.encoder_error {
+                bail!(VideoError::MuxFailed(format!(
+                    "No frames were encoded. Encoder failed earlier: {err}"
+                )));
+            }
             bail!(VideoError::MuxFailed("No frames to mux".into()));
         }
 

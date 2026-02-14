@@ -19,4 +19,4 @@ pub use draw_command::{DrawCommand, RenderTarget, ShipVisibility};
 pub use drawing::{ImageTarget, ShipIcon};
 pub use map_data::{MapInfo, MinimapPos};
 pub use renderer::MinimapRenderer;
-pub use video::{DumpMode, VideoEncoder};
+pub use video::{DumpMode, EncoderStatus, VideoEncoder, check_encoder};

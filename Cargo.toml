@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.dependencies]
-wowsunpack = { version = "0.14", default-features = false, features = ["json"] }
+wowsunpack = { version = "0.15", default-features = false, features = ["json"] }
 pickled = "2.0.0-alpha3"
 tracing = "0.1.44"
 
