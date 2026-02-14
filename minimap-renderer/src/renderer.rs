@@ -1135,6 +1135,14 @@ impl<'a> MinimapRenderer<'a> {
                 {
                     continue;
                 }
+                // Skip ships not currently visible on the minimap
+                let visible = minimap_positions
+                    .get(entity_id)
+                    .map(|m| m.visible)
+                    .unwrap_or(false);
+                if !visible {
+                    continue;
+                }
                 // Get ship position (prefer world position, fall back to minimap)
                 let pos = if let Some(sp) = ship_positions.get(entity_id) {
                     Some(map_info.world_to_minimap(sp.position, MINIMAP_SIZE))
