@@ -6,11 +6,14 @@ use wowsunpack::game_params::types::{AbilityCategory, GameParamProvider, PlaneCa
 
 use wows_replays::analyzer::decoder::{DepthState, FinishType, WeaponType};
 
+use wows_replays::analyzer::battle_controller::ChatChannel;
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::{EntityId, GameClock, GameParamId, PlaneId, Relation};
 
-use crate::draw_command::{DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipVisibility};
+use crate::draw_command::{
+    ChatEntry, DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipVisibility,
+};
 use crate::map_data::{self, WorldPos};
 
 use crate::MINIMAP_SIZE;
@@ -59,6 +62,7 @@ pub struct RenderOptions {
     pub show_dead_ship_names: bool,
     pub show_battle_result: bool,
     pub show_buffs: bool,
+    pub show_chat: bool,
 }
 
 impl Default for RenderOptions {
@@ -86,6 +90,7 @@ impl Default for RenderOptions {
             show_dead_ship_names: false,
             show_battle_result: true,
             show_buffs: true,
+            show_chat: true,
         }
     }
 }
@@ -116,6 +121,10 @@ pub struct MinimapRenderer<'a> {
     ship_ability_icons: HashMap<(EntityId, Consumable), String>,
     /// Per-ship consumable variants for detection radius lookup: (entity_id, Consumable) -> (ability_name, variant_name)
     ship_ability_variants: HashMap<(EntityId, Consumable), (String, String)>,
+    /// Per-player clan tag: entity_id -> clan tag string
+    player_clan_tags: HashMap<EntityId, String>,
+    /// Per-player clan color: entity_id -> RGB color (None = use team color)
+    player_clan_colors: HashMap<EntityId, Option<[u8; 3]>>,
     /// Track which entities we've already resolved ability icons for
     resolved_entities: std::collections::HashSet<EntityId>,
     players_populated: bool,
@@ -144,6 +153,8 @@ impl<'a> MinimapRenderer<'a> {
             player_relations: HashMap::new(),
             ship_ability_icons: HashMap::new(),
             ship_ability_variants: HashMap::new(),
+            player_clan_tags: HashMap::new(),
+            player_clan_colors: HashMap::new(),
             resolved_entities: std::collections::HashSet::new(),
             players_populated: false,
             self_team_id: None,
@@ -161,6 +172,8 @@ impl<'a> MinimapRenderer<'a> {
         self.player_relations.clear();
         self.ship_ability_icons.clear();
         self.ship_ability_variants.clear();
+        self.player_clan_tags.clear();
+        self.player_clan_colors.clear();
         self.resolved_entities.clear();
         self.players_populated = false;
         self.self_team_id = None;
@@ -188,6 +201,22 @@ impl<'a> MinimapRenderer<'a> {
             }
             self.player_names
                 .insert(*entity_id, player.initial_state().username().to_string());
+            // Cache clan info
+            let clan_tag = player.initial_state().clan().to_string();
+            if !clan_tag.is_empty() {
+                self.player_clan_tags.insert(*entity_id, clan_tag);
+            }
+            let clan_color_raw = player.initial_state().clan_color();
+            let clan_color = if clan_color_raw != 0 {
+                Some([
+                    ((clan_color_raw & 0xFF0000) >> 16) as u8,
+                    ((clan_color_raw & 0xFF00) >> 8) as u8,
+                    (clan_color_raw & 0xFF) as u8,
+                ])
+            } else {
+                None
+            };
+            self.player_clan_colors.insert(*entity_id, clan_color);
             self.ship_param_ids
                 .insert(*entity_id, player.vehicle().id());
             if let Some(name) = self.game_params.localized_name_from_param(player.vehicle()) {
@@ -1159,8 +1188,7 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         // 8b. Ship config circles (detection, main battery, secondary, radar, hydro)
-        if self.options.show_ship_config
-        {
+        if self.options.show_ship_config {
             for entity_id in &all_ship_ids {
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
@@ -1422,6 +1450,84 @@ impl<'a> MinimapRenderer<'a> {
                 recent_kills.reverse();
                 commands.push(DrawCommand::KillFeed {
                     entries: recent_kills,
+                });
+            }
+        }
+
+        // 9b. Chat overlay
+        if self.options.show_chat {
+            let chat = controller.game_chat();
+            let fade_duration = 5.0f32; // seconds to fade out
+            let visible_duration = 30.0f32; // seconds before fading starts
+            let max_messages = 10usize;
+
+            let mut chat_entries = Vec::new();
+            for msg in chat.iter().rev() {
+                let age = clock.seconds() - msg.clock.seconds();
+                if age < 0.0 {
+                    continue;
+                }
+                let total_visible = visible_duration + fade_duration;
+                if age > total_visible {
+                    continue;
+                }
+                let opacity = if age > visible_duration {
+                    1.0 - ((age - visible_duration) / fade_duration).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                let team_color = msg
+                    .sender_relation
+                    .map(ship_color_rgb)
+                    .unwrap_or([255, 255, 255]);
+                let (clan_tag, clan_color, ship_species, ship_name) =
+                    if let Some(ref player) = msg.player {
+                        let state = player.initial_state();
+                        let tag = state.clan().to_string();
+                        let color_raw = state.clan_color();
+                        let color = if color_raw != 0 {
+                            Some([
+                                ((color_raw & 0xFF0000) >> 16) as u8,
+                                ((color_raw & 0xFF00) >> 8) as u8,
+                                (color_raw & 0xFF) as u8,
+                            ])
+                        } else {
+                            None
+                        };
+                        let species = player.vehicle().species().map(|s| format!("{:?}", s));
+                        let name = self
+                            .game_params
+                            .localized_name_from_param(player.vehicle())
+                            .map(|s| s.to_string());
+                        (tag, color, species, name)
+                    } else {
+                        (String::new(), None, None, None)
+                    };
+                let message_color = match msg.channel {
+                    ChatChannel::Division => [255, 215, 0], // gold
+                    ChatChannel::Team => [140, 255, 140],   // light green
+                    ChatChannel::Global => [255, 255, 255], // white
+                    _ => [200, 200, 200],                   // gray fallback
+                };
+                chat_entries.push(ChatEntry {
+                    clan_tag,
+                    clan_color,
+                    player_name: msg.sender_name.clone(),
+                    team_color,
+                    ship_species,
+                    ship_name,
+                    message: msg.message.clone(),
+                    message_color,
+                    opacity,
+                });
+                if chat_entries.len() >= max_messages {
+                    break;
+                }
+            }
+            if !chat_entries.is_empty() {
+                chat_entries.reverse();
+                commands.push(DrawCommand::ChatOverlay {
+                    entries: chat_entries,
                 });
             }
         }

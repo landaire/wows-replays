@@ -22,6 +22,7 @@ pub struct RendererConfig {
     pub show_score: bool,
     pub show_timer: bool,
     pub show_kill_feed: bool,
+    pub show_chat: bool,
     pub show_consumables: bool,
     // New features (default false)
     pub show_armament: bool,
@@ -47,6 +48,7 @@ impl Default for RendererConfig {
             show_score: true,
             show_timer: true,
             show_kill_feed: true,
+            show_chat: true,
             show_consumables: true,
             show_armament: false,
             show_trails: false,
@@ -83,6 +85,7 @@ impl RendererConfig {
             show_score: self.show_score,
             show_timer: self.show_timer,
             show_kill_feed: self.show_kill_feed,
+            show_chat: self.show_chat,
             show_consumables: self.show_consumables,
             show_armament: self.show_armament,
             show_trails: self.show_trails,
@@ -141,6 +144,9 @@ show_timer = true
 
 # Show kill feed in top-right corner
 show_kill_feed = true
+
+# Show chat messages on the left side of the minimap
+show_chat = true
 
 # Show active consumable icons below ships
 show_consumables = true

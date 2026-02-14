@@ -23,6 +23,29 @@ pub enum ShipConfigCircleKind {
     Hydro,
 }
 
+/// A single chat message entry for the chat overlay.
+#[derive(Debug, Clone)]
+pub struct ChatEntry {
+    /// Clan tag (e.g. "CLAN"), empty if none
+    pub clan_tag: String,
+    /// Clan color as RGB, or None to use team color
+    pub clan_color: Option<[u8; 3]>,
+    /// Player name
+    pub player_name: String,
+    /// Team color for the player name
+    pub team_color: [u8; 3],
+    /// Ship species for icon lookup (e.g. "Destroyer")
+    pub ship_species: Option<String>,
+    /// Localized ship name (e.g. "Shimakaze")
+    pub ship_name: Option<String>,
+    /// Chat message text
+    pub message: String,
+    /// Color for the message text (reflects the chat channel)
+    pub message_color: [u8; 3],
+    /// Opacity (0.0 = fully faded, 1.0 = fully visible)
+    pub opacity: f32,
+}
+
 /// A single entry in the kill feed.
 #[derive(Debug, Clone)]
 pub struct KillFeedEntry {
@@ -225,6 +248,8 @@ pub enum DrawCommand {
     Timer { seconds: f32 },
     /// Kill feed entries with rich data
     KillFeed { entries: Vec<KillFeedEntry> },
+    /// Chat overlay on the left side of the minimap
+    ChatOverlay { entries: Vec<ChatEntry> },
     /// Battle result overlay (shown at end of match)
     BattleResultOverlay {
         text: String,

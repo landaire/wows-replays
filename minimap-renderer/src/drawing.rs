@@ -7,7 +7,7 @@ use tiny_skia::{
     Stroke, StrokeDash, Transform,
 };
 
-use crate::draw_command::{DrawCommand, KillFeedEntry, RenderTarget, ShipVisibility};
+use crate::draw_command::{ChatEntry, DrawCommand, KillFeedEntry, RenderTarget, ShipVisibility};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSans-Bold.ttf");
 
@@ -913,6 +913,192 @@ fn draw_kill_feed_icon(
     pm.draw_pixmap(0, 0, icon_pm.as_ref(), &paint, transform, None);
 }
 
+/// Word-wrap text to fit within `max_width` pixels, breaking on word boundaries.
+///
+/// Returns a vector of lines. Each line fits within `max_width` when rendered at `scale`.
+fn word_wrap(text: &str, max_width: u32, scale: PxScale, font: &FontRef) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    for word in text.split_whitespace() {
+        if current_line.is_empty() {
+            // First word on the line — always accept it even if it overflows
+            current_line = word.to_string();
+        } else {
+            let candidate = format!("{} {}", current_line, word);
+            let (w, _) = text_size(scale, font, &candidate);
+            if w > max_width {
+                // Push the current line and start a new one
+                lines.push(current_line);
+                current_line = word.to_string();
+            } else {
+                current_line = candidate;
+            }
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// Draw the chat overlay on the left side of the minimap.
+///
+/// Each entry shows: `[CLAN] PlayerName <ship_icon> ShipName:`
+/// followed by the message text on the next line(s), word-wrapped.
+/// Division chat is gold, all other channels are orange.
+/// The whole thing sits in a semi-translucent dark box.
+fn draw_chat_overlay(
+    pm: &mut Pixmap,
+    entries: &[ChatEntry],
+    font: &FontRef,
+    ship_icons: &HashMap<String, ShipIcon>,
+    y_offset: u32,
+) {
+    if entries.is_empty() {
+        return;
+    }
+
+    let minimap_w = crate::MINIMAP_SIZE;
+    let max_box_width = (minimap_w / 4) as i32; // 1/4 of minimap = 192px
+    let margin = 6i32;
+    let inner_width = (max_box_width - margin * 2) as u32;
+    let header_scale = PxScale::from(11.0);
+    let msg_scale = PxScale::from(11.0);
+    let line_height = 14i32;
+    let entry_gap = 6i32;
+    let icon_size = 12i32;
+    let icon_gap = 2i32;
+
+    // Pre-compute layout: for each entry, compute header segments and wrapped message lines
+    struct EntryLayout {
+        header_height: i32,
+        msg_lines: Vec<String>,
+        total_height: i32,
+    }
+
+    let mut layouts: Vec<EntryLayout> = Vec::new();
+    let mut total_height = margin; // top padding
+
+    for entry in entries {
+        // Header: "[CLAN] PlayerName <icon> ShipName:"
+        // We measure it but it will always fit in one line at this scale given the small box.
+        // Actually, the header may overflow — but at 9px font and 88px inner width, we just let it.
+        let header_height = line_height;
+
+        // Message lines (word-wrapped)
+        let msg_lines = word_wrap(&entry.message, inner_width, msg_scale, font);
+        let msg_height = msg_lines.len() as i32 * line_height;
+        let entry_height = header_height + msg_height;
+
+        total_height += entry_height + entry_gap;
+        layouts.push(EntryLayout {
+            header_height,
+            msg_lines,
+            total_height: entry_height,
+        });
+    }
+    total_height -= entry_gap; // remove trailing gap
+    total_height += margin; // bottom padding
+
+    // Position: middle-left of the minimap area
+    let box_x = 0i32;
+    let map_mid_y = y_offset as i32 + (minimap_w as i32) / 2;
+    let box_y = map_mid_y - total_height / 2;
+
+    // Find the overall max opacity for the background alpha
+    let max_opacity = entries.iter().map(|e| e.opacity).fold(0.0f32, f32::max);
+
+    // Draw semi-translucent background
+    draw_filled_rect(
+        pm,
+        box_x as f32,
+        box_y as f32,
+        max_box_width as f32,
+        total_height as f32,
+        [0, 0, 0],
+        0.35 * max_opacity,
+    );
+
+    // Draw each entry
+    let mut cur_y = box_y + margin;
+    for (entry, layout) in entries.iter().zip(layouts.iter()) {
+        let opacity = entry.opacity;
+        if opacity < 0.01 {
+            cur_y += layout.total_height + entry_gap;
+            continue;
+        }
+
+        // Apply opacity to colors
+        let apply_opacity = |color: [u8; 3], op: f32| -> [u8; 3] {
+            // We can't truly do opacity on the text easily, so we blend toward black
+            [
+                (color[0] as f32 * op) as u8,
+                (color[1] as f32 * op) as u8,
+                (color[2] as f32 * op) as u8,
+            ]
+        };
+
+        let mut x = box_x + margin;
+
+        // Clan tag: "[CLAN] " in clan color (or team color if no clan color)
+        if !entry.clan_tag.is_empty() {
+            let clan_display = format!("[{}] ", entry.clan_tag);
+            let clan_rgb = entry.clan_color.unwrap_or(entry.team_color);
+            let clan_rgb = apply_opacity(clan_rgb, opacity);
+            draw_text(pm, clan_rgb, x, cur_y, header_scale, font, &clan_display);
+            let (cw, _) = text_size(header_scale, font, &clan_display);
+            x += cw as i32;
+        }
+
+        // Player name in team color
+        let name_color = apply_opacity(entry.team_color, opacity);
+        draw_text(
+            pm,
+            name_color,
+            x,
+            cur_y,
+            header_scale,
+            font,
+            &entry.player_name,
+        );
+        let (nw, _) = text_size(header_scale, font, &entry.player_name);
+        x += nw as i32;
+
+        // Ship icon (small, tinted with team color)
+        if let Some(ref species) = entry.ship_species {
+            if let Some(icon) = ship_icons.get(species) {
+                x += icon_gap;
+                let icon_y = cur_y;
+                // Draw a tiny version of the ship icon
+                draw_kill_feed_icon(pm, icon, x, icon_y, icon_size, name_color, false);
+                x += icon_size + icon_gap;
+            }
+        }
+
+        // Ship name
+        if let Some(ref ship_name) = entry.ship_name {
+            let ship_display = format!(" {}:", ship_name);
+            let ship_color = apply_opacity(entry.team_color, opacity);
+            draw_text(pm, ship_color, x, cur_y, header_scale, font, &ship_display);
+        }
+
+        cur_y += layout.header_height;
+
+        // Message lines
+        let msg_color = apply_opacity(entry.message_color, opacity);
+        for line in &layout.msg_lines {
+            draw_text(pm, msg_color, box_x + margin, cur_y, msg_scale, font, line);
+            cur_y += line_height;
+        }
+
+        cur_y += entry_gap;
+    }
+}
+
 /// Draw the 10x10 grid overlay with labels.
 fn draw_grid(pm: &mut Pixmap, minimap_size: u32, y_off: u32, font: &FontRef) {
     let cell = minimap_size as f32 / 10.0;
@@ -1520,6 +1706,15 @@ impl RenderTarget for ImageTarget {
                     &self.font,
                     &self.ship_icons,
                     &self.death_cause_icons,
+                );
+            }
+            DrawCommand::ChatOverlay { entries } => {
+                draw_chat_overlay(
+                    &mut self.canvas,
+                    entries,
+                    &self.font,
+                    &self.ship_icons,
+                    HUD_HEIGHT,
                 );
             }
             DrawCommand::BattleResultOverlay {
