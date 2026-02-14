@@ -482,6 +482,27 @@ fn main() {
                 )
         )
         .subcommand(
+            SubCommand::with_name("decrypt")
+                .about("Decrypt a replay file and dump the meta and packet data to disk")
+                .arg(
+                    Arg::with_name("meta-output")
+                        .long("meta-output")
+                        .short("m")
+                        .help("Output path for the JSON metadata")
+                        .takes_value(true)
+                        .required(true),
+                )
+                .arg(
+                    Arg::with_name("packets-output")
+                        .long("packets-output")
+                        .short("p")
+                        .help("Output path for the decrypted packet data")
+                        .takes_value(true)
+                        .required(true),
+                )
+                .arg(replay_arg.clone()),
+        )
+        .subcommand(
             SubCommand::with_name("search")
                 .about("Search a directory full of replays")
                 .arg(
@@ -595,6 +616,26 @@ fn main() {
         let specs =
             load_game_data(None, extracted, &target_version).expect("failed to load game data");
         printspecs(&specs);
+    }
+    if let Some(matches) = matches.subcommand_matches("decrypt") {
+        let input = matches.value_of("REPLAY").unwrap();
+        let meta_output = matches.value_of("meta-output").unwrap();
+        let packets_output = matches.value_of("packets-output").unwrap();
+
+        let replay_file = ReplayFile::from_file(&std::path::PathBuf::from(input)).unwrap();
+        std::fs::write(meta_output, &replay_file.raw_meta).unwrap();
+        std::fs::write(packets_output, &replay_file.packet_data).unwrap();
+
+        println!(
+            "Wrote {} bytes of metadata to {}",
+            replay_file.raw_meta.len(),
+            meta_output
+        );
+        println!(
+            "Wrote {} bytes of packet data to {}",
+            replay_file.packet_data.len(),
+            packets_output
+        );
     }
     if let Some(matches) = matches.subcommand_matches("summary") {
         let input = matches.value_of("REPLAY").unwrap();
