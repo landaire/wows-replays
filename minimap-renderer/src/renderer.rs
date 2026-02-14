@@ -57,6 +57,8 @@ pub struct RenderOptions {
     pub show_speed_trails: bool,
     pub show_ship_config: bool,
     pub show_dead_ship_names: bool,
+    pub show_battle_result: bool,
+    pub show_buffs: bool,
 }
 
 impl Default for RenderOptions {
@@ -82,6 +84,8 @@ impl Default for RenderOptions {
             show_speed_trails: false,
             show_ship_config: false,
             show_dead_ship_names: false,
+            show_battle_result: true,
+            show_buffs: true,
         }
     }
 }

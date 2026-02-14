@@ -90,6 +90,8 @@ impl RendererConfig {
             show_speed_trails: self.show_speed_trails,
             show_ship_config: self.show_ship_config,
             show_dead_ship_names: false,
+            show_battle_result: true,
+            show_buffs: true,
         }
     }
 
