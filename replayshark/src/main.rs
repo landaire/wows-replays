@@ -5,6 +5,7 @@ use std::io::Write;
 use std::{collections::HashMap, path::Path};
 use wowsunpack::data::DataFileWithCallback;
 use wowsunpack::data::Version;
+use wowsunpack::game_constants::{DEFAULT_BATTLE_CONSTANTS, DEFAULT_COMMON_CONSTANTS};
 use wowsunpack::game_data;
 use wowsunpack::rpc::entitydefs::parse_scripts;
 use wowsunpack::rpc::entitydefs::EntitySpec;
@@ -116,6 +117,8 @@ fn build_investigative_printer(
         packet_decoder: wows_replays::analyzer::decoder::PacketDecoder::builder()
             .version(version)
             .audit(true)
+            .battle_constants(&DEFAULT_BATTLE_CONSTANTS)
+            .common_constants(&DEFAULT_COMMON_CONSTANTS)
             .build(),
         filter_packet: filter_packet.map(|s| parse_int::parse::<u32>(s).unwrap()),
         filter_method: filter_method.map(|s| s.to_string()),

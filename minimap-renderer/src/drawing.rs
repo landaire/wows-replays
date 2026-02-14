@@ -664,14 +664,59 @@ fn draw_score_bar(
 }
 
 /// Draw the game timer.
-fn draw_timer(pm: &mut Pixmap, seconds: f32, font: &FontRef) {
-    let mins = (seconds as i32) / 60;
-    let secs = (seconds as i32) % 60;
-    let text = format!("{:02}:{:02}", mins, secs);
-    let scale = PxScale::from(16.0);
-    let (w, _) = text_size(scale, font, &text);
-    let x = pm.width() as i32 / 2 - w as i32 / 2;
-    draw_text_shadow(pm, [255, 255, 255], x, 2, scale, font, &text);
+fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: f32, font: &FontRef) {
+    let center_x = pm.width() as i32 / 2;
+    let main_scale = PxScale::from(16.0);
+    let small_scale = PxScale::from(11.0);
+
+    if let Some(remaining) = time_remaining {
+        // Show time remaining as main timer (centered)
+        let r_mins = remaining / 60;
+        let r_secs = remaining % 60;
+        let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
+        let (rw, _) = text_size(main_scale, font, &remaining_text);
+        let rx = center_x - rw as i32 / 2;
+        draw_text_shadow(
+            pm,
+            [255, 255, 255],
+            rx,
+            2,
+            main_scale,
+            font,
+            &remaining_text,
+        );
+
+        // Show elapsed as smaller text below
+        let e_mins = (elapsed as i32) / 60;
+        let e_secs = (elapsed as i32) % 60;
+        let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
+        let (ew, _) = text_size(small_scale, font, &elapsed_text);
+        let ex = center_x - ew as i32 / 2;
+        draw_text_shadow(
+            pm,
+            [180, 180, 180],
+            ex,
+            18,
+            small_scale,
+            font,
+            &elapsed_text,
+        );
+    } else {
+        // Fallback: just show elapsed time centered (no timeLeft data yet)
+        let mins = (elapsed as i32) / 60;
+        let secs = (elapsed as i32) % 60;
+        let text = format!("{:02}:{:02}", mins, secs);
+        let (w, _) = text_size(main_scale, font, &text);
+        let x = center_x - w as i32 / 2;
+        draw_text_shadow(pm, [255, 255, 255], x, 2, main_scale, font, &text);
+    }
+}
+
+fn draw_pre_battle_countdown(pm: &mut Pixmap, seconds: i64, font: &FontRef) {
+    let text = format!("{}", seconds);
+    let subtitle = "BATTLE STARTS IN";
+    let glow_color: [u8; 3] = [255, 200, 50]; // gold
+    draw_battle_result_overlay(pm, &text, Some(subtitle), glow_color, font);
 }
 
 /// Draw the team advantage label below the score bar, centered.
@@ -687,23 +732,27 @@ fn draw_advantage_label(pm: &mut Pixmap, label: &str, color: [u8; 3], font: &Fon
 ///
 /// Keys correspond to the base name portion of `icon_frag_{key}.png` files
 /// in `gui/battle_hud/icon_frag/`.
-fn death_cause_icon_key(cause: &wows_replays::analyzer::decoder::DeathCause) -> &'static str {
+fn death_cause_icon_key(
+    cause: &wows_replays::analyzer::decoder::Recognized<
+        wows_replays::analyzer::decoder::DeathCause,
+    >,
+) -> &'static str {
     use wows_replays::analyzer::decoder::DeathCause;
-    match cause {
-        DeathCause::Artillery | DeathCause::ApShell | DeathCause::HeShell | DeathCause::CsShell => {
-            "main_caliber"
-        }
-        DeathCause::Secondaries => "atba",
-        DeathCause::Torpedo | DeathCause::AerialTorpedo => "torpedo",
-        DeathCause::Fire => "burning",
-        DeathCause::Flooding => "flood",
-        DeathCause::DiveBomber => "bomb",
-        DeathCause::SkipBombs => "skip",
-        DeathCause::AerialRocket => "rocket",
-        DeathCause::Detonation => "detonate",
-        DeathCause::Ramming => "ram",
-        DeathCause::DepthCharge | DeathCause::AerialDepthCharge => "depthbomb",
-        DeathCause::Missile => "missile",
+    match cause.known() {
+        Some(
+            DeathCause::Artillery | DeathCause::ApShell | DeathCause::HeShell | DeathCause::CsShell,
+        ) => "main_caliber",
+        Some(DeathCause::Secondaries) => "atba",
+        Some(DeathCause::Torpedo | DeathCause::AerialTorpedo) => "torpedo",
+        Some(DeathCause::Fire) => "burning",
+        Some(DeathCause::Flooding) => "flood",
+        Some(DeathCause::DiveBomber) => "bomb",
+        Some(DeathCause::SkipBombs) => "skip",
+        Some(DeathCause::AerialRocket) => "rocket",
+        Some(DeathCause::Detonation) => "detonate",
+        Some(DeathCause::Ramming) => "ram",
+        Some(DeathCause::DepthCharge | DeathCause::AerialDepthCharge) => "depthbomb",
+        Some(DeathCause::Missile) => "missile",
         _ => "main_caliber",
     }
 }
@@ -1737,8 +1786,14 @@ impl RenderTarget for ImageTarget {
                     draw_advantage_label(&mut self.canvas, label, *color, &self.font);
                 }
             }
-            DrawCommand::Timer { seconds } => {
-                draw_timer(&mut self.canvas, *seconds, &self.font);
+            DrawCommand::Timer {
+                time_remaining,
+                elapsed,
+            } => {
+                draw_timer(&mut self.canvas, *time_remaining, *elapsed, &self.font);
+            }
+            DrawCommand::PreBattleCountdown { seconds } => {
+                draw_pre_battle_countdown(&mut self.canvas, *seconds, &self.font);
             }
             DrawCommand::TeamBuffs {
                 friendly_buffs,

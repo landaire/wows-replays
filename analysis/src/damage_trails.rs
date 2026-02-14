@@ -9,6 +9,7 @@ use wows_replays::packet2::{EntityMethodPacket, Packet, PacketType};
 use wows_replays::types::EntityId;
 use wows_replays::ReplayMeta;
 use wowsunpack::data::Version;
+use wowsunpack::game_constants::{DEFAULT_BATTLE_CONSTANTS, DEFAULT_COMMON_CONSTANTS};
 use wowsunpack::rpc;
 
 pub struct DamageTrailsBuilder {
@@ -25,7 +26,11 @@ impl DamageTrailsBuilder {
     pub fn build(self, meta: &ReplayMeta) -> Box<dyn Analyzer> {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         Box::new(DamageMonitor {
-            packet_decoder: PacketDecoder::builder().version(version).build(),
+            packet_decoder: PacketDecoder::builder()
+                .version(version)
+                .battle_constants(&DEFAULT_BATTLE_CONSTANTS)
+                .common_constants(&DEFAULT_COMMON_CONSTANTS)
+                .build(),
             username: meta.playerName.clone(),
             avatarid: None,
             shipid: None,

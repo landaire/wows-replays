@@ -9,6 +9,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::iter::FromIterator;
 use wowsunpack::data::Version;
+use wowsunpack::game_constants::{DEFAULT_BATTLE_CONSTANTS, DEFAULT_COMMON_CONSTANTS};
 use wowsunpack::game_params::convert::pickle_to_json;
 use wowsunpack::rpc::typedefs::ArgValue;
 use wowsunpack::unpack_rpc_args;
@@ -37,7 +38,11 @@ impl DecoderBuilder {
             output: self.path.as_ref().map(|path| {
                 Box::new(std::fs::File::create(path).unwrap()) as Box<dyn std::io::Write>
             }),
-            packet_decoder: PacketDecoder::builder().version(version).build(),
+            packet_decoder: PacketDecoder::builder()
+                .version(version)
+                .battle_constants(&DEFAULT_BATTLE_CONSTANTS)
+                .common_constants(&DEFAULT_COMMON_CONSTANTS)
+                .build(),
         };
         if !self.no_meta {
             decoder.write(&serde_json::to_string(&meta).unwrap());
@@ -46,9 +51,10 @@ impl DecoderBuilder {
     }
 }
 pub use wowsunpack::game_types::{
-    BatteryState, CameraMode, Consumable, DeathCause, DepthState, FinishType, Ribbon, VoiceLine,
-    WeaponType,
+    BatteryState, BattleStage, CameraMode, Consumable, DeathCause, DepthState, FinishType, Ribbon,
+    VoiceLine, WeaponType,
 };
+pub use wowsunpack::recognized::Recognized;
 
 /// Properties only present for human players (not bots)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -798,7 +804,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         /// The ship ID (note: Not the avatar ID) of the victim
         victim: EntityId,
         /// Cause of death
-        cause: DeathCause,
+        cause: Recognized<DeathCause>,
     },
     EntityMethod(&'rawpacket EntityMethodPacket<'argtype>),
     EntityProperty(&'rawpacket crate::packet2::EntityPropertyPacket<'argtype>),
@@ -886,14 +892,14 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         /// The team ID of the winning team (corresponds to the teamid in [OnArenaStateReceivedPlayer])
         winning_team: Option<i8>,
         /// How the battle ended (from `FINISH_TYPE` in battle.xml)
-        finish_type: Option<FinishType>,
+        finish_type: Option<Recognized<FinishType>>,
     },
     /// Sent when a consumable is activated
     Consumable {
         /// The ship ID of the ship using the consumable
         entity: EntityId,
         /// The consumable
-        consumable: Consumable,
+        consumable: Recognized<Consumable>,
         /// How long the consumable will be active for
         duration: f32,
     },
@@ -910,7 +916,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     Version(String),
     Camera(&'rawpacket crate::packet2::CameraPacket),
     /// Indicates a change in the current camera mode
-    CameraMode(CameraMode),
+    CameraMode(Recognized<CameraMode>),
     /// If true, indicates that the player has enabled the "free look" camera (by holding right click)
     CameraFreeLook(bool),
     /// Artillery shells fired
@@ -1204,8 +1210,8 @@ where
         audit: bool,
         payload: &'rawpacket crate::packet2::PacketType<'replay, 'argtype>,
         packet_type: u32,
-        battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
-        common_constants: Option<&wowsunpack::game_constants::CommonConstants>,
+        battle_constants: &wowsunpack::game_constants::BattleConstants,
+        common_constants: &wowsunpack::game_constants::CommonConstants,
     ) -> Self {
         match payload {
             PacketType::EntityMethod(em) => DecodedPacketPayload::from_entity_method(
@@ -1217,40 +1223,14 @@ where
             ),
             PacketType::Camera(camera) => DecodedPacketPayload::Camera(camera),
             PacketType::CameraMode(mode) => {
-                // Try constants lookup first, fall back to hardcoded mapping
-                if let Some(cm) = battle_constants
-                    .and_then(|bc| bc.camera_mode(*mode as i32))
-                    .map(CameraMode::from_name)
-                {
+                if let Some(cm) = CameraMode::from_id(*mode as i32, battle_constants, *version) {
                     DecodedPacketPayload::CameraMode(cm)
+                } else if audit {
+                    DecodedPacketPayload::Audit(format!("CameraMode({})", mode))
                 } else {
-                    match mode {
-                        1 => DecodedPacketPayload::CameraMode(CameraMode::Airplanes),
-                        2 => DecodedPacketPayload::CameraMode(CameraMode::Dock),
-                        3 => DecodedPacketPayload::CameraMode(CameraMode::OverheadMap),
-                        4 => DecodedPacketPayload::CameraMode(CameraMode::DevFree),
-                        5 => DecodedPacketPayload::CameraMode(CameraMode::FollowingShells),
-                        6 => DecodedPacketPayload::CameraMode(CameraMode::FollowingPlanes),
-                        7 => DecodedPacketPayload::CameraMode(CameraMode::DockModule),
-                        8 => DecodedPacketPayload::CameraMode(CameraMode::FollowingShip),
-                        9 => DecodedPacketPayload::CameraMode(CameraMode::FreeFlying),
-                        10 => DecodedPacketPayload::CameraMode(CameraMode::ReplayFpc),
-                        11 => DecodedPacketPayload::CameraMode(CameraMode::FollowingSubmarine),
-                        12 => DecodedPacketPayload::CameraMode(CameraMode::TacticalConsumables),
-                        13 => DecodedPacketPayload::CameraMode(CameraMode::RespawnMap),
-                        19 => DecodedPacketPayload::CameraMode(CameraMode::DockFlags),
-                        20 => DecodedPacketPayload::CameraMode(CameraMode::DockEnsign),
-                        21 => DecodedPacketPayload::CameraMode(CameraMode::DockLootbox),
-                        22 => DecodedPacketPayload::CameraMode(CameraMode::DockNavalFlag),
-                        23 => DecodedPacketPayload::CameraMode(CameraMode::IdleGame),
-                        _ => {
-                            if audit {
-                                DecodedPacketPayload::Audit(format!("CameraMode({})", mode))
-                            } else {
-                                DecodedPacketPayload::CameraMode(CameraMode::Unknown(*mode))
-                            }
-                        }
-                    }
+                    DecodedPacketPayload::CameraMode(Recognized::Unknown(
+                        format!("{}", mode).into(),
+                    ))
                 }
             }
             PacketType::CameraFreeLook(freelook) => match freelook {
@@ -1373,8 +1353,8 @@ where
         version: &Version,
         audit: bool,
         packet: &'rawpacket EntityMethodPacket<'argtype>,
-        battle_constants: Option<&wowsunpack::game_constants::BattleConstants>,
-        common_constants: Option<&wowsunpack::game_constants::CommonConstants>,
+        battle_constants: &wowsunpack::game_constants::BattleConstants,
+        common_constants: &wowsunpack::game_constants::CommonConstants,
     ) -> Self {
         let entity_id = &packet.entity_id;
         let method = &packet.method;
@@ -1724,62 +1704,17 @@ where
             DecodedPacketPayload::DamageStat(stats)
         } else if *method == "receiveVehicleDeath" {
             let (victim, killer, cause) = unpack_rpc_args!(args, i32, i32, u32);
-            // Try constants lookup first, fall back to hardcoded mapping
-            let cause = if let Some(dc) = battle_constants
-                .and_then(|bc| bc.death_reason(cause as i32))
-                .map(DeathCause::from_name)
-            {
-                dc
-            } else {
-                match cause {
-                    0 => DeathCause::None,
-                    1 => DeathCause::Artillery,
-                    2 => DeathCause::Secondaries,
-                    3 => DeathCause::Torpedo,
-                    4 => DeathCause::DiveBomber,
-                    5 => DeathCause::AerialTorpedo,
-                    6 => DeathCause::Fire,
-                    7 => DeathCause::Ramming,
-                    8 => DeathCause::Terrain,
-                    9 => DeathCause::Flooding,
-                    10 => DeathCause::Mirror,
-                    11 => DeathCause::SeaMine,
-                    12 => DeathCause::Special,
-                    13 => DeathCause::DepthCharge,
-                    14 => DeathCause::AerialRocket,
-                    15 => DeathCause::Detonation,
-                    16 => DeathCause::Health,
-                    17 => DeathCause::ApShell,
-                    18 => DeathCause::HeShell,
-                    19 => DeathCause::CsShell,
-                    20 => DeathCause::Fel,
-                    21 => DeathCause::Portal,
-                    22 => DeathCause::SkipBombs,
-                    23 => DeathCause::SectorWave,
-                    24 => DeathCause::Acid,
-                    25 => DeathCause::Laser,
-                    26 => DeathCause::Match,
-                    27 => DeathCause::Timer,
-                    28 => DeathCause::AerialDepthCharge,
-                    29 => DeathCause::Event1,
-                    30 => DeathCause::Event2,
-                    31 => DeathCause::Event3,
-                    32 => DeathCause::Event4,
-                    33 => DeathCause::Event5,
-                    34 => DeathCause::Event6,
-                    35 => DeathCause::Missile,
-                    cause => {
-                        if audit {
-                            return DecodedPacketPayload::Audit(format!(
-                                "receiveVehicleDeath(victim={}, killer={}, unknown cause {})",
-                                victim, killer, cause
-                            ));
-                        } else {
-                            DeathCause::Unknown(cause)
-                        }
-                    }
-                }
-            };
+            let cause =
+                if let Some(dc) = DeathCause::from_id(cause as i32, battle_constants, *version) {
+                    dc
+                } else if audit {
+                    return DecodedPacketPayload::Audit(format!(
+                        "receiveVehicleDeath(victim={}, killer={}, unknown cause {})",
+                        victim, killer, cause
+                    ));
+                } else {
+                    Recognized::Unknown(format!("{}", cause).into())
+                };
             DecodedPacketPayload::ShipDestroyed {
                 victim: EntityId::from(victim),
                 killer: EntityId::from(killer),
@@ -1898,12 +1833,12 @@ where
         } else if *method == "onBattleEnd" {
             let (winning_team, finish_type) = if args.len() >= 2 {
                 let (winning_team, raw_finish) = unpack_rpc_args!(args, i8, u8);
-                let ft = if let Some(name) =
-                    battle_constants.and_then(|bc| bc.finish_type(raw_finish as i32))
+                let ft = if let Some(ft) =
+                    FinishType::from_id(raw_finish as i32, battle_constants, *version)
                 {
-                    FinishType::from_name(name)
+                    ft
                 } else {
-                    FinishType::from_id(raw_finish)
+                    Recognized::Unknown(format!("{}", raw_finish).into())
                 };
                 (Some(winning_team), Some(ft))
             } else {
@@ -1937,45 +1872,18 @@ where
             let raw_consumable = consumable;
             // Try runtime-loaded consumable types from game data first
             let consumable = if let Some(c) =
-                common_constants.and_then(|cc| cc.consumable_type(consumable as i32))
+                Consumable::from_id(raw_consumable as i32, common_constants, *version)
             {
-                *c
+                c
+            } else if audit {
+                return DecodedPacketPayload::Audit(format!(
+                    "consumableUsed({},{},{})",
+                    entity_id, raw_consumable, duration
+                ));
             } else {
-                // Fallback: hardcoded mapping from wows-constants CONSUMABLE_IDS
-                match consumable {
-                    0 => Consumable::DamageControl,            // crashCrew
-                    1 => Consumable::SpottingAircraft,         // scout
-                    2 => Consumable::DefensiveAntiAircraft,    // airDefenseDisp
-                    3 => Consumable::SpeedBoost,               // speedBoosters
-                    4 => Consumable::MainBatteryReloadBooster, // artilleryBoosters
-                    6 => Consumable::Smoke,                    // smokeGenerator
-                    8 => Consumable::RepairParty,              // regenCrew
-                    9 => Consumable::CatapultFighter,          // fighter
-                    10 => Consumable::HydroacousticSearch,     // sonar
-                    11 => Consumable::TorpedoReloadBooster,    // torpedoReloader
-                    12 => Consumable::Radar,                   // rls
-                    19 => Consumable::Invulnerable,            // invulnerable
-                    20 => Consumable::HealForsage,             // healForsage
-                    21 => Consumable::CallFighters,            // callFighters
-                    22 => Consumable::RegenerateHealth,        // regenerateHealth
-                    26 => Consumable::DepthCharges,            // depthCharges
-                    34 => Consumable::WeaponReloadBooster,     // weaponReloadBooster
-                    35 => Consumable::Hydrophone,              // hydrophone
-                    36 => Consumable::EnhancedRudders,         // fastRudders
-                    37 => Consumable::ReserveBattery,          // subsEnergyFreeze
-                    41 => Consumable::SubmarineSurveillance,   // submarineLocator
-                    _ => {
-                        if audit {
-                            return DecodedPacketPayload::Audit(format!(
-                                "consumableUsed({},{},{})",
-                                entity_id, raw_consumable, duration
-                            ));
-                        } else {
-                            Consumable::Unknown(consumable)
-                        }
-                    }
-                }
+                Recognized::Unknown(format!("{}", raw_consumable).into())
             };
+
             DecodedPacketPayload::Consumable {
                 entity: *entity_id,
                 consumable,
@@ -2335,7 +2243,7 @@ pub struct DecodedPacket<'replay, 'argtype, 'rawpacket> {
     pub payload: DecodedPacketPayload<'replay, 'argtype, 'rawpacket>,
 }
 
-/// Reusable packet decoder that holds version and optional game constants.
+/// Reusable packet decoder that holds version and game constants.
 ///
 /// Create once per replay, then call `decode()` for each packet.
 #[derive(bon::Builder)]
@@ -2343,8 +2251,8 @@ pub struct PacketDecoder<'a> {
     version: Version,
     #[builder(default)]
     audit: bool,
-    battle_constants: Option<&'a wowsunpack::game_constants::BattleConstants>,
-    common_constants: Option<&'a wowsunpack::game_constants::CommonConstants>,
+    battle_constants: &'a wowsunpack::game_constants::BattleConstants,
+    common_constants: &'a wowsunpack::game_constants::CommonConstants,
 }
 
 impl<'a> PacketDecoder<'a> {

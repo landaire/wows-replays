@@ -4,6 +4,7 @@ use crate::analyzer::decoder::{DecodedPacketPayload, PacketDecoder};
 use crate::packet2::Packet;
 use crate::types::AccountId;
 use std::collections::HashMap;
+use wowsunpack::game_constants::{DEFAULT_BATTLE_CONSTANTS, DEFAULT_COMMON_CONSTANTS};
 
 use super::analyzer::Analyzer;
 
@@ -24,7 +25,11 @@ impl ChatLoggerBuilder {
         let version = Version::from_client_exe(&meta.clientVersionFromExe);
         Box::new(ChatLogger {
             usernames: HashMap::new(),
-            packet_decoder: PacketDecoder::builder().version(version).build(),
+            packet_decoder: PacketDecoder::builder()
+                .version(version)
+                .battle_constants(&DEFAULT_BATTLE_CONSTANTS)
+                .common_constants(&DEFAULT_COMMON_CONSTANTS)
+                .build(),
         })
     }
 }

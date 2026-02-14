@@ -1,7 +1,7 @@
 use serde::Serialize;
 use wowsunpack::game_params::types::BigWorldDistance;
 
-use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, TorpedoData};
+use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, Recognized, TorpedoData};
 use crate::types::{EntityId, GameClock, GameParamId, NormalizedPos, PlaneId, WorldPos};
 
 /// Last known world-space position of a ship entity.
@@ -100,7 +100,7 @@ pub struct ScoringRules {
 /// An active consumable on a ship.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActiveConsumable {
-    pub consumable: Consumable,
+    pub consumable: Recognized<Consumable>,
     pub activated_at: GameClock,
     pub duration: f32,
 }
@@ -175,7 +175,7 @@ pub struct KillRecord {
     pub clock: GameClock,
     pub killer: EntityId,
     pub victim: EntityId,
-    pub cause: DeathCause,
+    pub cause: Recognized<DeathCause>,
 }
 
 /// A dead ship's last known position.

@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use wowsunpack::data::ResourceLoader as _;
+use wowsunpack::data::{ResourceLoader as _, Version};
 use wowsunpack::game_params::provider::GameMetadataProvider;
-use wowsunpack::game_params::types::{
-    AbilityCategory, GameParamProvider, Meters, PlaneCategory, Species,
-};
+use wowsunpack::game_params::types::{GameParamProvider, Meters, PlaneCategory, Species};
 
-use wows_replays::analyzer::decoder::{DepthState, FinishType, WeaponType};
+use wows_replays::analyzer::decoder::{
+    BattleStage, DepthState, FinishType, Recognized, WeaponType,
+};
 
 use wows_replays::analyzer::battle_controller::ChatChannel;
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
@@ -40,16 +40,16 @@ const TEAM0_COLOR: [u8; 3] = [76, 232, 170]; // Green
 const TEAM1_COLOR: [u8; 3] = [254, 77, 42]; // Red
 
 /// Per-consumable radius circle color, with friendly/enemy variants.
-fn consumable_radius_color(consumable: Consumable, is_friendly: bool) -> [u8; 3] {
-    match (consumable, is_friendly) {
-        (Consumable::Radar, true) => [40, 80, 200],  // Dark blue
-        (Consumable::Radar, false) => [180, 40, 50], // Maroon
-        (Consumable::HydroacousticSearch, true) => [40, 180, 170], // Teal
-        (Consumable::HydroacousticSearch, false) => [200, 90, 30], // Dark orange
-        (Consumable::Hydrophone, true) => [70, 110, 180], // Slate blue
-        (Consumable::Hydrophone, false) => [170, 70, 50], // Rust
-        (Consumable::SubmarineSurveillance, true) => [60, 60, 190], // Indigo
-        (Consumable::SubmarineSurveillance, false) => [160, 30, 60], // Dark crimson
+fn consumable_radius_color(consumable: &Recognized<Consumable>, is_friendly: bool) -> [u8; 3] {
+    match (consumable.known(), is_friendly) {
+        (Some(Consumable::Radar), true) => [40, 80, 200], // Dark blue
+        (Some(Consumable::Radar), false) => [180, 40, 50], // Maroon
+        (Some(Consumable::HydroacousticSearch), true) => [40, 180, 170], // Teal
+        (Some(Consumable::HydroacousticSearch), false) => [200, 90, 30], // Dark orange
+        (Some(Consumable::Hydrophone), true) => [70, 110, 180], // Slate blue
+        (Some(Consumable::Hydrophone), false) => [170, 70, 50], // Rust
+        (Some(Consumable::SubmarineSurveillance), true) => [60, 60, 190], // Indigo
+        (Some(Consumable::SubmarineSurveillance), false) => [160, 30, 60], // Dark crimson
         (_, true) => TEAM0_COLOR,
         (_, false) => TEAM1_COLOR,
     }
@@ -130,6 +130,7 @@ pub struct MinimapRenderer<'a> {
     // Config (immutable after construction)
     map_info: Option<map_data::MapInfo>,
     game_params: &'a GameMetadataProvider,
+    version: Version,
     pub options: RenderOptions,
 
     // Caches populated lazily from controller state
@@ -140,9 +141,9 @@ pub struct MinimapRenderer<'a> {
     ship_display_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
     /// Per-ship consumable icon names: (entity_id, Consumable) -> PCY name (e.g. "PCY015_SpeedBoosterPremium")
-    ship_ability_icons: HashMap<(EntityId, Consumable), String>,
+    ship_ability_icons: HashMap<(EntityId, Recognized<Consumable>), String>,
     /// Per-ship consumable variants for detection radius lookup: (entity_id, Consumable) -> (ability_name, variant_name)
-    ship_ability_variants: HashMap<(EntityId, Consumable), (String, String)>,
+    ship_ability_variants: HashMap<(EntityId, Recognized<Consumable>), (String, String)>,
     /// Per-player clan tag: entity_id -> clan tag string
     player_clan_tags: HashMap<EntityId, String>,
     /// Per-player clan color: entity_id -> RGB color (None = use team color)
@@ -155,6 +156,7 @@ pub struct MinimapRenderer<'a> {
     /// Raw team_id of the recording player (0 or 1). Used to map cap point/building
     /// team_ids to relative colors (friendly vs enemy).
     self_team_id: Option<i64>,
+
     /// Position history per entity for trail rendering: (position, game_clock, speed_raw)
     position_history: HashMap<EntityId, Vec<(map_data::MinimapPos, GameClock, u16)>>,
 }
@@ -163,11 +165,13 @@ impl<'a> MinimapRenderer<'a> {
     pub fn new(
         map_info: Option<map_data::MapInfo>,
         game_params: &'a GameMetadataProvider,
+        version: Version,
         options: RenderOptions,
     ) -> Self {
         Self {
             map_info,
             game_params,
+            version,
             options,
             squadron_info: HashMap::new(),
             player_species: HashMap::new(),
@@ -221,7 +225,7 @@ impl<'a> MinimapRenderer<'a> {
 
         for (entity_id, player) in players {
             self.player_relations.insert(*entity_id, player.relation());
-            if let Some(species) = player.vehicle().species() {
+            if let Some(species) = player.vehicle().species().and_then(|s| s.known()) {
                 self.player_species
                     .insert(*entity_id, format!("{:?}", species));
             }
@@ -267,14 +271,10 @@ impl<'a> MinimapRenderer<'a> {
                             continue;
                         };
 
-                        let Some(consumable) = ability
-                            .categories()
-                            .values()
-                            .next()
-                            .and_then(AbilityCategory::consumable_type)
-                        else {
+                        let Some(cat) = ability.categories().values().next() else {
                             continue;
                         };
+                        let consumable = cat.consumable_type(self.version.clone());
 
                         self.ship_ability_variants.insert(
                             (*entity_id, consumable),
@@ -299,7 +299,11 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         // Cache division mate entity IDs (skip in clan battles where the whole team is one div)
-        if !controller.battle_type().is_clan_battle() {
+        if !controller
+            .battle_type()
+            .known()
+            .is_some_and(|bt| bt.is_clan_battle())
+        {
             let self_state = players
                 .values()
                 .find(|p| p.relation().is_self())
@@ -348,10 +352,10 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 };
                 let consumable_type = cat.consumable_type_raw().to_string();
-                if let Some(consumable) = Consumable::from_consumable_type(&consumable_type) {
-                    self.ship_ability_icons
-                        .insert((*entity_id, consumable), param.name().to_string());
-                }
+                let consumable =
+                    Consumable::from_consumable_type(&consumable_type, self.version.clone());
+                self.ship_ability_icons
+                    .insert((*entity_id, consumable), param.name().to_string());
             }
         }
     }
@@ -360,18 +364,31 @@ impl<'a> MinimapRenderer<'a> {
     ///
     /// Uses the per-ship ability mapping if available, falling back to the
     /// hardcoded base PCY name.
-    fn consumable_icon_key(&self, entity_id: EntityId, consumable: Consumable) -> Option<String> {
-        if let Some(name) = self.ship_ability_icons.get(&(entity_id, consumable)) {
+    fn consumable_icon_key(
+        &self,
+        entity_id: EntityId,
+        consumable: Recognized<Consumable>,
+    ) -> Option<String> {
+        if let Some(name) = self
+            .ship_ability_icons
+            .get(&(entity_id, consumable.clone()))
+        {
             return Some(name.clone());
         }
-        consumable_to_base_icon_key(consumable)
+        consumable
+            .into_known()
+            .and_then(consumable_to_base_icon_key)
     }
 
     /// Look up detection radius for a consumable on a specific ship from GameParams.
     ///
     /// Returns radius in meters, or None if not a detection consumable
     /// or if the lookup fails.
-    fn get_consumable_radius(&self, entity_id: EntityId, consumable: Consumable) -> Option<Meters> {
+    fn get_consumable_radius(
+        &self,
+        entity_id: EntityId,
+        consumable: Recognized<Consumable>,
+    ) -> Option<Meters> {
         // Look up ship-specific ability variant (cached from populate_players)
         let (ability_name, variant_name) =
             self.ship_ability_variants.get(&(entity_id, consumable))?;
@@ -404,6 +421,7 @@ impl<'a> MinimapRenderer<'a> {
             let icon_base = param
                 .as_ref()
                 .and_then(|p| p.species())
+                .and_then(|sp| sp.known().cloned())
                 .map(|sp| species_to_icon_base(sp, is_consumable, ammo_type))
                 .unwrap_or_else(|| "fighter".to_string());
             let icon_dir = match category {
@@ -437,7 +455,7 @@ impl<'a> MinimapRenderer<'a> {
 
         let vehicle = controller.entities_by_id().get(entity_id)?.vehicle_ref()?;
         let vehicle = vehicle.borrow();
-        let weapon = vehicle.props().selected_weapon();
+        let weapon = vehicle.props().selected_weapon().known()?;
         match weapon {
             WeaponType::Artillery => {
                 let ammo_param_id = controller.selected_ammo().get(entity_id)?;
@@ -455,7 +473,6 @@ impl<'a> MinimapRenderer<'a> {
             WeaponType::Planes => Some(COLOR_PLANES),
             WeaponType::Pinger => Some(COLOR_SONAR),
             WeaponType::Secondaries => Some(COLOR_HE),
-            _ => None,
         }
     }
 
@@ -467,7 +484,7 @@ impl<'a> MinimapRenderer<'a> {
     ) -> Option<&'static str> {
         let vehicle = controller.entities_by_id().get(entity_id)?.vehicle_ref()?;
         let vehicle = vehicle.borrow();
-        match vehicle.props().buoyancy_current_state() {
+        match vehicle.props().buoyancy_current_state().known()? {
             DepthState::Periscope => Some(" (Scope)"),
             DepthState::Working => Some(" (30m)"),
             DepthState::Invulnerable => Some(" (60m)"),
@@ -1333,7 +1350,7 @@ impl<'a> MinimapRenderer<'a> {
                     if still_active && past_start {
                         // Collect icon key
                         if let Some(icon_key) =
-                            self.consumable_icon_key(*entity_id, active.consumable)
+                            self.consumable_icon_key(*entity_id, active.consumable.clone())
                         {
                             icon_keys.push(icon_key);
                         }
@@ -1341,17 +1358,17 @@ impl<'a> MinimapRenderer<'a> {
                         // Emit radius for detection consumables (radar, hydro, hydrophone)
                         // Skip fighter consumables — their patrol radius is drawn at the plane position, not the ship
                         if matches!(
-                            active.consumable,
-                            Consumable::CallFighters | Consumable::CatapultFighter
+                            active.consumable.known(),
+                            Some(Consumable::CallFighters | Consumable::CatapultFighter)
                         ) {
                             // no detection radius for fighters
                         } else if let Some(radius) =
-                            self.get_consumable_radius(*entity_id, active.consumable)
+                            self.get_consumable_radius(*entity_id, active.consumable.clone())
                         {
                             let space_size = map_info.space_size as f32;
                             let px_radius =
                                 (radius.value() / 30.0 / space_size * MINIMAP_SIZE as f32) as i32;
-                            let color = consumable_radius_color(active.consumable, is_friendly);
+                            let color = consumable_radius_color(&active.consumable, is_friendly);
                             commands.push(DrawCommand::ConsumableRadius {
                                 pos,
                                 radius_px: px_radius,
@@ -1413,7 +1430,7 @@ impl<'a> MinimapRenderer<'a> {
                 let Some(vehicle) = ship_param.vehicle() else {
                     continue;
                 };
-                let species = ship_param.species();
+                let species = ship_param.species().and_then(|s| s.known()).cloned();
 
                 // Get vehicle entity for ship config (modernizations, skills)
                 let vehicle_entity = controller
@@ -1430,8 +1447,11 @@ impl<'a> MinimapRenderer<'a> {
                 });
 
                 // Use Vehicle::resolve_ranges to get all range data
-                let mut ranges =
-                    vehicle.resolve_ranges(Some(self.game_params), hull_name.as_deref());
+                let mut ranges = vehicle.resolve_ranges(
+                    Some(self.game_params),
+                    hull_name.as_deref(),
+                    self.version.clone(),
+                );
 
                 // Apply build modifiers (modernizations + captain skills)
                 if let Some(ref species) = species {
@@ -1728,11 +1748,32 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 10. Timer
+        // 10. Timer / Pre-battle countdown
         if self.options.show_timer {
-            commands.push(DrawCommand::Timer {
-                seconds: clock.seconds(),
-            });
+            let stage = controller.battle_stage();
+
+            match stage {
+                Some(BattleStage::Battle) => {
+                    // BattleStage::Battle (raw value 1) = pre-battle countdown period
+                    if let Some(time_left) = controller.time_left() {
+                        if time_left > 0 {
+                            commands.push(DrawCommand::PreBattleCountdown { seconds: time_left });
+                        }
+                    }
+                }
+                _ => {
+                    // BattleStage::Waiting (raw value 0) = battle active, or stage unknown
+                    let elapsed = controller
+                        .battle_start_clock()
+                        .map(|start| clock.seconds() - start.seconds())
+                        .unwrap_or(0.0)
+                        .max(0.0);
+                    commands.push(DrawCommand::Timer {
+                        time_remaining: controller.time_left(),
+                        elapsed,
+                    });
+                }
+            }
         }
 
         // 11. Battle result overlay (shown as soon as winner is known)
@@ -1761,20 +1802,20 @@ impl<'a> MinimapRenderer<'a> {
 }
 
 /// Human-readable description for how the battle ended.
-fn finish_type_description(ft: &FinishType) -> String {
-    match ft {
-        FinishType::Extermination => "All enemy ships destroyed".into(),
-        FinishType::BaseCaptured => "Base captured".into(),
-        FinishType::Timeout => "Time expired".into(),
-        FinishType::Score => "Score limit reached".into(),
-        FinishType::ScoreOnTimeout => "Leading on points at timeout".into(),
-        FinishType::ScoreZero => "Points depleted".into(),
-        FinishType::ScoreExcess => "Score limit exceeded".into(),
-        FinishType::Failure => "Mission failed".into(),
-        FinishType::Technical => "Technical finish".into(),
-        FinishType::PveMainTaskSucceeded => "Mission accomplished".into(),
-        FinishType::PveMainTaskFailed => "Mission failed".into(),
-        FinishType::Unknown | FinishType::Other(_) => "Battle ended".into(),
+fn finish_type_description(ft: &Recognized<FinishType>) -> String {
+    match ft.known() {
+        Some(FinishType::Extermination) => "All enemy ships destroyed".into(),
+        Some(FinishType::BaseCaptured) => "Base captured".into(),
+        Some(FinishType::Timeout) => "Time expired".into(),
+        Some(FinishType::Score) => "Score limit reached".into(),
+        Some(FinishType::ScoreOnTimeout) => "Leading on points at timeout".into(),
+        Some(FinishType::ScoreZero) => "Points depleted".into(),
+        Some(FinishType::ScoreExcess) => "Score limit exceeded".into(),
+        Some(FinishType::Failure) => "Mission failed".into(),
+        Some(FinishType::Technical) => "Technical finish".into(),
+        Some(FinishType::PveMainTaskSucceeded) => "Mission accomplished".into(),
+        Some(FinishType::PveMainTaskFailed) => "Mission failed".into(),
+        _ => "Battle ended".into(),
     }
 }
 
@@ -1869,7 +1910,7 @@ fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) 
         match species {
             Species::Dive => format!("bomber_{ammo}"),
             _ => {
-                let species_name: &str = (&species).into();
+                let species_name = format!("{:?}", species);
                 species_name.to_case(Case::Snake)
             }
         }
@@ -1910,12 +1951,7 @@ fn consumable_to_base_icon_key(c: Consumable) -> Option<String> {
         Consumable::Hydrophone => "PCY045_Hydrophone",
         Consumable::EnhancedRudders => "PCY046_FastDeepRudders",
         Consumable::SubmarineSurveillance => "PCY048_SubmarineLocator",
-        Consumable::ReserveBattery
-        | Consumable::Invulnerable
-        | Consumable::HealForsage
-        | Consumable::DepthCharges
-        | Consumable::WeaponReloadBooster
-        | Consumable::Unknown(_) => return None,
+        _ => return None,
     };
     Some(key.to_string())
 }

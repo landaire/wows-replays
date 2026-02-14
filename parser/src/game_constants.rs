@@ -1,8 +1,12 @@
+use std::sync::LazyLock;
+
 use wowsunpack::data::idx::FileNode;
 use wowsunpack::data::pkg::PkgFileLoader;
 pub use wowsunpack::game_constants::{
     BattleConstants, ChannelConstants, CommonConstants, ShipsConstants, WeaponsConstants,
 };
+
+pub static DEFAULT_GAME_CONSTANTS: LazyLock<GameConstants> = LazyLock::new(GameConstants::defaults);
 
 /// Composed game constants that knows which sub-constants are needed.
 #[derive(Clone)]

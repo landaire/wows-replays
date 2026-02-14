@@ -13,7 +13,7 @@ use variantly::Variantly;
 use wowsunpack::{
     data::{ResourceLoader, Version},
     game_params::types::{BigWorldDistance, CrewSkill, Param, Species},
-    game_types::BattleType,
+    game_types::{BattleStage, BattleType},
     rpc::typedefs::ArgValue,
 };
 
@@ -25,7 +25,8 @@ use crate::{
     analyzer::{
         analyzer::Analyzer,
         decoder::{
-            ChatMessageExtra, DeathCause, DepthState, FinishType, PlayerStateData, WeaponType,
+            ChatMessageExtra, DeathCause, DepthState, FinishType, PlayerStateData, Recognized,
+            WeaponType,
         },
     },
     nested_property_path::{PropertyNestLevel, UpdateAction},
@@ -389,14 +390,14 @@ pub struct BattleReport {
     version: Version,
     map_name: String,
     game_mode: String,
-    game_type: BattleType,
+    game_type: Recognized<BattleType>,
     match_group: String,
     players: Vec<Rc<Player>>,
     game_chat: Vec<GameMessage>,
     battle_results: Option<String>,
     frags: HashMap<Rc<Player>, Vec<DeathInfo>>,
     match_result: Option<BattleResult>,
-    finish_type: Option<FinishType>,
+    finish_type: Option<Recognized<FinishType>>,
     capture_points: Vec<CapturePointState>,
     buff_zones: HashMap<EntityId, BuffZoneState>,
     captured_buffs: Vec<CapturedBuff>,
@@ -429,8 +430,8 @@ impl BattleReport {
         self.game_mode.as_ref()
     }
 
-    pub fn game_type(&self) -> BattleType {
-        self.game_type
+    pub fn game_type(&self) -> &Recognized<BattleType> {
+        &self.game_type
     }
 
     pub fn battle_results(&self) -> Option<&str> {
@@ -475,7 +476,7 @@ impl BattleReport {
         &self.buildings
     }
 
-    pub fn finish_type(&self) -> Option<&FinishType> {
+    pub fn finish_type(&self) -> Option<&Recognized<FinishType>> {
         self.finish_type.as_ref()
     }
 }
@@ -500,7 +501,7 @@ pub struct BattleController<'res, 'replay, G> {
     match_finished: bool,
     battle_end_clock: Option<GameClock>,
     winning_team: Option<i8>,
-    finish_type: Option<FinishType>,
+    finish_type: Option<Recognized<FinishType>>,
     arena_id: i64,
     current_clock: GameClock,
 
@@ -542,6 +543,14 @@ pub struct BattleController<'res, 'replay, G> {
 
     /// Seconds remaining in the match, updated from BattleLogic `timeLeft` EntityProperty.
     time_left: Option<i64>,
+
+    /// Current battle stage raw value: 1 = pre-battle countdown, 0 = battle active, 3 = results.
+    /// Note: wowsunpack maps 0=Waiting, 1=Battle — names don't match game semantics.
+    battle_stage: Option<i64>,
+
+    /// Clock time when battleStage first transitioned to 0 (battle active / BattleStage::Waiting).
+    /// Allows backends to compute elapsed battle time from any absolute GameClock.
+    battle_start_clock: Option<GameClock>,
 
     /// Optional game constants loaded from game data for resolving
     /// death causes, camera modes, entity types, etc.
@@ -610,6 +619,8 @@ where
             target_yaws: HashMap::default(),
             scoring_rules: None,
             time_left: None,
+            battle_stage: None,
+            battle_start_clock: None,
             game_constants,
         }
     }
@@ -647,6 +658,8 @@ where
         self.target_yaws.clear();
         self.scoring_rules = None;
         self.time_left = None;
+        self.battle_stage = None;
+        self.battle_start_clock = None;
     }
 
     pub fn players(&self) -> &[SharedPlayer] {
@@ -679,8 +692,13 @@ where
         self.game_meta.clientVersionFromExe.as_ref()
     }
 
-    pub fn game_type(&self) -> BattleType {
-        self.game_meta.gameType
+    pub fn game_type(&self) -> Recognized<BattleType> {
+        BattleType::from_value(&self.game_meta.gameType, self.version.clone())
+    }
+
+    fn constants(&self) -> &GameConstants {
+        self.game_constants
+            .unwrap_or(&crate::game_constants::DEFAULT_GAME_CONSTANTS)
     }
 
     fn handle_chat_message<'packet>(
@@ -1011,7 +1029,7 @@ where
         match entity_type {
             EntityType::Vehicle => {
                 let mut props = VehicleProps::default();
-                props.update_from_args(&packet.props, self.version);
+                props.update_from_args(&packet.props, self.version, self.constants());
 
                 let captain_id = props.crew_modifiers_compact_params.params_id;
                 let captain = if captain_id.raw() != 0 {
@@ -1412,14 +1430,25 @@ impl CrewModifiersCompactParams {
 }
 
 trait UpdateFromReplayArgs {
-    fn update_by_name(&mut self, name: &str, value: &ArgValue<'_>, version: Version) {
+    fn update_by_name(
+        &mut self,
+        name: &str,
+        value: &ArgValue<'_>,
+        version: Version,
+        constants: &GameConstants,
+    ) {
         // This is far from optimal, but is an easy solution for now
         let mut dict = HashMap::with_capacity(1);
         dict.insert(name, value.clone());
-        self.update_from_args(&dict, version);
+        self.update_from_args(&dict, version, constants);
     }
 
-    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version);
+    fn update_from_args(
+        &mut self,
+        args: &HashMap<&str, ArgValue<'_>>,
+        version: Version,
+        constants: &GameConstants,
+    );
 }
 
 macro_rules! set_arg_value {
@@ -1523,7 +1552,12 @@ macro_rules! arg_value_to_type {
 }
 
 impl UpdateFromReplayArgs for CrewModifiersCompactParams {
-    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, _version: Version) {
+    fn update_from_args(
+        &mut self,
+        args: &HashMap<&str, ArgValue<'_>>,
+        _version: Version,
+        _constants: &GameConstants,
+    ) {
         const PARAMS_ID_KEY: &str = "paramsId";
         const IS_IN_ADAPTION_KEY: &str = "isInAdaption";
         const LEARNED_SKILLS_KEY: &str = "learnedSkills";
@@ -1560,7 +1594,7 @@ impl UpdateFromReplayArgs for CrewModifiersCompactParams {
     }
 }
 
-#[derive(Debug, Default, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct VehicleProps {
     ignore_map_borders: bool,
     air_defense_dispersion_radius: f32,
@@ -1571,7 +1605,7 @@ pub struct VehicleProps {
     crew_modifiers_compact_params: CrewModifiersCompactParams,
     laser_target_local_pos: u16,
     anti_air_auras: Vec<AAAura>,
-    selected_weapon: WeaponType,
+    selected_weapon: Recognized<WeaponType>,
     regeneration_health: f32,
     is_on_forsage: bool,
     is_in_rage_mode: bool,
@@ -1615,12 +1649,74 @@ pub struct VehicleProps {
     engine_dir: i8,
     state: VehicleState,
     team_id: i8,
-    buoyancy_current_state: DepthState,
+    buoyancy_current_state: Recognized<DepthState>,
     ui_enabled: bool,
     respawn_time: u16,
     engine_power: u8,
     max_server_speed_raw: u32,
     burning_flags: u16,
+}
+
+impl Default for VehicleProps {
+    fn default() -> Self {
+        Self {
+            ignore_map_borders: false,
+            air_defense_dispersion_radius: 0.0,
+            death_settings: Vec::new(),
+            owner: 0,
+            atba_targets: Vec::new(),
+            effects: Vec::new(),
+            crew_modifiers_compact_params: CrewModifiersCompactParams::default(),
+            laser_target_local_pos: 0,
+            anti_air_auras: Vec::new(),
+            selected_weapon: Recognized::Known(WeaponType::Artillery),
+            regeneration_health: 0.0,
+            is_on_forsage: false,
+            is_in_rage_mode: false,
+            has_air_targets_in_range: false,
+            torpedo_local_pos: 0,
+            air_defense_target_ids: Vec::new(),
+            buoyancy: 0.0,
+            max_health: 0.0,
+            rudders_angle: 0.0,
+            draught: 0.0,
+            target_local_pos: 0,
+            triggered_skills_data: Vec::new(),
+            regenerated_health: 0.0,
+            blocked_controls: 0,
+            is_invisible: false,
+            is_fog_horn_on: false,
+            server_speed_raw: 0,
+            regen_crew_hp_limit: 0.0,
+            miscs_presets_status: Vec::new(),
+            buoyancy_current_waterline: 0.0,
+            is_alive: false,
+            is_bot: false,
+            visibility_flags: 0,
+            heat_infos: Vec::new(),
+            buoyancy_rudder_index: 0,
+            is_anti_air_mode: false,
+            speed_sign_dir: 0,
+            oil_leak_state: 0,
+            sounds: Vec::new(),
+            ship_config: ShipConfig::default(),
+            wave_local_pos: 0,
+            has_active_main_squadron: false,
+            weapon_lock_flags: 0,
+            deep_rudders_angle: 0.0,
+            debug_text: Vec::new(),
+            health: 0.0,
+            engine_dir: 0,
+            state: VehicleState::default(),
+            team_id: 0,
+            buoyancy_current_state: Recognized::Known(DepthState::Surface),
+            ui_enabled: false,
+            respawn_time: 0,
+            engine_power: 0,
+            max_server_speed_raw: 0,
+            burning_flags: 0,
+        }
+    }
 }
 
 impl VehicleProps {
@@ -1660,7 +1756,7 @@ impl VehicleProps {
         self.anti_air_auras.as_ref()
     }
 
-    pub fn selected_weapon(&self) -> &WeaponType {
+    pub fn selected_weapon(&self) -> &Recognized<WeaponType> {
         &self.selected_weapon
     }
 
@@ -1820,7 +1916,7 @@ impl VehicleProps {
         self.team_id
     }
 
-    pub fn buoyancy_current_state(&self) -> &DepthState {
+    pub fn buoyancy_current_state(&self) -> &Recognized<DepthState> {
         &self.buoyancy_current_state
     }
 
@@ -1846,14 +1942,12 @@ impl VehicleProps {
 }
 
 impl UpdateFromReplayArgs for VehicleProps {
-    fn update_by_name(&mut self, name: &str, value: &ArgValue<'_>, version: Version) {
-        // This is far from optimal, but is an easy solution for now
-        let mut dict = HashMap::with_capacity(1);
-        dict.insert(name, value.clone());
-        self.update_from_args(&dict, version);
-    }
-
-    fn update_from_args(&mut self, args: &HashMap<&str, ArgValue<'_>>, version: Version) {
+    fn update_from_args(
+        &mut self,
+        args: &HashMap<&str, ArgValue<'_>>,
+        version: Version,
+        constants: &GameConstants,
+    ) {
         const IGNORE_MAP_BORDERS_KEY: &str = "ignoreMapBorders";
         const AIR_DEFENSE_DISPERSION_RADIUS_KEY: &str = "airDefenseDispRadius";
         const DEATH_SETTINGS_KEY: &str = "deathSettings";
@@ -1951,6 +2045,7 @@ impl UpdateFromReplayArgs for VehicleProps {
             self.crew_modifiers_compact_params.update_from_args(
                 arg_value_to_type!(args, CREW_MODIFIERS_COMPACT_PARAMS_KEY, HashMap<(), ()>),
                 version,
+                constants,
             );
         }
 
@@ -1963,8 +2058,13 @@ impl UpdateFromReplayArgs for VehicleProps {
 
         // TODO: AntiAirAuras
         if args.contains_key(SELECTED_WEAPON_KEY) {
-            self.selected_weapon =
-                WeaponType::from_id(arg_value_to_type!(args, SELECTED_WEAPON_KEY, u32));
+            if let Some(wt) = WeaponType::from_id(
+                arg_value_to_type!(args, SELECTED_WEAPON_KEY, u32) as i32,
+                constants.ships(),
+                version,
+            ) {
+                self.selected_weapon = wt;
+            }
         }
 
         set_arg_value!(self.is_on_forsage, args, IS_ON_FORSAGE_KEY, bool);
@@ -2064,8 +2164,13 @@ impl UpdateFromReplayArgs for VehicleProps {
 
         set_arg_value!(self.team_id, args, TEAM_ID_KEY, i8);
         if args.contains_key(BUOYANCY_CURRENT_STATE_KEY) {
-            self.buoyancy_current_state =
-                DepthState::from_id(arg_value_to_type!(args, BUOYANCY_CURRENT_STATE_KEY, u8));
+            if let Some(ds) = DepthState::from_id(
+                arg_value_to_type!(args, BUOYANCY_CURRENT_STATE_KEY, u8) as i32,
+                constants.battle(),
+                version,
+            ) {
+                self.buoyancy_current_state = ds;
+            }
         }
         set_arg_value!(self.ui_enabled, args, UI_ENABLED_KEY, bool);
         set_arg_value!(self.respawn_time, args, RESPAWN_TIME_KEY, u16);
@@ -2086,7 +2191,7 @@ pub struct DeathInfo {
     /// as there's no known way to detect this event.
     time_lived: Duration,
     killer: EntityId,
-    cause: DeathCause,
+    cause: Recognized<DeathCause>,
 }
 
 impl DeathInfo {
@@ -2098,7 +2203,7 @@ impl DeathInfo {
         self.killer
     }
 
-    pub fn cause(&self) -> &DeathCause {
+    pub fn cause(&self) -> &Recognized<DeathCause> {
         &self.cause
     }
 }
@@ -2223,7 +2328,7 @@ struct Death {
     timestamp: Duration,
     killer: EntityId,
     victim: EntityId,
-    cause: DeathCause,
+    cause: Recognized<DeathCause>,
 }
 
 impl<'res, 'replay, G> BattleControllerState for BattleController<'res, 'replay, G>
@@ -2310,7 +2415,7 @@ where
         self.winning_team
     }
 
-    fn finish_type(&self) -> Option<&FinishType> {
+    fn finish_type(&self) -> Option<&Recognized<FinishType>> {
         self.finish_type.as_ref()
     }
 
@@ -2326,8 +2431,8 @@ where
         &self.selected_ammo
     }
 
-    fn battle_type(&self) -> BattleType {
-        self.game_meta.gameType
+    fn battle_type(&self) -> Recognized<BattleType> {
+        BattleType::from_value(&self.game_meta.gameType, self.version.clone())
     }
 
     fn scoring_rules(&self) -> Option<&ScoringRules> {
@@ -2336,6 +2441,15 @@ where
 
     fn time_left(&self) -> Option<i64> {
         self.time_left
+    }
+
+    fn battle_stage(&self) -> Option<BattleStage> {
+        let raw = self.battle_stage?;
+        self.constants().common().battle_stage(raw as i32).cloned()
+    }
+
+    fn battle_start_clock(&self) -> Option<GameClock> {
+        self.battle_start_clock
     }
 }
 
@@ -2349,10 +2463,12 @@ where
 
         self.current_clock = packet.clock;
 
+        let default_constants = &*crate::game_constants::DEFAULT_GAME_CONSTANTS;
+        let constants = self.game_constants.unwrap_or(default_constants);
         let packet_decoder = crate::analyzer::decoder::PacketDecoder::builder()
             .version(self.version.clone())
-            .maybe_battle_constants(self.game_constants.map(|gc| gc.battle()))
-            .maybe_common_constants(self.game_constants.map(|gc| gc.common()))
+            .battle_constants(constants.battle())
+            .common_constants(constants.common())
             .build();
         let decoded = packet_decoder.decode(packet);
         match decoded.payload {
@@ -2449,9 +2565,12 @@ where
                     && let Some(vehicle) = entity.vehicle_ref()
                 {
                     let mut vehicle = RefCell::borrow_mut(vehicle);
-                    vehicle
-                        .props
-                        .update_by_name(prop.property, &prop.value, self.version);
+                    vehicle.props.update_by_name(
+                        prop.property,
+                        &prop.value,
+                        self.version,
+                        self.constants(),
+                    );
                 }
                 // Handle targetLocalPos — packed turret aim direction
                 if prop.property == "targetLocalPos"
@@ -2475,6 +2594,19 @@ where
                         self.time_left = Some(v);
                     }
                 }
+                // Handle BattleLogic battleStage property
+                if prop.property == "battleStage" {
+                    if let Some(v) = Self::arg_to_i64(&prop.value) {
+                        // Record when battle becomes active (raw value 0 = BattleStage::Waiting)
+                        if self.battle_start_clock.is_none() {
+                            let resolved = constants.common().battle_stage(v as i32).copied();
+                            if matches!(resolved, Some(BattleStage::Waiting)) {
+                                self.battle_start_clock = Some(packet.clock);
+                            }
+                        }
+                        self.battle_stage = Some(v);
+                    }
+                }
                 // Handle BattleLogic battleResult property (winning team + finish reason)
                 if prop.property == "battleResult"
                     && let Some(dict) = Self::as_dict(&prop.value)
@@ -2488,7 +2620,11 @@ where
                     if let Some(reason) = dict.get("finishReason").and_then(|v| Self::arg_to_i64(v))
                         && reason > 0
                     {
-                        self.finish_type = Some(FinishType::from_id(reason as u8));
+                        self.finish_type = FinishType::from_id(
+                            reason as i32,
+                            constants.battle(),
+                            self.version.clone(),
+                        );
                     }
                 }
             }

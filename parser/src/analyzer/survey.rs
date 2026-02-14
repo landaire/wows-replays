@@ -3,6 +3,7 @@ use crate::analyzer::*;
 use crate::packet2::Packet;
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
+use wowsunpack::game_constants::{DEFAULT_BATTLE_CONSTANTS, DEFAULT_COMMON_CONSTANTS};
 
 use super::analyzer::Analyzer;
 
@@ -56,6 +57,8 @@ impl SurveyBuilder {
             packet_decoder: PacketDecoder::builder()
                 .version(version)
                 .audit(true)
+                .battle_constants(&DEFAULT_BATTLE_CONSTANTS)
+                .common_constants(&DEFAULT_COMMON_CONSTANTS)
                 .build(),
         })
     }

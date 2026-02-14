@@ -221,7 +221,12 @@ fn main() -> Result<(), Report> {
     config.apply_cli_overrides(&matches);
     let options = config.into_render_options();
 
-    let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, options);
+    let mut renderer = MinimapRenderer::new(
+        map_info.clone(),
+        &game_params,
+        replay_version.clone(),
+        options,
+    );
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);
 
     let mut controller = BattleController::new(

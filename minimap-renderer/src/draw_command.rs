@@ -1,4 +1,4 @@
-use wows_replays::analyzer::decoder::DeathCause;
+use wows_replays::analyzer::decoder::{DeathCause, Recognized};
 
 use crate::map_data::MinimapPos;
 
@@ -66,7 +66,7 @@ pub struct KillFeedEntry {
     /// Victim's team color
     pub victim_color: [u8; 3],
     /// How the victim died
-    pub cause: DeathCause,
+    pub cause: Recognized<DeathCause>,
 }
 
 /// A high-level draw command emitted by the renderer.
@@ -269,8 +269,15 @@ pub enum DrawCommand {
         /// Detailed breakdown for tooltip display
         breakdown: crate::advantage::AdvantageBreakdown,
     },
-    /// Game timer
-    Timer { seconds: f32 },
+    /// Game timer (during battle)
+    Timer {
+        /// Seconds remaining in the match (from BattleLogic timeLeft), if available
+        time_remaining: Option<i64>,
+        /// Seconds elapsed since battle started (excludes pre-battle countdown)
+        elapsed: f32,
+    },
+    /// Pre-battle countdown overlay (large centered number before battle starts)
+    PreBattleCountdown { seconds: i64 },
     /// Kill feed entries with rich data
     KillFeed { entries: Vec<KillFeedEntry> },
     /// Chat overlay on the left side of the minimap

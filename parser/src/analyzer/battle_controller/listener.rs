@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use wowsunpack::game_types::BattleType;
+use wowsunpack::game_types::{BattleStage, BattleType};
+use wowsunpack::recognized::Recognized;
 
 use crate::Rc;
 use crate::analyzer::decoder::FinishType;
@@ -79,7 +80,7 @@ pub trait BattleControllerState {
     fn winning_team(&self) -> Option<i8>;
 
     /// How the battle ended (extermination, score, timeout, etc.). None if not yet decided.
-    fn finish_type(&self) -> Option<&FinishType>;
+    fn finish_type(&self) -> Option<&Recognized<FinishType>>;
 
     /// Main battery turret yaws per entity (group 0 only).
     /// Each entry maps entity_id -> vec of turret yaws in radians (relative to ship heading).
@@ -94,7 +95,7 @@ pub trait BattleControllerState {
     fn selected_ammo(&self) -> &HashMap<EntityId, GameParamId>;
 
     /// The battle type (Random, Ranked, Clan, Co-op, etc.)
-    fn battle_type(&self) -> BattleType;
+    fn battle_type(&self) -> Recognized<BattleType>;
 
     /// Scoring rules parsed from BattleLogic (win score, hold reward/period, cap indices).
     /// None before the BattleLogic EntityCreate packet is processed.
@@ -103,4 +104,13 @@ pub trait BattleControllerState {
     /// Seconds remaining in the match, updated from BattleLogic `timeLeft` EntityProperty.
     /// None before the first timeLeft update.
     fn time_left(&self) -> Option<i64>;
+
+    /// Current battle stage: Waiting (pre-battle countdown), Battle (active), Ended, etc.
+    /// None before the first battleStage EntityProperty update.
+    fn battle_stage(&self) -> Option<BattleStage>;
+
+    /// Clock time when the battle stage first transitioned to Battle.
+    /// Backends can compute elapsed battle time as `clock - battle_start_clock`.
+    /// None if the battle hasn't started yet.
+    fn battle_start_clock(&self) -> Option<GameClock>;
 }
