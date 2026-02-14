@@ -912,10 +912,10 @@ impl<'a> MinimapRenderer<'a> {
 
             if detected {
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
-                if let Some(ship_pos) = world {
-                    // Have world position — use it (higher precision than minimap)
-                    let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
-                    // Always record positions so trails are available when toggled on mid-replay
+                if let Some(mm) = minimap {
+                    // Use minimap position — it's authoritative for the minimap view
+                    // and avoids stale world positions from previous detections.
+                    let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
                     let speed_raw = controller
                         .entities_by_id()
                         .get(entity_id)
@@ -948,49 +948,11 @@ impl<'a> MinimapRenderer<'a> {
                             background_alpha: HP_BAR_BG_ALPHA,
                         });
                     }
-                } else if let Some(mm) = minimap {
-                    // Minimap-only position
-                    let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
-                    // Always record positions so trails are available when toggled on mid-replay
-                    let speed_raw = controller
-                        .entities_by_id()
-                        .get(entity_id)
-                        .and_then(|e| e.vehicle_ref())
-                        .map(|v| v.borrow().props().server_speed_raw())
-                        .unwrap_or(0);
-                    self.record_position(*entity_id, px, clock, speed_raw);
-                    commands.push(DrawCommand::Ship {
-                        pos: px,
-                        yaw,
-                        species: species.clone(),
-                        color: Some(color),
-                        visibility: ShipVisibility::MinimapOnly,
-                        opacity: 1.0,
-                        is_self: relation.is_self(),
-                        player_name: player_name.clone(),
-                        ship_name: ship_name.clone(),
-                        is_detected_teammate,
-                        name_color,
-                    });
-                    if self.options.show_hp_bars
-                        && let Some(frac) = health_fraction
-                    {
-                        let fill_color = hp_bar_color(frac);
-                        commands.push(DrawCommand::HealthBar {
-                            pos: px,
-                            fraction: frac,
-                            fill_color,
-                            background_color: HP_BAR_BG_COLOR,
-                            background_alpha: HP_BAR_BG_ALPHA,
-                        });
-                    }
                 }
             } else {
-                // Undetected — prefer world position, fall back to minimap
+                // Undetected — use minimap position (last known)
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
-                let px = if let Some(ship_pos) = world {
-                    map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE)
-                } else if let Some(mm) = minimap {
+                let px = if let Some(mm) = minimap {
                     map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
                 } else {
                     continue;
@@ -1030,9 +992,7 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 }
                 // Need a position for this ship
-                let px = if let Some(sp) = ship_positions.get(entity_id) {
-                    map_info.world_to_minimap(sp.position, MINIMAP_SIZE)
-                } else if let Some(mm) = minimap_positions.get(entity_id) {
+                let px = if let Some(mm) = minimap_positions.get(entity_id) {
                     map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
                 } else {
                     continue;

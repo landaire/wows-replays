@@ -2526,22 +2526,27 @@ where
                 arg1: _,
             } => {
                 for update in updates {
-                    let visible = !update.disappearing;
-                    // When a ship disappears, preserve the last known heading
-                    // (disappearing updates often have unreliable heading=0)
-                    let heading = if update.disappearing {
-                        self.minimap_positions
-                            .get(&update.entity_id)
-                            .map(|prev| prev.heading)
-                            .unwrap_or(update.heading)
+                    // Determine visibility from position, not the disappearing
+                    // flag — matching the Python renderer's approach. The sentinel
+                    // position (-1.5, -1.5) means the ship is not on the minimap.
+                    let is_sentinel = update.position.x == -1.5 && update.position.y == -1.5;
+                    let visible = !is_sentinel;
+                    // When position is the sentinel, preserve last known position
+                    // and heading so undetected ships render at their last location.
+                    let (position, heading) = if is_sentinel {
+                        let prev = self.minimap_positions.get(&update.entity_id);
+                        (
+                            prev.map(|p| p.position).unwrap_or(update.position),
+                            prev.map(|p| p.heading).unwrap_or(update.heading),
+                        )
                     } else {
-                        update.heading
+                        (update.position, update.heading)
                     };
                     self.minimap_positions.insert(
                         update.entity_id,
                         MinimapPosition {
                             entity_id: update.entity_id,
-                            position: update.position,
+                            position,
                             heading,
                             visible,
                             last_updated: packet.clock,

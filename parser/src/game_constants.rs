@@ -68,4 +68,24 @@ impl GameConstants {
     pub fn camera_mode_name(&self, id: i32) -> Option<&str> {
         self.battle.camera_mode(id)
     }
+
+    pub fn battle_mut(&mut self) -> &mut BattleConstants {
+        &mut self.battle
+    }
+
+    pub fn ships_mut(&mut self) -> &mut ShipsConstants {
+        &mut self.ships
+    }
+
+    pub fn weapons_mut(&mut self) -> &mut WeaponsConstants {
+        &mut self.weapons
+    }
+
+    pub fn common_mut(&mut self) -> &mut CommonConstants {
+        &mut self.common
+    }
+
+    pub fn channel_mut(&mut self) -> &mut ChannelConstants {
+        &mut self.channel
+    }
 }
