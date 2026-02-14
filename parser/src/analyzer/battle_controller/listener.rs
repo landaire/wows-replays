@@ -113,4 +113,12 @@ pub trait BattleControllerState {
     /// Backends can compute elapsed battle time as `clock - battle_start_clock`.
     /// None if the battle hasn't started yet.
     fn battle_start_clock(&self) -> Option<GameClock>;
+
+    /// Convert an absolute game clock to elapsed seconds since battle start.
+    /// If battle start is unknown, treats clock 0.0 as battle start.
+    fn game_clock_to_elapsed(&self, clock: f32) -> f32;
+
+    /// Convert elapsed seconds since battle start back to an absolute game clock value.
+    /// If battle start is unknown, treats clock 0.0 as battle start.
+    fn elapsed_to_game_clock(&self, elapsed: f32) -> f32;
 }

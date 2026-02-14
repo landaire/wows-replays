@@ -403,6 +403,7 @@ pub struct BattleReport {
     captured_buffs: Vec<CapturedBuff>,
     team_scores: Vec<TeamScore>,
     buildings: Vec<BuildingEntity>,
+    battle_start_clock: Option<GameClock>,
 }
 
 impl BattleReport {
@@ -478,6 +479,20 @@ impl BattleReport {
 
     pub fn finish_type(&self) -> Option<&Recognized<FinishType>> {
         self.finish_type.as_ref()
+    }
+
+    /// Convert an absolute game clock to elapsed seconds since battle start.
+    /// If battle start is unknown, treats clock 0.0 as battle start.
+    pub fn game_clock_to_elapsed(&self, clock: f32) -> f32 {
+        let start = self.battle_start_clock.map(|c| c.seconds()).unwrap_or(0.0);
+        (clock - start).max(0.0)
+    }
+
+    /// Convert elapsed seconds since battle start back to an absolute game clock value.
+    /// If battle start is unknown, treats clock 0.0 as battle start.
+    pub fn elapsed_to_game_clock(&self, elapsed: f32) -> f32 {
+        let start = self.battle_start_clock.map(|c| c.seconds()).unwrap_or(0.0);
+        start + elapsed
     }
 }
 
@@ -900,6 +915,7 @@ where
             captured_buffs: self.captured_buffs,
             team_scores: self.team_scores,
             buildings,
+            battle_start_clock: self.battle_start_clock,
         }
     }
 
@@ -2450,6 +2466,16 @@ where
 
     fn battle_start_clock(&self) -> Option<GameClock> {
         self.battle_start_clock
+    }
+
+    fn game_clock_to_elapsed(&self, clock: f32) -> f32 {
+        let start = self.battle_start_clock.map(|c| c.seconds()).unwrap_or(0.0);
+        (clock - start).max(0.0)
+    }
+
+    fn elapsed_to_game_clock(&self, elapsed: f32) -> f32 {
+        let start = self.battle_start_clock.map(|c| c.seconds()).unwrap_or(0.0);
+        start + elapsed
     }
 }
 

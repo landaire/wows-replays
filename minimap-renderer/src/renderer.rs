@@ -698,6 +698,25 @@ impl<'a> MinimapRenderer<'a> {
                     (None, None)
                 };
 
+                // Team advantage indicator
+                let (advantage_label, advantage_team, advantage_breakdown) =
+                    if self.options.show_advantage {
+                        let result = self.calculate_team_advantage(controller);
+                        match result.advantage {
+                            crate::advantage::TeamAdvantage::Team0(level) => {
+                                (level.label().to_string(), 0, Some(result.breakdown))
+                            }
+                            crate::advantage::TeamAdvantage::Team1(level) => {
+                                (level.label().to_string(), 1, Some(result.breakdown))
+                            }
+                            crate::advantage::TeamAdvantage::Even => {
+                                (String::new(), -1, Some(result.breakdown))
+                            }
+                        }
+                    } else {
+                        (String::new(), -1, None)
+                    };
+
                 commands.push(DrawCommand::ScoreBar {
                     team0: scores[friendly_idx].score as i32,
                     team1: scores[enemy_idx].score as i32,
@@ -706,24 +725,19 @@ impl<'a> MinimapRenderer<'a> {
                     max_score,
                     team0_timer,
                     team1_timer,
+                    advantage_label: advantage_label.clone(),
+                    advantage_team,
                 });
 
-                // Team advantage indicator
-                if self.options.show_advantage {
-                    let result = self.calculate_team_advantage(controller);
-                    let (label, color) = match result.advantage {
-                        crate::advantage::TeamAdvantage::Team0(level) => {
-                            (level.label().to_string(), TEAM0_COLOR)
-                        }
-                        crate::advantage::TeamAdvantage::Team1(level) => {
-                            (level.label().to_string(), TEAM1_COLOR)
-                        }
-                        crate::advantage::TeamAdvantage::Even => (String::new(), [255, 255, 255]),
-                    };
+                if let Some(breakdown) = advantage_breakdown {
                     commands.push(DrawCommand::TeamAdvantage {
-                        label,
-                        color,
-                        breakdown: result.breakdown,
+                        label: advantage_label,
+                        color: match advantage_team {
+                            0 => TEAM0_COLOR,
+                            1 => TEAM1_COLOR,
+                            _ => [255, 255, 255],
+                        },
+                        breakdown,
                     });
                 }
             }

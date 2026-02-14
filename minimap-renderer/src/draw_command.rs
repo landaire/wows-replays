@@ -259,6 +259,11 @@ pub enum DrawCommand {
         team0_timer: Option<String>,
         /// Time-to-win for team 1 (e.g. "3:15"), or None if no caps
         team1_timer: Option<String>,
+        /// Advantage label (e.g. "Strong") to display inside the leading team's bar.
+        /// Empty string if even or advantage tracking is disabled.
+        advantage_label: String,
+        /// Which team has the advantage: 0 = team0, 1 = team1, -1 = even/none
+        advantage_team: i32,
     },
     /// Team advantage indicator (shown in score bar area)
     TeamAdvantage {

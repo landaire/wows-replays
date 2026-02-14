@@ -297,6 +297,44 @@ fn draw_filled_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, color: [u8;
     pm.fill_rect(rect, &paint, Transform::identity(), None);
 }
 
+fn draw_rounded_rect(
+    pm: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    color: [u8; 3],
+    alpha: f32,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let r = radius.min(w / 2.0).min(h / 2.0);
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    let paint = color_paint(color, alpha);
+    pm.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
 // ── Composite drawing functions ────────────────────────────────────────────
 
 /// Draw a capture point zone: filled circle + progress pie + outline + label.
@@ -588,6 +626,8 @@ fn draw_score_bar(
     max_score: i32,
     team0_timer: Option<&str>,
     team1_timer: Option<&str>,
+    advantage_label: &str,
+    advantage_team: i32,
     font: &FontRef,
 ) {
     let width = pm.width() as f32;
@@ -623,42 +663,118 @@ fn draw_score_bar(
 
     let score_scale = PxScale::from(14.0);
     let timer_scale = PxScale::from(12.0);
+    let advantage_scale = PxScale::from(11.0);
     let timer_color: [u8; 3] = [200, 200, 200];
+    let pill_pad_x = 4.0f32;
+    let pill_pad_y = 1.0f32;
+    let pill_radius = 3.0f32;
+    let pill_color: [u8; 3] = [0, 0, 0];
+    let pill_alpha = 0.55f32;
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
-    let (t0w, _) = text_size(score_scale, font, &t0);
+    let (t0w, t0h) = text_size(score_scale, font, &t0);
     let (t1w, _) = text_size(score_scale, font, &t1);
 
-    // Team 0 score: near left edge
-    draw_text_shadow(pm, [255, 255, 255], 8, 2, score_scale, font, &t0);
-    // Team 0 timer: right after score text
+    // ── Measure team 0 pill width ──
+    let mut t0_total_w = t0w as f32;
     if let Some(timer) = team0_timer {
-        draw_text_shadow(
+        let (tw, _) = text_size(timer_scale, font, timer);
+        t0_total_w += 4.0 + tw as f32;
+    }
+    if advantage_team == 0 && !advantage_label.is_empty() {
+        let (aw, _) = text_size(advantage_scale, font, advantage_label);
+        t0_total_w += 6.0 + aw as f32;
+    }
+
+    // ── Measure team 1 pill width ──
+    let mut t1_total_w = t1w as f32;
+    if let Some(timer) = team1_timer {
+        let (tw, _) = text_size(timer_scale, font, timer);
+        t1_total_w += 4.0 + tw as f32;
+    }
+    if advantage_team == 1 && !advantage_label.is_empty() {
+        let (aw, _) = text_size(advantage_scale, font, advantage_label);
+        t1_total_w += 6.0 + aw as f32;
+    }
+
+    // ── Draw team 0 pill background + text ──
+    let t0_pill_x = 8.0 - pill_pad_x;
+    let t0_pill_y = 2.0 - pill_pad_y;
+    draw_rounded_rect(
+        pm,
+        t0_pill_x,
+        t0_pill_y,
+        t0_total_w + pill_pad_x * 2.0,
+        t0h as f32 + pill_pad_y * 2.0,
+        pill_radius,
+        pill_color,
+        pill_alpha,
+    );
+
+    let mut t0_cursor = 8i32;
+    draw_text(pm, [255, 255, 255], t0_cursor, 2, score_scale, font, &t0);
+    t0_cursor += t0w as i32;
+    if let Some(timer) = team0_timer {
+        t0_cursor += 4;
+        draw_text(pm, timer_color, t0_cursor, 3, timer_scale, font, timer);
+        let (tw, _) = text_size(timer_scale, font, timer);
+        t0_cursor += tw as i32;
+    }
+    if advantage_team == 0 && !advantage_label.is_empty() {
+        t0_cursor += 6;
+        draw_text(
             pm,
-            timer_color,
-            8 + t0w as i32 + 4,
-            3,
-            timer_scale,
+            [255, 255, 255],
+            t0_cursor,
+            4,
+            advantage_scale,
             font,
-            timer,
+            advantage_label,
         );
     }
 
-    // Team 1 score: near right edge
-    let t1_x = width as i32 - t1w as i32 - 8;
-    draw_text_shadow(pm, [255, 255, 255], t1_x, 2, score_scale, font, &t1);
-    // Team 1 timer: left of score text
+    // ── Draw team 1 pill background + text ──
+    let t1_pill_x = width - 8.0 - t1_total_w - pill_pad_x;
+    let t1_pill_y = 2.0 - pill_pad_y;
+    draw_rounded_rect(
+        pm,
+        t1_pill_x,
+        t1_pill_y,
+        t1_total_w + pill_pad_x * 2.0,
+        t0h as f32 + pill_pad_y * 2.0,
+        pill_radius,
+        pill_color,
+        pill_alpha,
+    );
+
+    // Team 1 draws right-to-left: [advantage] [timer] [score]
+    let mut t1_cursor = (width - 8.0) as i32; // right edge of score
+    // Score (rightmost)
+    let t1_x = t1_cursor - t1w as i32;
+    draw_text(pm, [255, 255, 255], t1_x, 2, score_scale, font, &t1);
+    t1_cursor = t1_x;
+    // Timer (left of score)
     if let Some(timer) = team1_timer {
         let (tw, _) = text_size(timer_scale, font, timer);
-        draw_text_shadow(
+        t1_cursor -= 4;
+        let tx = t1_cursor - tw as i32;
+        draw_text(pm, timer_color, tx, 3, timer_scale, font, timer);
+        t1_cursor = tx;
+    }
+    // Advantage (leftmost)
+    if advantage_team == 1 && !advantage_label.is_empty() {
+        let (aw, _) = text_size(advantage_scale, font, advantage_label);
+        t1_cursor -= 6;
+        let ax = t1_cursor - aw as i32;
+        draw_text(
             pm,
-            timer_color,
-            t1_x - tw as i32 - 4,
-            3,
-            timer_scale,
+            [255, 255, 255],
+            ax,
+            4,
+            advantage_scale,
             font,
-            timer,
+            advantage_label,
         );
     }
 }
@@ -717,15 +833,6 @@ fn draw_pre_battle_countdown(pm: &mut Pixmap, seconds: i64, font: &FontRef) {
     let subtitle = "BATTLE STARTS IN";
     let glow_color: [u8; 3] = [255, 200, 50]; // gold
     draw_battle_result_overlay(pm, &text, Some(subtitle), glow_color, font);
-}
-
-/// Draw the team advantage label below the score bar, centered.
-fn draw_advantage_label(pm: &mut Pixmap, label: &str, color: [u8; 3], font: &FontRef) {
-    let scale = PxScale::from(11.0);
-    let (w, _) = text_size(scale, font, label);
-    let x = pm.width() as i32 / 2 - w as i32 / 2;
-    let y = 21; // just below the 20px score bar
-    draw_text_shadow(pm, color, x, y, scale, font, label);
 }
 
 /// Map a DeathCause to the icon key used in the death_cause_icons HashMap.
@@ -1768,6 +1875,8 @@ impl RenderTarget for ImageTarget {
                 max_score,
                 team0_timer,
                 team1_timer,
+                advantage_label,
+                advantage_team,
             } => {
                 draw_score_bar(
                     &mut self.canvas,
@@ -1778,13 +1887,14 @@ impl RenderTarget for ImageTarget {
                     *max_score,
                     team0_timer.as_deref(),
                     team1_timer.as_deref(),
+                    advantage_label,
+                    *advantage_team,
                     &self.font,
                 );
             }
-            DrawCommand::TeamAdvantage { label, color, .. } => {
-                if !label.is_empty() {
-                    draw_advantage_label(&mut self.canvas, label, *color, &self.font);
-                }
+            DrawCommand::TeamAdvantage { .. } => {
+                // Advantage is now rendered inline in the score bar;
+                // this command is retained for consumers that want the breakdown data.
             }
             DrawCommand::Timer {
                 time_remaining,
