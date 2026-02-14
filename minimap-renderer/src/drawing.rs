@@ -585,11 +585,14 @@ fn draw_score_bar(
     team1_score: i32,
     team0_color: [u8; 3],
     team1_color: [u8; 3],
+    max_score: i32,
+    team0_timer: Option<&str>,
+    team1_timer: Option<&str>,
     font: &FontRef,
 ) {
     let width = pm.width() as f32;
     let bar_height = 20.0f32;
-    let max_score = 1000.0f32;
+    let max_score = max_score as f32;
     let half = width / 2.0;
     let center_gap = 2.0f32; // small gap between the two bars
 
@@ -618,23 +621,46 @@ fn draw_score_bar(
         );
     }
 
-    // Score text — placed at outer edges to avoid overlapping the centered timer
-    let scale = PxScale::from(14.0);
+    let score_scale = PxScale::from(14.0);
+    let timer_scale = PxScale::from(12.0);
+    let timer_color: [u8; 3] = [200, 200, 200];
+
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
-    let (t1w, _) = text_size(scale, font, &t1);
+    let (t0w, _) = text_size(score_scale, font, &t0);
+    let (t1w, _) = text_size(score_scale, font, &t1);
+
     // Team 0 score: near left edge
-    draw_text_shadow(pm, [255, 255, 255], 8, 2, scale, font, &t0);
+    draw_text_shadow(pm, [255, 255, 255], 8, 2, score_scale, font, &t0);
+    // Team 0 timer: right after score text
+    if let Some(timer) = team0_timer {
+        draw_text_shadow(
+            pm,
+            timer_color,
+            8 + t0w as i32 + 4,
+            3,
+            timer_scale,
+            font,
+            timer,
+        );
+    }
+
     // Team 1 score: near right edge
-    draw_text_shadow(
-        pm,
-        [255, 255, 255],
-        width as i32 - t1w as i32 - 8,
-        2,
-        scale,
-        font,
-        &t1,
-    );
+    let t1_x = width as i32 - t1w as i32 - 8;
+    draw_text_shadow(pm, [255, 255, 255], t1_x, 2, score_scale, font, &t1);
+    // Team 1 timer: left of score text
+    if let Some(timer) = team1_timer {
+        let (tw, _) = text_size(timer_scale, font, timer);
+        draw_text_shadow(
+            pm,
+            timer_color,
+            t1_x - tw as i32 - 4,
+            3,
+            timer_scale,
+            font,
+            timer,
+        );
+    }
 }
 
 /// Draw the game timer.
@@ -646,6 +672,15 @@ fn draw_timer(pm: &mut Pixmap, seconds: f32, font: &FontRef) {
     let (w, _) = text_size(scale, font, &text);
     let x = pm.width() as i32 / 2 - w as i32 / 2;
     draw_text_shadow(pm, [255, 255, 255], x, 2, scale, font, &text);
+}
+
+/// Draw the team advantage label below the score bar, centered.
+fn draw_advantage_label(pm: &mut Pixmap, label: &str, color: [u8; 3], font: &FontRef) {
+    let scale = PxScale::from(11.0);
+    let (w, _) = text_size(scale, font, label);
+    let x = pm.width() as i32 / 2 - w as i32 / 2;
+    let y = 21; // just below the 20px score bar
+    draw_text_shadow(pm, color, x, y, scale, font, label);
 }
 
 /// Map a DeathCause to the icon key used in the death_cause_icons HashMap.
@@ -1681,6 +1716,9 @@ impl RenderTarget for ImageTarget {
                 team1,
                 team0_color,
                 team1_color,
+                max_score,
+                team0_timer,
+                team1_timer,
             } => {
                 draw_score_bar(
                     &mut self.canvas,
@@ -1688,8 +1726,16 @@ impl RenderTarget for ImageTarget {
                     *team1,
                     *team0_color,
                     *team1_color,
+                    *max_score,
+                    team0_timer.as_deref(),
+                    team1_timer.as_deref(),
                     &self.font,
                 );
+            }
+            DrawCommand::TeamAdvantage { label, color, .. } => {
+                if !label.is_empty() {
+                    draw_advantage_label(&mut self.canvas, label, *color, &self.font);
+                }
             }
             DrawCommand::Timer { seconds } => {
                 draw_timer(&mut self.canvas, *seconds, &self.font);

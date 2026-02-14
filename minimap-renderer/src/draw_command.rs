@@ -253,6 +253,21 @@ pub enum DrawCommand {
         team1: i32,
         team0_color: [u8; 3],
         team1_color: [u8; 3],
+        /// Win score threshold (from BattleLogic, typically 1000)
+        max_score: i32,
+        /// Time-to-win for team 0 (e.g. "5:32"), or None if no caps
+        team0_timer: Option<String>,
+        /// Time-to-win for team 1 (e.g. "3:15"), or None if no caps
+        team1_timer: Option<String>,
+    },
+    /// Team advantage indicator (shown in score bar area)
+    TeamAdvantage {
+        /// Advantage label (e.g. "Strong", "Moderate"), empty if Even
+        label: String,
+        /// Color for the label (advantaged team's color)
+        color: [u8; 3],
+        /// Detailed breakdown for tooltip display
+        breakdown: crate::advantage::AdvantageBreakdown,
     },
     /// Game timer
     Timer { seconds: f32 },

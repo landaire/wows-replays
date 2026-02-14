@@ -9,8 +9,8 @@ use crate::types::{EntityId, GameClock, GameParamId, PlaneId};
 use super::controller::{Entity, GameMessage, Player, SharedPlayer};
 use super::state::{
     ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, ActiveWard, BuffZoneState,
-    CapturePointState, CapturedBuff, DeadShip, KillRecord, MinimapPosition, ShipPosition,
-    TeamScore,
+    CapturePointState, CapturedBuff, DeadShip, KillRecord, MinimapPosition, ScoringRules,
+    ShipPosition, TeamScore,
 };
 
 /// Readonly view into BattleController state.
@@ -95,4 +95,12 @@ pub trait BattleControllerState {
 
     /// The battle type (Random, Ranked, Clan, Co-op, etc.)
     fn battle_type(&self) -> BattleType;
+
+    /// Scoring rules parsed from BattleLogic (win score, hold reward/period, cap indices).
+    /// None before the BattleLogic EntityCreate packet is processed.
+    fn scoring_rules(&self) -> Option<&ScoringRules>;
+
+    /// Seconds remaining in the match, updated from BattleLogic `timeLeft` EntityProperty.
+    /// None before the first timeLeft update.
+    fn time_left(&self) -> Option<i64>;
 }

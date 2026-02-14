@@ -30,6 +30,8 @@ pub struct RendererConfig {
     pub show_dead_trails: bool,
     pub show_speed_trails: bool,
     pub show_ship_config: bool,
+    pub show_advantage: bool,
+    pub show_score_timer: bool,
 }
 
 impl Default for RendererConfig {
@@ -55,6 +57,8 @@ impl Default for RendererConfig {
             show_dead_trails: true,
             show_speed_trails: false,
             show_ship_config: false,
+            show_advantage: true,
+            show_score_timer: true,
         }
     }
 }
@@ -95,6 +99,8 @@ impl RendererConfig {
             show_dead_ship_names: false,
             show_battle_result: true,
             show_buffs: true,
+            show_advantage: true,
+            show_score_timer: true,
         }
     }
 

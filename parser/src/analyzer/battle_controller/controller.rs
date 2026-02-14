@@ -37,7 +37,7 @@ use super::listener::BattleControllerState;
 use super::state::{
     ActiveConsumable, ActivePlane, ActiveShot, ActiveTorpedo, ActiveWard, BuffZoneState,
     BuildingEntity, CapturePointState, CapturedBuff, DeadShip, KillRecord, MinimapPosition,
-    ShipPosition, SmokeScreenEntity, TeamScore,
+    ScoringRules, ShipPosition, SmokeScreenEntity, TeamScore,
 };
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -537,6 +537,12 @@ pub struct BattleController<'res, 'replay, G> {
     /// Yaw decoding: `(lo_byte / 256) * 2*PI - PI` gives world-space radians.
     target_yaws: HashMap<EntityId, f32>,
 
+    /// Scoring rules parsed from BattleLogic EntityCreate (teamWinScore, hold reward/period).
+    scoring_rules: Option<ScoringRules>,
+
+    /// Seconds remaining in the match, updated from BattleLogic `timeLeft` EntityProperty.
+    time_left: Option<i64>,
+
     /// Optional game constants loaded from game data for resolving
     /// death causes, camera modes, entity types, etc.
     game_constants: Option<&'res GameConstants>,
@@ -602,6 +608,8 @@ where
             turret_yaws: HashMap::default(),
             selected_ammo: HashMap::default(),
             target_yaws: HashMap::default(),
+            scoring_rules: None,
+            time_left: None,
             game_constants,
         }
     }
@@ -637,6 +645,8 @@ where
         self.dead_ships.clear();
         self.turret_yaws.clear();
         self.target_yaws.clear();
+        self.scoring_rules = None;
+        self.time_left = None;
     }
 
     pub fn players(&self) -> &[SharedPlayer] {
@@ -1096,28 +1106,68 @@ where
             }
             EntityType::BattleLogic => {
                 debug!("BattleLogic create");
-                // Extract initial team scores from state.missions.teamsScore
                 if let Some(state) = packet.props.get("state")
                     && let Some(state_dict) = Self::as_dict(state)
                     && let Some(missions) = state_dict.get("missions")
                     && let Some(missions_dict) = Self::as_dict(missions)
-                    && let Some(ArgValue::Array(teams)) = missions_dict.get("teamsScore")
                 {
-                    for (idx, entry) in teams.iter().enumerate() {
-                        if let Some(entry_dict) = Self::as_dict(entry) {
-                            let score = entry_dict
-                                .get("score")
-                                .and_then(|v| Self::arg_to_i64(v))
-                                .unwrap_or(0);
-                            while self.team_scores.len() <= idx {
-                                self.team_scores.push(TeamScore {
-                                    team_index: self.team_scores.len(),
-                                    ..Default::default()
-                                });
+                    // Extract initial team scores from state.missions.teamsScore
+                    if let Some(ArgValue::Array(teams)) = missions_dict.get("teamsScore") {
+                        for (idx, entry) in teams.iter().enumerate() {
+                            if let Some(entry_dict) = Self::as_dict(entry) {
+                                let score = entry_dict
+                                    .get("score")
+                                    .and_then(|v| Self::arg_to_i64(v))
+                                    .unwrap_or(0);
+                                while self.team_scores.len() <= idx {
+                                    self.team_scores.push(TeamScore {
+                                        team_index: self.team_scores.len(),
+                                        ..Default::default()
+                                    });
+                                }
+                                self.team_scores[idx].score = score;
                             }
-                            self.team_scores[idx].score = score;
                         }
                     }
+
+                    // Extract scoring rules: teamWinScore, hold reward/period/cpIndices
+                    let team_win_score = missions_dict
+                        .get("teamWinScore")
+                        .and_then(|v| Self::arg_to_i64(v))
+                        .unwrap_or(1000);
+
+                    let mut hold_reward: i64 = 3;
+                    let mut hold_period: f32 = 5.0;
+                    let mut hold_cp_indices: Vec<usize> = Vec::new();
+
+                    if let Some(ArgValue::Array(holds)) = missions_dict.get("hold") {
+                        if let Some(first_hold) = holds.first()
+                            && let Some(hold_dict) = Self::as_dict(first_hold)
+                        {
+                            if let Some(v) =
+                                hold_dict.get("reward").and_then(|v| Self::arg_to_i64(v))
+                            {
+                                hold_reward = v;
+                            }
+                            if let Some(v) = hold_dict.get("period") {
+                                hold_period = v.float_32_ref().copied().unwrap_or(5.0);
+                            }
+                            if let Some(ArgValue::Array(indices)) = hold_dict.get("cpIndices") {
+                                for idx in indices {
+                                    if let Some(i) = Self::arg_to_i64(idx) {
+                                        hold_cp_indices.push(i as usize);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    self.scoring_rules = Some(ScoringRules {
+                        team_win_score,
+                        hold_reward,
+                        hold_period,
+                        hold_cp_indices,
+                    });
                 }
             }
             EntityType::InteractiveZone => {
@@ -2279,6 +2329,14 @@ where
     fn battle_type(&self) -> BattleType {
         self.game_meta.gameType
     }
+
+    fn scoring_rules(&self) -> Option<&ScoringRules> {
+        self.scoring_rules.as_ref()
+    }
+
+    fn time_left(&self) -> Option<i64> {
+        self.time_left
+    }
 }
 
 impl<'res, 'replay, G> Analyzer for BattleController<'res, 'replay, G>
@@ -2410,6 +2468,12 @@ where
                     && let Some(v) = Self::arg_to_i64(&prop.value)
                 {
                     self.capture_points[cp_idx].team_id = v;
+                }
+                // Handle BattleLogic timeLeft property (seconds remaining)
+                if prop.property == "timeLeft" {
+                    if let Some(v) = Self::arg_to_i64(&prop.value) {
+                        self.time_left = Some(v);
+                    }
                 }
                 // Handle BattleLogic battleResult property (winning team + finish reason)
                 if prop.property == "battleResult"

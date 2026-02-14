@@ -81,6 +81,8 @@ pub struct RenderOptions {
     pub show_battle_result: bool,
     pub show_buffs: bool,
     pub show_chat: bool,
+    pub show_advantage: bool,
+    pub show_score_timer: bool,
 }
 
 impl Default for RenderOptions {
@@ -109,6 +111,8 @@ impl Default for RenderOptions {
             show_battle_result: true,
             show_buffs: true,
             show_chat: true,
+            show_advantage: true,
+            show_score_timer: true,
         }
     }
 }
@@ -534,6 +538,110 @@ impl<'a> MinimapRenderer<'a> {
         }
     }
 
+    /// Calculate team advantage from current controller state.
+    fn calculate_team_advantage(
+        &self,
+        controller: &dyn BattleControllerState,
+    ) -> crate::advantage::AdvantageResult {
+        use crate::advantage::{ScoringParams, TeamState, calculate_advantage};
+        use std::cell::RefCell;
+
+        let players = controller.player_entities();
+        let entities = controller.entities_by_id();
+        let swap = self.self_team_id == Some(1);
+
+        // Build per-team state
+        let mut teams = [
+            TeamState {
+                score: 0,
+                uncontested_caps: 0,
+                total_hp: 0.0,
+                max_hp: 0.0,
+                ships_alive: 0,
+                ships_total: 0,
+                ships_known: 0,
+            },
+            TeamState {
+                score: 0,
+                uncontested_caps: 0,
+                total_hp: 0.0,
+                max_hp: 0.0,
+                ships_alive: 0,
+                ships_total: 0,
+                ships_known: 0,
+            },
+        ];
+
+        // Scores
+        let scores = controller.team_scores();
+        if scores.len() >= 2 {
+            teams[0].score = scores[0].score;
+            teams[1].score = scores[1].score;
+        }
+
+        // Count uncontested caps per team
+        for cp in controller.capture_points() {
+            if !cp.is_enabled || cp.has_invaders {
+                continue;
+            }
+            if cp.team_id == 0 {
+                teams[0].uncontested_caps += 1;
+            } else if cp.team_id == 1 {
+                teams[1].uncontested_caps += 1;
+            }
+        }
+
+        // Aggregate ship HP and counts per team
+        for (entity_id, player) in players {
+            let team = player.initial_state().team_id() as usize;
+            if team > 1 {
+                continue;
+            }
+            teams[team].ships_total += 1;
+
+            if let Some(entity) = entities.get(entity_id)
+                && let Some(vehicle) = entity.vehicle_ref()
+            {
+                let v = RefCell::borrow(vehicle);
+                let props = v.props();
+                teams[team].ships_known += 1;
+                teams[team].max_hp += props.max_health();
+                if props.is_alive() {
+                    teams[team].ships_alive += 1;
+                    teams[team].total_hp += props.health();
+                }
+            }
+        }
+
+        let scoring = controller.scoring_rules().map(|r| ScoringParams {
+            team_win_score: r.team_win_score,
+            hold_reward: r.hold_reward,
+            hold_period: r.hold_period,
+        });
+        let scoring = scoring.unwrap_or(ScoringParams {
+            team_win_score: 1000,
+            hold_reward: 3,
+            hold_period: 5.0,
+        });
+
+        let mut result =
+            calculate_advantage(&teams[0], &teams[1], &scoring, controller.time_left());
+
+        // Swap the result if self is team 1, so Team0 in the output = friendly
+        if swap {
+            result.advantage = match result.advantage {
+                crate::advantage::TeamAdvantage::Team0(level) => {
+                    crate::advantage::TeamAdvantage::Team1(level)
+                }
+                crate::advantage::TeamAdvantage::Team1(level) => {
+                    crate::advantage::TeamAdvantage::Team0(level)
+                }
+                other => other,
+            };
+        }
+        result
+    }
+
     /// Produce draw commands for the current frame from controller state.
     pub fn draw_frame(&mut self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
         let Some(map_info) = self.map_info.clone() else {
@@ -544,18 +652,59 @@ impl<'a> MinimapRenderer<'a> {
         let mut commands = Vec::new();
 
         // 1. Score bar
+        let max_score = controller
+            .scoring_rules()
+            .map(|r| r.team_win_score as i32)
+            .unwrap_or(1000);
         if self.options.show_score {
             let scores = controller.team_scores();
             if scores.len() >= 2 {
                 // Show friendly score on left (green), enemy on right (red)
                 let swap = self.self_team_id == Some(1);
                 let (friendly_idx, enemy_idx) = if swap { (1, 0) } else { (0, 1) };
+
+                // Score timers: time to win from cap income
+                let (team0_timer, team1_timer) = if self.options.show_score_timer {
+                    let result = self.calculate_team_advantage(controller);
+                    let bd = &result.breakdown;
+                    let friendly_pps = if swap { bd.team1_pps } else { bd.team0_pps };
+                    let enemy_pps = if swap { bd.team0_pps } else { bd.team1_pps };
+                    (
+                        format_score_timer(
+                            scores[friendly_idx].score,
+                            max_score as i64,
+                            friendly_pps,
+                        ),
+                        format_score_timer(scores[enemy_idx].score, max_score as i64, enemy_pps),
+                    )
+                } else {
+                    (None, None)
+                };
+
                 commands.push(DrawCommand::ScoreBar {
                     team0: scores[friendly_idx].score as i32,
                     team1: scores[enemy_idx].score as i32,
                     team0_color: TEAM0_COLOR,
                     team1_color: TEAM1_COLOR,
+                    max_score,
+                    team0_timer,
+                    team1_timer,
                 });
+
+                // Team advantage indicator
+                if self.options.show_advantage {
+                    let result = self.calculate_team_advantage(controller);
+                    let (label, color) = match result.advantage {
+                        crate::advantage::TeamAdvantage::Team0(level) => {
+                            (level.label().to_string(), TEAM0_COLOR)
+                        }
+                        crate::advantage::TeamAdvantage::Team1(level) => {
+                            (level.label().to_string(), TEAM1_COLOR)
+                        }
+                        crate::advantage::TeamAdvantage::Even => (String::new(), [255, 255, 255]),
+                    };
+                    commands.push(DrawCommand::TeamAdvantage { label, color, breakdown: result.breakdown });
+                }
             }
         }
 
@@ -1623,6 +1772,21 @@ fn finish_type_description(ft: &FinishType) -> String {
         FinishType::PveMainTaskFailed => "Mission failed".into(),
         FinishType::Unknown | FinishType::Other(_) => "Battle ended".into(),
     }
+}
+
+/// Format time-to-win as "M:SS" or "-:--" if no cap income.
+fn format_score_timer(current_score: i64, win_score: i64, pps: f64) -> Option<String> {
+    let remaining = win_score - current_score;
+    if remaining <= 0 {
+        return Some("0:00".to_string());
+    }
+    if pps <= 0.0 {
+        return Some("-:--".to_string());
+    }
+    let seconds = (remaining as f64 / pps).ceil() as i64;
+    let mins = seconds / 60;
+    let secs = seconds % 60;
+    Some(format!("{}:{:02}", mins, secs))
 }
 
 /// Get the capture point / building color relative to the recording player.

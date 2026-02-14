@@ -84,6 +84,19 @@ pub struct TeamScore {
     pub score: i64,
 }
 
+/// Scoring rules extracted from BattleLogic state.missions.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScoringRules {
+    /// Score required to win (typically 1000)
+    pub team_win_score: i64,
+    /// Points awarded per owned cap per tick
+    pub hold_reward: i64,
+    /// Seconds between cap tick scoring
+    pub hold_period: f32,
+    /// Which capture point indices participate in hold scoring
+    pub hold_cp_indices: Vec<usize>,
+}
+
 /// An active consumable on a ship.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActiveConsumable {

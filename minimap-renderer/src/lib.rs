@@ -1,3 +1,4 @@
+pub mod advantage;
 pub mod assets;
 pub mod config;
 pub mod draw_command;
