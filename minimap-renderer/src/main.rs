@@ -255,10 +255,15 @@ fn main() -> Result<(), Report> {
     if matches.is_present("CPU") {
         encoder.set_prefer_cpu(true);
     }
+    // Initialize the encoder eagerly so startup logs appear before the
+    // progress bar. Skip for dump modes which don't encode video.
+    if !matches.is_present("DUMP_FRAME") {
+        encoder.init()?;
+    }
 
     let use_progress_bar = !matches.is_present("NO_PROGRESS");
     let progress_bar = if use_progress_bar {
-        let pb = ProgressBar::new(encoder.total_frames() as u64);
+        let pb = ProgressBar::new(0);
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("{msg} [{bar:40}] {pos}/{len} ({eta})")
@@ -271,13 +276,13 @@ fn main() -> Result<(), Report> {
         encoder.set_progress_callback(move |p| {
             if p.stage != current_stage.get() {
                 current_stage.set(p.stage);
-                pb_clone.set_length(p.total);
                 pb_clone.set_position(0);
                 pb_clone.set_message(match p.stage {
                     RenderStage::Encoding => "Encoding",
                     RenderStage::Muxing => "Muxing",
                 });
             }
+            pb_clone.set_length(p.total);
             pb_clone.set_position(p.current);
         });
         Some(pb)
@@ -294,6 +299,25 @@ fn main() -> Result<(), Report> {
         });
         None
     };
+
+    // Pre-scan packets to find the last clock for accurate progress reporting.
+    {
+        let mut scan_parser = wows_replays::packet2::Parser::new(specs);
+        let mut scan_remaining = &replay_file.packet_data[..];
+        let mut last_clock = wows_replays::types::GameClock(0.0);
+        while !scan_remaining.is_empty() {
+            match scan_parser.parse_packet(scan_remaining) {
+                Ok((rest, packet)) => {
+                    last_clock = packet.clock;
+                    scan_remaining = rest;
+                }
+                Err(_) => break,
+            }
+        }
+        if last_clock.seconds() > 0.0 {
+            encoder.set_battle_duration(last_clock);
+        }
+    }
 
     let mut controller = BattleController::new(
         &replay_file.meta,

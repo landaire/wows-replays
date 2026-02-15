@@ -27,7 +27,6 @@ const KILL_FEED_DURATION: f32 = 10.0;
 // Visual constants
 const SMOKE_COLOR: [u8; 3] = [200, 200, 200];
 const SMOKE_ALPHA: f32 = 0.5;
-const TRACER_COLOR: [u8; 3] = [255, 255, 255];
 const TORPEDO_FRIENDLY_COLOR: [u8; 3] = [76, 232, 170];
 const TORPEDO_ENEMY_COLOR: [u8; 3] = [254, 77, 42];
 const HP_BAR_FULL_COLOR: [u8; 3] = [0, 255, 0];
@@ -928,6 +927,12 @@ impl<'a> MinimapRenderer<'a> {
         // 3. Artillery shot tracers
         if self.options.show_tracers {
             for shot in controller.active_shots() {
+                let relation = self
+                    .player_relations
+                    .get(&shot.entity_id)
+                    .copied()
+                    .unwrap_or(Relation::new(2));
+                let color = ship_color_rgb(relation, self.division_mates.contains(&shot.entity_id));
                 for shot_data in &shot.salvo.shots {
                     let origin = shot_data.origin;
                     let target = shot_data.target;
@@ -950,7 +955,7 @@ impl<'a> MinimapRenderer<'a> {
                     commands.push(DrawCommand::ShotTracer {
                         from: map_info.world_to_minimap(tail, MINIMAP_SIZE),
                         to: map_info.world_to_minimap(head, MINIMAP_SIZE),
-                        color: TRACER_COLOR,
+                        color,
                     });
                 }
             }

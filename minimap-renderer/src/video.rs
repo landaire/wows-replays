@@ -340,7 +340,7 @@ impl EncoderBackend {
     fn create(_width: u32, _height: u32, prefer_cpu: bool) -> rootcause::Result<Self, VideoError> {
         let _ = prefer_cpu; // suppress unused warning when neither feature is enabled
 
-        // Try GPU first when available (unless CPU is preferred)
+        // GPU preferred (default): try GPU, fail if unavailable
         #[cfg(feature = "gpu")]
         if !prefer_cpu {
             match gpu::GpuEncoder::new(_width, _height) {
@@ -349,20 +349,14 @@ impl EncoderBackend {
                     return Ok(Self::Gpu(enc));
                 }
                 Err(e) => {
-                    #[cfg(feature = "cpu")]
-                    {
-                        tracing::warn!(error = %e, "GPU encoder unavailable, falling back to CPU");
-                    }
-                    #[cfg(not(feature = "cpu"))]
-                    {
-                        return Err(e.attach(
-                            "GPU encoder failed and no CPU fallback (enable 'cpu' feature)",
-                        ));
-                    }
+                    return Err(e.attach(
+                        "GPU encoder failed. Enable prefer_cpu to use the CPU encoder instead.",
+                    ));
                 }
             }
         }
 
+        // CPU explicitly requested via prefer_cpu
         #[cfg(feature = "cpu")]
         {
             info!("Using CPU (openh264) encoder");
@@ -415,22 +409,33 @@ pub struct VideoEncoder {
     encoder_error: Option<String>,
     /// When true, skip the GPU encoder and use CPU (openh264) directly.
     prefer_cpu: bool,
+    /// Expected number of frames to render, for progress reporting only.
+    /// Defaults to `total_frames()` (1800). Updated by `set_battle_duration()`
+    /// when the actual game length is shorter than `game_duration`.
+    expected_frames: u64,
     /// Optional callback invoked after each frame is encoded or muxed.
     progress_callback: Option<Box<dyn Fn(RenderProgress)>>,
 }
 
 impl VideoEncoder {
-    pub fn new(output_path: &str, dump_mode: Option<DumpMode>, game_duration: f32) -> Self {
+    /// Create a new video encoder.
+    ///
+    /// `match_time_limit` is the maximum match duration from replay metadata
+    /// (e.g. 1200s for a 20-minute mode). The actual battle may end earlier.
+    /// Call `set_battle_duration()` with the true end time for accurate
+    /// progress reporting.
+    pub fn new(output_path: &str, dump_mode: Option<DumpMode>, match_time_limit: f32) -> Self {
         let total_frames = (OUTPUT_DURATION * FPS) as usize;
         Self {
             output_path: output_path.to_string(),
             dump_mode,
-            game_duration,
+            game_duration: match_time_limit,
             last_rendered_frame: -1,
             backend: None,
             h264_frames: Vec::with_capacity(total_frames),
             encoder_error: None,
             prefer_cpu: false,
+            expected_frames: total_frames as u64,
             progress_callback: None,
         }
     }
@@ -439,6 +444,22 @@ impl VideoEncoder {
     /// Only effective if the `cpu` feature is enabled.
     pub fn set_prefer_cpu(&mut self, prefer: bool) {
         self.prefer_cpu = prefer;
+    }
+
+    /// Set the actual battle duration for accurate progress reporting.
+    ///
+    /// When the constructor receives `meta.duration` (the match time limit,
+    /// e.g. 1200s) but the battle ends earlier (e.g. 660s), fewer than
+    /// `total_frames()` frames are rendered. Call this with the true battle
+    /// duration so the progress callback reports the correct total.
+    ///
+    /// If the constructor already received the actual battle duration (not the
+    /// time limit), there is no need to call this — all `total_frames()` frames
+    /// will be rendered and the default total is correct.
+    pub fn set_battle_duration(&mut self, duration: GameClock) {
+        let total_frames = self.total_frames();
+        let frame_duration = self.game_duration / total_frames as f32;
+        self.expected_frames = (duration.seconds() / frame_duration) as u64;
     }
 
     /// Set a callback that receives progress updates during encoding and muxing.
@@ -450,11 +471,20 @@ impl VideoEncoder {
     }
 
     /// Total output frames (fixed output duration * FPS).
-    pub fn total_frames(&self) -> i64 {
+    fn total_frames(&self) -> i64 {
         (OUTPUT_DURATION * FPS) as i64
     }
 
-    /// Create the encoder backend on first use.
+    /// Initialize the encoder backend eagerly.
+    ///
+    /// Normally the backend is created lazily on the first frame. Call this
+    /// before the render loop to ensure any startup logging happens before
+    /// a progress bar is displayed.
+    pub fn init(&mut self) -> rootcause::Result<(), VideoError> {
+        self.ensure_encoder()
+    }
+
+    /// Create the encoder backend on first use (no-op if already initialized).
     fn ensure_encoder(&mut self) -> rootcause::Result<(), VideoError> {
         if self.backend.is_some() {
             return Ok(());
@@ -568,7 +598,7 @@ impl VideoEncoder {
                     cb(RenderProgress {
                         stage: RenderStage::Encoding,
                         current: (self.last_rendered_frame + 1) as u64,
-                        total: total_frames as u64,
+                        total: self.expected_frames,
                     });
                 }
             }
@@ -583,13 +613,13 @@ impl VideoEncoder {
         target: &mut ImageTarget,
     ) -> rootcause::Result<(), VideoError> {
         // Render up to the actual battle end (or last packet), not meta.duration.
-        // This avoids duplicating frozen frames when the match ends early.
         let end_clock = controller.battle_end_clock().unwrap_or(controller.clock());
         // Extend game_duration if the battle actually ran longer than meta.duration
         // (e.g. battleResult arrives a few seconds after the nominal duration).
         if end_clock.seconds() > self.game_duration {
             self.game_duration = end_clock.seconds();
         }
+
         self.advance_clock(end_clock, controller, renderer, target);
 
         if let Some(ref dump_mode) = self.dump_mode {
