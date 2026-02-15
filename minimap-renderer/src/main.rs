@@ -1,5 +1,7 @@
 use clap::{App, Arg};
+use indicatif::{ProgressBar, ProgressStyle};
 use rootcause::prelude::*;
+use std::cell::Cell;
 use std::fs::File;
 use std::path::Path;
 use tracing::{info, warn};
@@ -19,7 +21,7 @@ use wows_minimap_renderer::assets::{
 use wows_minimap_renderer::config::RendererConfig;
 use wows_minimap_renderer::drawing::ImageTarget;
 use wows_minimap_renderer::renderer::MinimapRenderer;
-use wows_minimap_renderer::video::{DumpMode, VideoEncoder};
+use wows_minimap_renderer::video::{DumpMode, RenderStage, VideoEncoder};
 
 fn main() -> Result<(), Report> {
     let matches = App::new("Minimap Renderer")
@@ -116,6 +118,11 @@ fn main() -> Result<(), Report> {
             Arg::with_name("CPU")
                 .help("Use CPU encoder (openh264) instead of GPU")
                 .long("cpu"),
+        )
+        .arg(
+            Arg::with_name("NO_PROGRESS")
+                .help("Disable progress bar and use log output instead")
+                .long("no-progress"),
         )
         .arg(
             Arg::with_name("REPLAY")
@@ -249,6 +256,45 @@ fn main() -> Result<(), Report> {
         encoder.set_prefer_cpu(true);
     }
 
+    let use_progress_bar = !matches.is_present("NO_PROGRESS");
+    let progress_bar = if use_progress_bar {
+        let pb = ProgressBar::new(encoder.total_frames() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{msg} [{bar:40}] {pos}/{len} ({eta})")
+                .expect("valid progress template")
+                .progress_chars("=> "),
+        );
+        pb.set_message("Encoding");
+        let pb_clone = pb.clone();
+        let current_stage = Cell::new(RenderStage::Encoding);
+        encoder.set_progress_callback(move |p| {
+            if p.stage != current_stage.get() {
+                current_stage.set(p.stage);
+                pb_clone.set_length(p.total);
+                pb_clone.set_position(0);
+                pb_clone.set_message(match p.stage {
+                    RenderStage::Encoding => "Encoding",
+                    RenderStage::Muxing => "Muxing",
+                });
+            }
+            pb_clone.set_position(p.current);
+        });
+        Some(pb)
+    } else {
+        let last_reported = Cell::new(RenderStage::Encoding);
+        encoder.set_progress_callback(move |p| {
+            if p.stage != last_reported.get() {
+                last_reported.set(p.stage);
+                info!(stage = ?p.stage, total = p.total, "Starting stage");
+            }
+            if p.current % 100 == 0 || p.current == p.total {
+                info!(stage = ?p.stage, frame = p.current, total = p.total, "Progress");
+            }
+        });
+        None
+    };
+
     let mut controller = BattleController::new(
         &replay_file.meta,
         &controller_game_params,
@@ -290,6 +336,10 @@ fn main() -> Result<(), Report> {
 
     controller.finish();
     encoder.finish(&controller, &mut renderer, &mut target)?;
+
+    if let Some(pb) = progress_bar {
+        pb.finish_and_clear();
+    }
 
     info!("Done");
     Ok(())

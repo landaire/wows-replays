@@ -3,7 +3,7 @@ use std::io::BufWriter;
 
 use bytes::Bytes;
 use rootcause::prelude::*;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::types::GameClock;
@@ -24,6 +24,21 @@ pub enum DumpMode {
     Frame(usize),
     Midpoint,
     Last,
+}
+
+/// Which phase of video rendering is in progress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderStage {
+    Encoding,
+    Muxing,
+}
+
+/// Progress update emitted during video rendering.
+#[derive(Clone, Debug)]
+pub struct RenderProgress {
+    pub stage: RenderStage,
+    pub current: u64,
+    pub total: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +415,8 @@ pub struct VideoEncoder {
     encoder_error: Option<String>,
     /// When true, skip the GPU encoder and use CPU (openh264) directly.
     prefer_cpu: bool,
+    /// Optional callback invoked after each frame is encoded or muxed.
+    progress_callback: Option<Box<dyn Fn(RenderProgress)>>,
 }
 
 impl VideoEncoder {
@@ -414,6 +431,7 @@ impl VideoEncoder {
             h264_frames: Vec::with_capacity(total_frames),
             encoder_error: None,
             prefer_cpu: false,
+            progress_callback: None,
         }
     }
 
@@ -423,8 +441,16 @@ impl VideoEncoder {
         self.prefer_cpu = prefer;
     }
 
+    /// Set a callback that receives progress updates during encoding and muxing.
+    ///
+    /// The callback uses `Fn` (not `FnMut`) so it works naturally with channel
+    /// senders: `encoder.set_progress_callback(move |p| tx.send(p).ok());`
+    pub fn set_progress_callback<F: Fn(RenderProgress) + 'static>(&mut self, callback: F) {
+        self.progress_callback = Some(Box::new(callback));
+    }
+
     /// Total output frames (fixed output duration * FPS).
-    fn total_frames(&self) -> i64 {
+    pub fn total_frames(&self) -> i64 {
         (OUTPUT_DURATION * FPS) as i64
     }
 
@@ -538,12 +564,12 @@ impl VideoEncoder {
                     return;
                 }
 
-                if self.last_rendered_frame % 100 == 0 {
-                    debug!(
-                        frame = self.last_rendered_frame,
-                        total = total_frames,
-                        "Encoding frame"
-                    );
+                if let Some(ref cb) = self.progress_callback {
+                    cb(RenderProgress {
+                        stage: RenderStage::Encoding,
+                        current: (self.last_rendered_frame + 1) as u64,
+                        total: total_frames as u64,
+                    });
                 }
             }
         }
@@ -653,6 +679,7 @@ impl VideoEncoder {
             .map_err(|e| report!(VideoError::MuxFailed(format!("{e:?}"))))?;
 
         let sample_duration = 1000 / FPS as u32;
+        let total_mux_frames = self.h264_frames.len() as u64;
 
         for (frame_idx, annexb_data) in self.h264_frames.iter().enumerate() {
             if annexb_data.is_empty() {
@@ -686,6 +713,14 @@ impl VideoEncoder {
             mp4_writer
                 .write_sample(1, &sample)
                 .map_err(|e| report!(VideoError::MuxFailed(format!("{e:?}"))))?;
+
+            if let Some(ref cb) = self.progress_callback {
+                cb(RenderProgress {
+                    stage: RenderStage::Muxing,
+                    current: (frame_idx + 1) as u64,
+                    total: total_mux_frames,
+                });
+            }
         }
 
         mp4_writer
