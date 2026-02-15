@@ -2752,14 +2752,12 @@ where
                 arg1: _,
             } => {
                 for update in updates {
-                    // Determine visibility from position, not the disappearing
-                    // flag — matching the Python renderer's approach. The sentinel
-                    // position (-1.5, -1.5) means the ship is not on the minimap.
-                    let is_sentinel = update.position.x == -1.5 && update.position.y == -1.5;
-                    let visible = !is_sentinel;
-                    // When position is the sentinel, preserve last known position
-                    // and heading so undetected ships render at their last location.
-                    let (position, heading) = if is_sentinel {
+                    // Minimap pings (hydrophone etc.) are one-shot position
+                    // flashes that should not be treated as sustained detection.
+                    let visible = !update.is_sentinel && !update.is_minimap_ping();
+                    // When not visible, preserve last known position and heading
+                    // so undetected ships render at their last location.
+                    let (position, heading) = if !visible {
                         let prev = self.minimap_positions.get(&update.entity_id);
                         (
                             prev.map(|p| p.position).unwrap_or(update.position),
@@ -2768,6 +2766,18 @@ where
                     } else {
                         (update.position, update.heading)
                     };
+                    // Pull visibility_flags and is_invisible from the Vehicle
+                    // entity props (tracks radar/hydro detection and submarine
+                    // submerged state).
+                    let (visibility_flags, is_invisible) = self
+                        .entities_by_id
+                        .get(&update.entity_id)
+                        .and_then(|e| e.vehicle_ref())
+                        .map(|v| {
+                            let v = v.borrow();
+                            (v.props().visibility_flags(), v.props().is_invisible())
+                        })
+                        .unwrap_or((0, false));
                     self.minimap_positions.insert(
                         update.entity_id,
                         MinimapPosition {
@@ -2775,6 +2785,8 @@ where
                             position,
                             heading,
                             visible,
+                            visibility_flags,
+                            is_invisible,
                             last_updated: packet.clock,
                         },
                     );

@@ -1092,6 +1092,16 @@ impl<'a> MinimapRenderer<'a> {
             let world = ship_positions.get(entity_id);
             let detected = minimap.map(|m| m.visible).unwrap_or(false);
 
+            // visibility_flags from the Vehicle entity: bitmask of detection
+            // reasons (radar, hydro, direct vision, etc.). Non-zero means the
+            // ship is confirmed detected through game mechanics.
+            let vis_flags = controller
+                .entities_by_id()
+                .get(entity_id)
+                .and_then(|e| e.vehicle_ref())
+                .map(|v| v.borrow().props().visibility_flags())
+                .unwrap_or(0);
+
             // Get health fraction from entity
             let health_fraction = controller
                 .entities_by_id()
@@ -1113,12 +1123,7 @@ impl<'a> MinimapRenderer<'a> {
             let world_yaw = world.map(|sp| sp.yaw);
 
             // A ship is "spotted" when its visibility_flags are non-zero (game mechanic)
-            let is_spotted = controller
-                .entities_by_id()
-                .get(entity_id)
-                .and_then(|e| e.vehicle_ref())
-                .map(|v| v.borrow().props().visibility_flags() != 0)
-                .unwrap_or(false);
+            let is_spotted = vis_flags != 0;
 
             // Detected teammate = spotted ally (not self)
             let is_detected_teammate = is_spotted && !relation.is_enemy();

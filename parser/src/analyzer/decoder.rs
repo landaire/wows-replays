@@ -668,6 +668,10 @@ pub struct DamageReceived {
 pub struct MinimapUpdate {
     /// The ship ID of the ship to update
     pub entity_id: EntityId,
+    /// True when the raw packed position is (0, 0), indicating the ship is not
+    /// visible on the minimap. Checked on raw 11-bit integer values before float
+    /// conversion to avoid floating-point precision issues.
+    pub is_sentinel: bool,
     /// Set to true if the ship should disappear from the minimap (false otherwise)
     pub disappearing: bool,
     /// The heading of the ship. Unit is degrees, 0 is up, positive is clockwise
@@ -677,6 +681,19 @@ pub struct MinimapUpdate {
     pub position: NormalizedPos,
     /// Unknown, but this appears to be something related to the big hunt
     pub unknown: bool,
+}
+
+impl MinimapUpdate {
+    /// Returns true if this is a hydrophone-style minimap ping: a one-shot
+    /// position flash from minimap-only detection (e.g. submarine hydrophone).
+    ///
+    /// These updates have `disappearing=true` with a valid (non-sentinel)
+    /// position. They are always isolated — never preceded by active tracking
+    /// and never followed by a sentinel. The position is valid at the instant
+    /// of the ping but should not be treated as sustained detection.
+    pub fn is_minimap_ping(&self) -> bool {
+        self.disappearing && !self.is_sentinel
+    }
 }
 
 /// A single shell in an artillery salvo
@@ -1806,6 +1823,12 @@ where
                 let update = RawMinimapUpdate::from_bytes(packed_data.to_le_bytes());
                 let heading = update.heading() as f32 / 256. * 360. - 180.;
 
+                // Check raw 11-bit values for the sentinel (0, 0) before float
+                // conversion to avoid any floating-point precision issues.
+                // Raw 0 maps to -2500 in world coords (the Python renderer
+                // checks `x != -2500 or y != -2500`).
+                let is_sentinel = update.x() == 0 && update.y() == 0;
+
                 let x = update.x() as f32 / 512. - 1.5;
                 let y = update.y() as f32 / 512. - 1.5;
 
@@ -1816,6 +1839,7 @@ where
                     },
                     position: NormalizedPos { x, y },
                     heading,
+                    is_sentinel,
                     disappearing: update.is_disappearing(),
                     unknown: update.unknown(),
                 })

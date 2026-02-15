@@ -24,6 +24,13 @@ pub struct MinimapPosition {
     /// Heading in degrees
     pub heading: f32,
     pub visible: bool,
+    /// Bitmask of detection reasons (radar, hydro, etc.). Non-zero means the
+    /// ship is detected through special means. Sourced from the Vehicle entity's
+    /// `visibilityFlags` property.
+    pub visibility_flags: u32,
+    /// True when the ship is invisible (e.g. submarine submerged). Sourced from
+    /// the Vehicle entity's `isInvisible` property.
+    pub is_invisible: bool,
     pub last_updated: GameClock,
 }
 
