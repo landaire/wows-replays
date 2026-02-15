@@ -227,7 +227,7 @@ impl<'a> MinimapRenderer<'a> {
             self.player_relations.insert(*entity_id, player.relation());
             if let Some(species) = player.vehicle().species().and_then(|s| s.known()) {
                 self.player_species
-                    .insert(*entity_id, format!("{:?}", species));
+                    .insert(*entity_id, species.name().to_string());
             }
             self.player_names
                 .insert(*entity_id, player.initial_state().username().to_string());
@@ -1724,7 +1724,7 @@ impl<'a> MinimapRenderer<'a> {
                         } else {
                             None
                         };
-                        let species = player.vehicle().species().map(|s| format!("{:?}", s));
+                        let species = player.vehicle().species().and_then(species_key);
                         let name = self
                             .game_params
                             .localized_name_from_param(player.vehicle())
@@ -1911,6 +1911,14 @@ fn hue_to_rgb(hue: f32) -> [u8; 3] {
     }
 }
 
+fn species_key(species: &Recognized<Species>) -> Option<String> {
+    species
+        .known()
+        .map(|s| s.name())
+        .or_else(|| species.unknown().map(String::as_str))
+        .map(String::from)
+}
+
 /// Build the icon base name from species, consumable flag, and ammo type.
 fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) -> String {
     use convert_case::{Case, Casing};
@@ -1924,7 +1932,7 @@ fn species_to_icon_base(species: Species, is_consumable: bool, ammo_type: &str) 
         match species {
             Species::Dive => format!("bomber_{ammo}"),
             _ => {
-                let species_name = format!("{:?}", species);
+                let species_name = species.name();
                 species_name.to_case(Case::Snake)
             }
         }
