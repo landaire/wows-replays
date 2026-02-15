@@ -2,7 +2,9 @@ use serde::Serialize;
 use wowsunpack::game_params::types::BigWorldDistance;
 
 use crate::analyzer::decoder::{ArtillerySalvo, Consumable, DeathCause, Recognized, TorpedoData};
-use crate::types::{EntityId, GameClock, GameParamId, NormalizedPos, PlaneId, WorldPos};
+use crate::types::{
+    EntityId, GameClock, GameParamId, NormalizedPos, PlaneId, WorldPos, WorldPos2D,
+};
 
 /// Last known world-space position of a ship entity.
 #[derive(Debug, Clone, Serialize)]
@@ -128,7 +130,7 @@ pub struct BuildingEntity {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SmokeScreenEntity {
     pub id: EntityId,
-    pub radius: f32,
+    pub radius: BigWorldDistance,
     /// World position where the smoke was created
     pub position: WorldPos,
     /// Current active smoke puff positions (mutated via SetRange/RemoveRange)
@@ -158,8 +160,8 @@ pub struct ActivePlane {
     pub owner_id: EntityId,
     pub team_id: u32,
     pub params_id: GameParamId,
-    /// Current position (world coordinates), updated by minimap updates.
-    pub position: WorldPos,
+    /// Current position (2D world coordinates), updated by minimap updates.
+    pub position: WorldPos2D,
     pub last_updated: GameClock,
 }
 

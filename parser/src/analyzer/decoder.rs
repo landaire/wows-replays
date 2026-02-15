@@ -1,6 +1,8 @@
 use crate::IResult;
 use crate::packet2::{EntityMethodPacket, Packet, PacketType};
-use crate::types::{AccountId, EntityId, GameParamId, NormalizedPos, PlaneId, WorldPos};
+use crate::types::{
+    AccountId, EntityId, GameParamId, NormalizedPos, PlaneId, ShotId, WorldPos, WorldPos2D,
+};
 use kinded::Kinded;
 use nom::number::complete::{le_f32, le_u8, le_u16, le_u64};
 use pickled::Value;
@@ -11,6 +13,7 @@ use std::iter::FromIterator;
 use wowsunpack::data::Version;
 use wowsunpack::game_constants::{DEFAULT_BATTLE_CONSTANTS, DEFAULT_COMMON_CONSTANTS};
 use wowsunpack::game_params::convert::pickle_to_json;
+use wowsunpack::game_params::types::BigWorldDistance;
 use wowsunpack::rpc::typedefs::ArgValue;
 use wowsunpack::unpack_rpc_args;
 
@@ -699,9 +702,9 @@ impl MinimapUpdate {
 /// A single shell in an artillery salvo
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtilleryShotData {
-    pub origin: (f32, f32, f32),
-    pub target: (f32, f32, f32),
-    pub shot_id: u32,
+    pub origin: WorldPos,
+    pub target: WorldPos,
+    pub shot_id: ShotId,
     pub speed: f32,
 }
 
@@ -720,16 +723,17 @@ pub struct TorpedoData {
     pub owner_id: EntityId,
     pub params_id: GameParamId,
     pub salvo_id: u32,
-    pub shot_id: u32,
-    pub origin: (f32, f32, f32),
-    pub direction: (f32, f32, f32),
+    pub shot_id: ShotId,
+    pub origin: WorldPos,
+    /// Direction vector whose magnitude is the torpedo speed in m/s.
+    pub direction: WorldPos,
 }
 
 /// A single projectile hit (from receiveShotKills)
 #[derive(Debug, Clone, Serialize)]
 pub struct ShotHit {
     pub owner_id: EntityId,
-    pub shot_id: u32,
+    pub shot_id: ShotId,
 }
 
 /// Enumerates the "cruise states". See <https://github.com/lkolbly/wows-replays/issues/14#issuecomment-976784004>
@@ -970,8 +974,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         /// Team index: 0 = recording player's team, 1 = enemy team
         team_id: u32,
         params_id: GameParamId,
-        x: f32,
-        y: f32,
+        position: WorldPos2D,
     },
     /// A fighter patrol ward is placed (from receive_wardAdded).
     /// This is the game's mechanism for marking patrol circle areas.
@@ -981,7 +984,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
         /// Patrol center position (world coordinates)
         position: WorldPos,
         /// Patrol radius in BigWorld units
-        radius: f32,
+        radius: BigWorldDistance,
         /// Owner ship entity ID
         owner_id: EntityId,
     },
@@ -999,8 +1002,7 @@ pub enum DecodedPacketPayload<'replay, 'argtype, 'rawpacket> {
     PlanePosition {
         entity_id: EntityId,
         plane_id: PlaneId,
-        x: f32,
-        y: f32,
+        position: WorldPos2D,
     },
     /// Ammo type selected for a weapon group
     SetAmmoForWeapon {
@@ -1353,16 +1355,20 @@ where
         }
     }
 
-    fn extract_vec3(val: Option<&ArgValue>) -> (f32, f32, f32) {
+    fn extract_vec3(val: Option<&ArgValue>) -> WorldPos {
         match val {
-            Some(ArgValue::Vector3((x, y, z))) => (*x, *y, *z),
+            Some(ArgValue::Vector3((x, y, z))) => WorldPos {
+                x: *x,
+                y: *y,
+                z: *z,
+            },
             Some(ArgValue::Array(a)) if a.len() >= 3 => {
                 let x: f32 = (&a[0]).try_into().unwrap_or(0.0);
                 let y: f32 = (&a[1]).try_into().unwrap_or(0.0);
                 let z: f32 = (&a[2]).try_into().unwrap_or(0.0);
-                (x, y, z)
+                WorldPos { x, y, z }
             }
-            _ => (0.0, 0.0, 0.0),
+            _ => WorldPos::default(),
         }
     }
 
@@ -1959,7 +1965,7 @@ where
                     shots.push(ArtilleryShotData {
                         origin: pos,
                         target: tar_pos,
-                        shot_id,
+                        shot_id: ShotId::from(shot_id),
                         speed,
                     });
                 }
@@ -2016,7 +2022,7 @@ where
                         owner_id: EntityId::from(owner_id),
                         params_id: GameParamId::from(params_id),
                         salvo_id,
-                        shot_id,
+                        shot_id: ShotId::from(shot_id),
                         origin: pos,
                         direction: dir,
                     });
@@ -2058,7 +2064,7 @@ where
                         .unwrap_or(0);
                     hits.push(ShotHit {
                         owner_id: EntityId::from(owner_id),
-                        shot_id,
+                        shot_id: ShotId::from(shot_id),
                     });
                 }
             }
@@ -2105,8 +2111,10 @@ where
                 plane_id,
                 team_id,
                 params_id: GameParamId::from(params_id),
-                x: position.0,
-                y: position.1,
+                position: WorldPos2D {
+                    x: position.0,
+                    z: position.1,
+                },
             }
         } else if *method == "receive_removeMinimapSquadron" {
             let plane_id: PlaneId = match &args[0] {
@@ -2140,8 +2148,10 @@ where
             DecodedPacketPayload::PlanePosition {
                 entity_id: *entity_id,
                 plane_id,
-                x: position.0,
-                y: position.1,
+                position: WorldPos2D {
+                    x: position.0,
+                    z: position.1,
+                },
             }
         } else if *method == "receive_wardAdded" {
             // args: [squadronId, position, unknown, radius, relation, ownerId, unknown2]
@@ -2153,15 +2163,16 @@ where
                 _ => return DecodedPacketPayload::EntityMethod(packet),
             };
             let position = match &args[1] {
-                ArgValue::Vector3((x, _y, z)) => WorldPos {
+                ArgValue::Vector3((x, y, z)) => WorldPos {
                     x: *x,
-                    y: 0.0,
+                    y: *y,
                     z: *z,
                 },
                 ArgValue::Array(a) if a.len() >= 3 => {
                     let x: f32 = (&a[0]).try_into().unwrap_or(0.0);
+                    let y: f32 = (&a[1]).try_into().unwrap_or(0.0);
                     let z: f32 = (&a[2]).try_into().unwrap_or(0.0);
-                    WorldPos { x, y: 0.0, z }
+                    WorldPos { x, y, z }
                 }
                 _ => return DecodedPacketPayload::EntityMethod(packet),
             };
@@ -2180,7 +2191,7 @@ where
                 entity_id: *entity_id,
                 plane_id,
                 position,
-                radius,
+                radius: BigWorldDistance::from(radius),
                 owner_id,
             }
         } else if *method == "receive_wardRemoved" {

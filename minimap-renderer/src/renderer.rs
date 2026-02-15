@@ -16,7 +16,7 @@ use wows_replays::types::{EntityId, GameClock, GameParamId, PlaneId, Relation};
 use crate::draw_command::{
     ChatEntry, DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipVisibility,
 };
-use crate::map_data::{self, WorldPos};
+use crate::map_data;
 
 use crate::MINIMAP_SIZE;
 
@@ -929,16 +929,8 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_tracers {
             for shot in controller.active_shots() {
                 for shot_data in &shot.salvo.shots {
-                    let origin = WorldPos {
-                        x: shot_data.origin.0,
-                        y: shot_data.origin.1,
-                        z: shot_data.origin.2,
-                    };
-                    let target = WorldPos {
-                        x: shot_data.target.0,
-                        y: shot_data.target.1,
-                        z: shot_data.target.2,
-                    };
+                    let origin = shot_data.origin;
+                    let target = shot_data.target;
                     let dx = target.x - origin.x;
                     let dz = target.z - origin.z;
                     let distance = (dx * dx + dz * dz).sqrt();
@@ -972,11 +964,7 @@ impl<'a> MinimapRenderer<'a> {
                 if elapsed < 0.0 {
                     continue;
                 }
-                let world = WorldPos {
-                    x: torp.torpedo.origin.0 + torp.torpedo.direction.0 * elapsed,
-                    y: 0.0,
-                    z: torp.torpedo.origin.2 + torp.torpedo.direction.2 * elapsed,
-                };
+                let world = torp.torpedo.origin + torp.torpedo.direction * elapsed;
                 if world.x.abs() > half_space || world.z.abs() > half_space {
                     continue;
                 }
@@ -1002,8 +990,8 @@ impl<'a> MinimapRenderer<'a> {
             for entity in controller.entities_by_id().values() {
                 if let Some(smoke_ref) = entity.smoke_screen_ref() {
                     let smoke = smoke_ref.borrow();
-                    let px_radius =
-                        (smoke.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                    let px_radius = (smoke.radius.value() / map_info.space_size as f32
+                        * MINIMAP_SIZE as f32) as i32;
                     for point in &smoke.points {
                         let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
                         commands.push(DrawCommand::Smoke {
@@ -1274,7 +1262,7 @@ impl<'a> MinimapRenderer<'a> {
         // 7. Planes
         if self.options.show_planes {
             for (plane_id, plane) in controller.active_planes() {
-                let px = map_info.world_to_minimap(plane.position, MINIMAP_SIZE);
+                let px = map_info.world_to_minimap(plane.position.to_world_pos(), MINIMAP_SIZE);
 
                 let info = self.squadron_info.get(plane_id);
                 // Use player_relations to determine if the plane is enemy.

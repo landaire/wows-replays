@@ -1115,10 +1115,13 @@ where
                 );
             }
             EntityType::SmokeScreen => {
-                let mut radius: f32 = 0.0;
-                if let Some(v) = packet.props.get("radius") {
-                    radius = v.float_32_ref().copied().unwrap_or(0.0);
-                }
+                let radius = BigWorldDistance::from(
+                    packet
+                        .props
+                        .get("radius")
+                        .and_then(|v| v.float_32_ref().copied())
+                        .unwrap_or(0.0),
+                );
 
                 let position = WorldPos {
                     x: packet.position.x,
@@ -2931,11 +2934,10 @@ where
             crate::analyzer::decoder::DecodedPacketPayload::PlanePosition {
                 entity_id: _,
                 plane_id,
-                x,
-                y,
+                position,
             } => {
                 if let Some(plane) = self.active_planes.get_mut(&plane_id) {
-                    plane.position = WorldPos { x, y: 0.0, z: y };
+                    plane.position = position;
                     plane.last_updated = packet.clock;
                 }
             }
@@ -2944,10 +2946,8 @@ where
                 plane_id,
                 team_id,
                 params_id,
-                x,
-                y,
+                position,
             } => {
-                let pos = WorldPos { x, y: 0.0, z: y };
                 self.active_planes.insert(
                     plane_id,
                     ActivePlane {
@@ -2955,7 +2955,7 @@ where
                         owner_id: entity_id,
                         team_id,
                         params_id,
-                        position: pos,
+                        position,
                         last_updated: packet.clock,
                     },
                 );
@@ -2978,7 +2978,7 @@ where
                     ActiveWard {
                         plane_id,
                         position,
-                        radius: BigWorldDistance::from(radius),
+                        radius,
                         owner_id,
                     },
                 );

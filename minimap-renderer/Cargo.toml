@@ -18,7 +18,7 @@ required-features = ["bin"]
 
 [features]
 default = ["bin", "gpu", "arc"]
-bin = ["dep:clap", "dep:gettext", "dep:toml"]
+bin = ["dep:clap", "dep:gettext", "dep:toml", "dep:indicatif"]
 gpu = ["dep:vk-video", "dep:wgpu", "dep:yuvutils-rs"]
 cpu = ["dep:openh264"]
 arc = ["wows_replays/arc"]
@@ -38,6 +38,7 @@ gettext = { version = "0.4", optional = true }
 roxmltree = "0.19"
 resvg = "0.44"
 tiny-skia = "0.11"
+indicatif = { version = "0.18.4", optional = true}
 
 # GPU encoder (default)
 vk-video = { version = "0.2", optional = true }
