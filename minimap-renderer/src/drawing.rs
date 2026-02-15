@@ -1690,6 +1690,7 @@ impl RenderTarget for ImageTarget {
                 yaw,
                 color,
                 length,
+                ..
             } => {
                 let x = pos.x as f32;
                 let y = pos.y as f32 + y_off;
@@ -1719,6 +1720,7 @@ impl RenderTarget for ImageTarget {
                 ship_name,
                 is_detected_teammate,
                 name_color,
+                ..
             } => {
                 let x = pos.x;
                 let y = pos.y + y_off as i32;
@@ -1777,6 +1779,7 @@ impl RenderTarget for ImageTarget {
                 fill_color,
                 background_color,
                 background_alpha,
+                ..
             } => {
                 draw_health_bar(
                     &mut self.canvas,
@@ -1815,18 +1818,36 @@ impl RenderTarget for ImageTarget {
 
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, color.map(|c| c), 1.0);
             }
-            DrawCommand::Plane { pos, icon_key } => {
+            DrawCommand::Plane {
+                pos,
+                icon_key,
+                player_name,
+                ship_name,
+                ..
+            } => {
+                let x = pos.x;
+                let y = pos.y + y_off as i32;
                 let icon = self
                     .plane_icons
                     .get(icon_key)
                     .unwrap_or_else(|| panic!("missing plane icon for '{}'", icon_key));
-                draw_icon(&mut self.canvas, icon, pos.x, pos.y + y_off as i32);
+                draw_icon(&mut self.canvas, icon, x, y);
+                draw_ship_labels(
+                    &mut self.canvas,
+                    x,
+                    y,
+                    player_name.as_deref(),
+                    ship_name.as_deref(),
+                    None,
+                    &self.font,
+                );
             }
             DrawCommand::ConsumableRadius {
                 pos,
                 radius_px,
                 color,
                 alpha,
+                ..
             } => {
                 let x = pos.x as f32;
                 let y = pos.y as f32 + y_off;
@@ -1840,6 +1861,7 @@ impl RenderTarget for ImageTarget {
                 radius_px,
                 color,
                 alpha,
+                ..
             } => {
                 let x = pos.x as f32;
                 let y = pos.y as f32 + y_off;
@@ -2007,12 +2029,8 @@ impl RenderTarget for ImageTarget {
                 alpha,
                 dashed,
                 label,
-                is_self,
                 ..
             } => {
-                if !is_self {
-                    return;
-                }
                 let x = pos.x as f32;
                 let y = pos.y as f32 + y_off;
                 let r = *radius_px;

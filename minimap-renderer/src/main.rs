@@ -74,9 +74,9 @@ fn main() -> Result<(), Report> {
                 .long("no-turret-direction"),
         )
         .arg(
-            Arg::with_name("SHOW_ARMAMENT")
-                .help("Show selected armament/ammo type below ship icons")
-                .long("show-armament"),
+            Arg::with_name("NO_ARMAMENT")
+                .help("Hide selected armament/ammo type below ship icons")
+                .long("no-armament"),
         )
         .arg(
             Arg::with_name("SHOW_TRAILS")
@@ -243,7 +243,8 @@ fn main() -> Result<(), Report> {
         }
     };
     config.apply_cli_overrides(&matches);
-    let options = config.into_render_options();
+    let mut options = config.into_render_options();
+    options.ship_config_visibility = wows_minimap_renderer::ShipConfigVisibility::SelfOnly;
 
     let mut renderer = MinimapRenderer::new(
         map_info.clone(),
@@ -251,6 +252,7 @@ fn main() -> Result<(), Report> {
         replay_version.clone(),
         options,
     );
+
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);
     if matches.is_present("CPU") {
         encoder.set_prefer_cpu(true);

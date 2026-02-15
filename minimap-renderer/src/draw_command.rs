@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use wows_replays::analyzer::decoder::{DeathCause, Recognized};
+use wows_replays::types::{EntityId, PlaneId};
 
 use crate::map_data::MinimapPos;
 
@@ -21,6 +24,94 @@ pub enum ShipConfigCircleKind {
     SecondaryBattery,
     Radar,
     Hydro,
+}
+
+/// Per-range-type visibility filter for ship configuration circles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShipConfigFilter {
+    pub detection: bool,
+    pub main_battery: bool,
+    pub secondary_battery: bool,
+    pub radar: bool,
+    pub hydro: bool,
+}
+
+impl ShipConfigFilter {
+    /// Returns true if the given circle kind is enabled in this filter.
+    pub fn is_enabled(&self, kind: &ShipConfigCircleKind) -> bool {
+        match kind {
+            ShipConfigCircleKind::Detection => self.detection,
+            ShipConfigCircleKind::MainBattery => self.main_battery,
+            ShipConfigCircleKind::SecondaryBattery => self.secondary_battery,
+            ShipConfigCircleKind::Radar => self.radar,
+            ShipConfigCircleKind::Hydro => self.hydro,
+        }
+    }
+
+    /// Returns a filter with all range types enabled.
+    pub fn all_enabled() -> Self {
+        Self {
+            detection: true,
+            main_battery: true,
+            secondary_battery: true,
+            radar: true,
+            hydro: true,
+        }
+    }
+
+    /// Returns true if any range type is enabled.
+    pub fn any_enabled(&self) -> bool {
+        self.detection || self.main_battery || self.secondary_battery || self.radar || self.hydro
+    }
+}
+
+/// Controls which ships have their config circles rendered.
+///
+/// The callback in `Filtered` receives an entity ID and returns:
+/// - `Some(filter)` to show circles matching the filter for that entity
+/// - `None` to hide all circles for that entity
+pub enum ShipConfigVisibility {
+    /// Only show the replay owner's config circles (all range types). Default.
+    SelfOnly,
+    /// Use a callback to determine per-ship visibility and per-range filtering.
+    /// The callback receives the entity ID and returns an optional filter.
+    Filtered(Arc<dyn Fn(EntityId) -> Option<ShipConfigFilter> + Send + Sync>),
+}
+
+impl ShipConfigVisibility {
+    /// Returns the filter for a ship, or None if circles should be hidden.
+    pub fn filter_for(&self, is_self: bool, entity_id: EntityId) -> Option<ShipConfigFilter> {
+        match self {
+            ShipConfigVisibility::SelfOnly => {
+                if is_self { Some(ShipConfigFilter::all_enabled()) } else { None }
+            }
+            ShipConfigVisibility::Filtered(cb) => cb(entity_id),
+        }
+    }
+}
+
+impl Default for ShipConfigVisibility {
+    fn default() -> Self {
+        Self::SelfOnly
+    }
+}
+
+impl Clone for ShipConfigVisibility {
+    fn clone(&self) -> Self {
+        match self {
+            Self::SelfOnly => Self::SelfOnly,
+            Self::Filtered(cb) => Self::Filtered(Arc::clone(cb)),
+        }
+    }
+}
+
+impl std::fmt::Debug for ShipConfigVisibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SelfOnly => write!(f, "SelfOnly"),
+            Self::Filtered(_) => write!(f, "Filtered(<callback>)"),
+        }
+    }
 }
 
 /// A single chat message entry for the chat overlay.
@@ -96,6 +187,7 @@ pub enum DrawCommand {
     },
     /// Ship with icon, rotation, color, visibility
     Ship {
+        entity_id: EntityId,
         pos: MinimapPos,
         yaw: f32,
         /// Species name for icon lookup (e.g. "Destroyer")
@@ -118,6 +210,7 @@ pub enum DrawCommand {
     },
     /// Health bar above a ship
     HealthBar {
+        entity_id: EntityId,
         pos: MinimapPos,
         fraction: f32,
         fill_color: [u8; 3],
@@ -126,6 +219,7 @@ pub enum DrawCommand {
     },
     /// Dead ship marker
     DeadShip {
+        entity_id: EntityId,
         pos: MinimapPos,
         yaw: f32,
         species: Option<String>,
@@ -167,6 +261,7 @@ pub enum DrawCommand {
     },
     /// Turret direction indicator line from ship center
     TurretDirection {
+        entity_id: EntityId,
         pos: MinimapPos,
         /// Turret yaw in radians (world-space, already includes ship heading)
         yaw: f32,
@@ -182,12 +277,19 @@ pub enum DrawCommand {
     },
     /// Plane icon
     Plane {
+        plane_id: PlaneId,
+        owner_entity_id: EntityId,
         pos: MinimapPos,
         /// Icon key for lookup (e.g. "controllable/fighter_he_enemy")
         icon_key: String,
+        /// Owner player name to render above the icon
+        player_name: Option<String>,
+        /// Owner's localized ship name to render above the icon
+        ship_name: Option<String>,
     },
     /// Consumable detection radius circle (radar, hydro, etc.)
     ConsumableRadius {
+        entity_id: EntityId,
         pos: MinimapPos,
         /// Radius in pixels
         radius_px: i32,
@@ -198,6 +300,7 @@ pub enum DrawCommand {
     },
     /// Fighter patrol radius circle (filled only, no outline)
     PatrolRadius {
+        plane_id: PlaneId,
         pos: MinimapPos,
         /// Radius in pixels
         radius_px: i32,
@@ -208,6 +311,7 @@ pub enum DrawCommand {
     },
     /// Active consumable icons laid out horizontally below a ship
     ConsumableIcons {
+        entity_id: EntityId,
         pos: MinimapPos,
         /// Icon keys for lookup (e.g. "PCY019_RLSSearch")
         icon_keys: Vec<String>,
@@ -218,6 +322,7 @@ pub enum DrawCommand {
     },
     /// Ship configuration range circle (detection, main battery, secondary, radar, hydro)
     ShipConfigCircle {
+        entity_id: EntityId,
         pos: MinimapPos,
         /// Radius in minimap pixels
         radius_px: f32,
@@ -235,6 +340,7 @@ pub enum DrawCommand {
     },
     /// Position trail showing historical movement as colored dots
     PositionTrail {
+        entity_id: EntityId,
         /// Player name for filtering trails per-ship
         player_name: Option<String>,
         /// Points with interpolated colors (oldest=blue, newest=red)

@@ -14,7 +14,8 @@ use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::{EntityId, GameClock, GameParamId, PlaneId, Relation};
 
 use crate::draw_command::{
-    ChatEntry, DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipVisibility,
+    ChatEntry, DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipConfigVisibility,
+    ShipVisibility,
 };
 use crate::map_data;
 
@@ -82,6 +83,9 @@ pub struct RenderOptions {
     pub show_chat: bool,
     pub show_advantage: bool,
     pub show_score_timer: bool,
+    /// Controls which ships have their config circles rendered when show_ship_config is true.
+    /// Defaults to SelfOnly (only the replay owner's circles).
+    pub ship_config_visibility: ShipConfigVisibility,
 }
 
 impl Default for RenderOptions {
@@ -112,6 +116,7 @@ impl Default for RenderOptions {
             show_chat: true,
             show_advantage: true,
             show_score_timer: true,
+            ship_config_visibility: ShipConfigVisibility::default(),
         }
     }
 }
@@ -901,6 +906,7 @@ impl<'a> MinimapRenderer<'a> {
                         })
                         .collect();
                     commands.push(DrawCommand::PositionTrail {
+                        entity_id: *entity_id,
                         player_name,
                         points,
                     });
@@ -917,6 +923,7 @@ impl<'a> MinimapRenderer<'a> {
                         })
                         .collect();
                     commands.push(DrawCommand::PositionTrail {
+                        entity_id: *entity_id,
                         player_name,
                         points,
                     });
@@ -927,12 +934,13 @@ impl<'a> MinimapRenderer<'a> {
         // 3. Artillery shot tracers
         if self.options.show_tracers {
             for shot in controller.active_shots() {
+                let owner = shot.salvo.owner_id;
                 let relation = self
                     .player_relations
-                    .get(&shot.entity_id)
+                    .get(&owner)
                     .copied()
                     .unwrap_or(Relation::new(2));
-                let color = ship_color_rgb(relation, self.division_mates.contains(&shot.entity_id));
+                let color = ship_color_rgb(relation, self.division_mates.contains(&owner));
                 for shot_data in &shot.salvo.shots {
                     let origin = shot_data.origin;
                     let target = shot_data.target;
@@ -1079,7 +1087,11 @@ impl<'a> MinimapRenderer<'a> {
                 None
             };
 
-            let name_color = self.get_armament_color(entity_id, controller);
+            let name_color = if self.options.show_armament {
+                self.get_armament_color(entity_id, controller)
+            } else {
+                None
+            };
 
             let minimap = minimap_positions.get(entity_id);
             let world = ship_positions.get(entity_id);
@@ -1135,6 +1147,7 @@ impl<'a> MinimapRenderer<'a> {
                         .unwrap_or(0);
                     self.record_position(*entity_id, px, clock, speed_raw);
                     commands.push(DrawCommand::Ship {
+                        entity_id: *entity_id,
                         pos: px,
                         yaw,
                         species: species.clone(),
@@ -1152,6 +1165,7 @@ impl<'a> MinimapRenderer<'a> {
                     {
                         let fill_color = hp_bar_color(frac);
                         commands.push(DrawCommand::HealthBar {
+                            entity_id: *entity_id,
                             pos: px,
                             fraction: frac,
                             fill_color,
@@ -1169,6 +1183,7 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 };
                 commands.push(DrawCommand::Ship {
+                    entity_id: *entity_id,
                     pos: px,
                     yaw,
                     species: species.clone(),
@@ -1218,6 +1233,7 @@ impl<'a> MinimapRenderer<'a> {
                     .unwrap_or(Relation::new(2));
                 let color = ship_color_rgb(relation, self.division_mates.contains(entity_id));
                 commands.push(DrawCommand::TurretDirection {
+                    entity_id: *entity_id,
                     pos: px,
                     yaw: screen_yaw,
                     color,
@@ -1253,6 +1269,7 @@ impl<'a> MinimapRenderer<'a> {
                     None
                 };
                 commands.push(DrawCommand::DeadShip {
+                    entity_id: *entity_id,
                     pos: px,
                     yaw,
                     species,
@@ -1296,6 +1313,7 @@ impl<'a> MinimapRenderer<'a> {
                     let px_radius = (ward.radius.value() / space_size * MINIMAP_SIZE as f32) as i32;
                     let color = if is_enemy { TEAM1_COLOR } else { TEAM0_COLOR };
                     commands.push(DrawCommand::PatrolRadius {
+                        plane_id: *plane_id,
                         pos: ward_px,
                         radius_px: px_radius,
                         color,
@@ -1303,7 +1321,25 @@ impl<'a> MinimapRenderer<'a> {
                     });
                 }
 
-                commands.push(DrawCommand::Plane { pos: px, icon_key });
+                let player_name = if self.options.show_player_names {
+                    self.player_names.get(&owner_entity).cloned()
+                } else {
+                    None
+                };
+                let ship_name = if self.options.show_ship_names {
+                    self.ship_display_names.get(&owner_entity).cloned()
+                } else {
+                    None
+                };
+
+                commands.push(DrawCommand::Plane {
+                    plane_id: *plane_id,
+                    owner_entity_id: owner_entity,
+                    pos: px,
+                    icon_key,
+                    player_name,
+                    ship_name,
+                });
             }
         }
 
@@ -1382,6 +1418,7 @@ impl<'a> MinimapRenderer<'a> {
                                 (radius.value() / 30.0 / space_size * MINIMAP_SIZE as f32) as i32;
                             let color = consumable_radius_color(&active.consumable, is_friendly);
                             commands.push(DrawCommand::ConsumableRadius {
+                                entity_id: *entity_id,
                                 pos,
                                 radius_px: px_radius,
                                 color,
@@ -1393,6 +1430,7 @@ impl<'a> MinimapRenderer<'a> {
 
                 if !icon_keys.is_empty() {
                     commands.push(DrawCommand::ConsumableIcons {
+                        entity_id: *entity_id,
                         pos,
                         icon_keys,
                         is_friendly,
@@ -1545,79 +1583,101 @@ impl<'a> MinimapRenderer<'a> {
                 let km_to_px =
                     |km: f32| -> f32 { km * 1000.0 / 30.0 / space_size * MINIMAP_SIZE as f32 };
 
-                // Detection circle
-                if let Some(detection_km) = ranges.detection_km {
-                    commands.push(DrawCommand::ShipConfigCircle {
-                        pos,
-                        radius_px: km_to_px(detection_km.value()),
-                        color: [135, 206, 235], // light blue
-                        alpha: 0.6,
-                        dashed: true,
-                        label: Some(format!("{:.1} km", detection_km.value())),
-                        kind: ShipConfigCircleKind::Detection,
-                        player_name: player_name.clone(),
-                        is_self,
-                    });
-                }
+                // Check visibility filter for this ship
+                if let Some(filter) = self
+                    .options
+                    .ship_config_visibility
+                    .filter_for(is_self, *entity_id)
+                {
+                    // Detection circle
+                    if let Some(detection_km) = ranges.detection_km
+                        && filter.detection
+                    {
+                        commands.push(DrawCommand::ShipConfigCircle {
+                            entity_id: *entity_id,
+                            pos,
+                            radius_px: km_to_px(detection_km.value()),
+                            color: [135, 206, 235], // light blue
+                            alpha: 0.6,
+                            dashed: true,
+                            label: Some(format!("{:.1} km", detection_km.value())),
+                            kind: ShipConfigCircleKind::Detection,
+                            player_name: player_name.clone(),
+                            is_self,
+                        });
+                    }
 
-                // Main battery range
-                if let Some(main_battery_m) = ranges.main_battery_m {
-                    commands.push(DrawCommand::ShipConfigCircle {
-                        pos,
-                        radius_px: meters_to_px(main_battery_m.value()),
-                        color: [180, 180, 180], // light gray
-                        alpha: 0.5,
-                        dashed: false,
-                        label: Some(format!("{:.1} km", main_battery_m.to_km().value())),
-                        kind: ShipConfigCircleKind::MainBattery,
-                        player_name: player_name.clone(),
-                        is_self,
-                    });
-                }
+                    // Main battery range
+                    if let Some(main_battery_m) = ranges.main_battery_m
+                        && filter.main_battery
+                    {
+                        commands.push(DrawCommand::ShipConfigCircle {
+                            entity_id: *entity_id,
+                            pos,
+                            radius_px: meters_to_px(main_battery_m.value()),
+                            color: [180, 180, 180], // light gray
+                            alpha: 0.5,
+                            dashed: false,
+                            label: Some(format!("{:.1} km", main_battery_m.to_km().value())),
+                            kind: ShipConfigCircleKind::MainBattery,
+                            player_name: player_name.clone(),
+                            is_self,
+                        });
+                    }
 
-                // Secondary battery range
-                if let Some(secondary_m) = ranges.secondary_battery_m {
-                    commands.push(DrawCommand::ShipConfigCircle {
-                        pos,
-                        radius_px: meters_to_px(secondary_m.value()),
-                        color: [255, 165, 0], // orange
-                        alpha: 0.5,
-                        dashed: false,
-                        label: Some(format!("{:.1} km", secondary_m.to_km().value())),
-                        kind: ShipConfigCircleKind::SecondaryBattery,
-                        player_name: player_name.clone(),
-                        is_self,
-                    });
-                }
+                    // Secondary battery range
+                    if let Some(secondary_m) = ranges.secondary_battery_m
+                        && filter.secondary_battery
+                    {
+                        commands.push(DrawCommand::ShipConfigCircle {
+                            entity_id: *entity_id,
+                            pos,
+                            radius_px: meters_to_px(secondary_m.value()),
+                            color: [255, 165, 0], // orange
+                            alpha: 0.5,
+                            dashed: false,
+                            label: Some(format!("{:.1} km", secondary_m.to_km().value())),
+                            kind: ShipConfigCircleKind::SecondaryBattery,
+                            player_name: player_name.clone(),
+                            is_self,
+                        });
+                    }
 
-                // Radar range
-                if let Some(radar_m) = ranges.radar_m {
-                    commands.push(DrawCommand::ShipConfigCircle {
-                        pos,
-                        radius_px: meters_to_px(radar_m.value()),
-                        color: [255, 255, 100], // yellow
-                        alpha: 0.5,
-                        dashed: false,
-                        label: Some(format!("{:.1} km", radar_m.to_km().value())),
-                        kind: ShipConfigCircleKind::Radar,
-                        player_name: player_name.clone(),
-                        is_self,
-                    });
-                }
+                    // Radar range
+                    if let Some(radar_m) = ranges.radar_m
+                        && filter.radar
+                    {
+                        commands.push(DrawCommand::ShipConfigCircle {
+                            entity_id: *entity_id,
+                            pos,
+                            radius_px: meters_to_px(radar_m.value()),
+                            color: [255, 255, 100], // yellow
+                            alpha: 0.5,
+                            dashed: false,
+                            label: Some(format!("{:.1} km", radar_m.to_km().value())),
+                            kind: ShipConfigCircleKind::Radar,
+                            player_name: player_name.clone(),
+                            is_self,
+                        });
+                    }
 
-                // Hydro range
-                if let Some(hydro_m) = ranges.hydro_m {
-                    commands.push(DrawCommand::ShipConfigCircle {
-                        pos,
-                        radius_px: meters_to_px(hydro_m.value()),
-                        color: [100, 255, 100], // green
-                        alpha: 0.5,
-                        dashed: false,
-                        label: Some(format!("{:.1} km", hydro_m.to_km().value())),
-                        kind: ShipConfigCircleKind::Hydro,
-                        player_name: player_name.clone(),
-                        is_self,
-                    });
+                    // Hydro range
+                    if let Some(hydro_m) = ranges.hydro_m
+                        && filter.hydro
+                    {
+                        commands.push(DrawCommand::ShipConfigCircle {
+                            entity_id: *entity_id,
+                            pos,
+                            radius_px: meters_to_px(hydro_m.value()),
+                            color: [100, 255, 100], // green
+                            alpha: 0.5,
+                            dashed: false,
+                            label: Some(format!("{:.1} km", hydro_m.to_km().value())),
+                            kind: ShipConfigCircleKind::Hydro,
+                            player_name: player_name.clone(),
+                            is_self,
+                        });
+                    }
                 }
             }
         }

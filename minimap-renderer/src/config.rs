@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::draw_command::ShipConfigVisibility;
 use crate::renderer::RenderOptions;
 
 /// Renderer configuration, loadable from a TOML file.
@@ -52,7 +53,7 @@ impl Default for RendererConfig {
             show_kill_feed: true,
             show_chat: true,
             show_consumables: true,
-            show_armament: false,
+            show_armament: true,
             show_trails: false,
             show_dead_trails: true,
             show_speed_trails: false,
@@ -101,6 +102,7 @@ impl RendererConfig {
             show_buffs: true,
             show_advantage: true,
             show_score_timer: true,
+            ship_config_visibility: ShipConfigVisibility::default(),
         }
     }
 
@@ -158,7 +160,7 @@ show_chat = true
 show_consumables = true
 
 # Show selected armament/ammo type below ship icons (e.g. AP, HE, SAP, Torp)
-show_armament = false
+show_armament = true
 
 # Show position trail heatmap (rainbow: blue=oldest, red=newest)
 show_trails = false
@@ -171,6 +173,7 @@ show_speed_trails = false
 
 # Show ship config range circles (detection, main battery, secondary, etc.)
 show_ship_config = false
+
 "#
         .to_string()
     }
@@ -193,8 +196,8 @@ show_ship_config = false
         if matches.is_present("NO_TURRET_DIRECTION") {
             self.show_turret_direction = false;
         }
-        if matches.is_present("SHOW_ARMAMENT") {
-            self.show_armament = true;
+        if matches.is_present("NO_ARMAMENT") {
+            self.show_armament = false;
         }
         if matches.is_present("SHOW_TRAILS") {
             self.show_trails = true;
