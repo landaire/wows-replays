@@ -707,7 +707,10 @@ pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> Game
         .iter()
         .filter_map(|path| load_font(path))
         .collect();
-    let fallback_bytes: Vec<Vec<u8>> = fallbacks_with_bytes.iter().map(|(_, b)| b.clone()).collect();
+    let fallback_bytes: Vec<Vec<u8>> = fallbacks_with_bytes
+        .iter()
+        .map(|(_, b)| b.clone())
+        .collect();
     let fallbacks: Vec<FontArc> = fallbacks_with_bytes.into_iter().map(|(f, _)| f).collect();
 
     let primary_scale_factor = compute_scale_factor(&primary);

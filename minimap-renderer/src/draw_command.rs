@@ -419,6 +419,8 @@ pub enum DrawCommand {
         subtitle: Option<String>,
         /// Glow/shadow color behind the text
         color: [u8; 3],
+        /// If true, subtitle is drawn above the main text; otherwise below.
+        subtitle_above: bool,
     },
 }
 

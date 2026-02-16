@@ -1896,6 +1896,7 @@ impl<'a> MinimapRenderer<'a> {
                 text,
                 subtitle,
                 color,
+                subtitle_above: false,
             });
         }
 

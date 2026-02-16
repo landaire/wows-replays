@@ -677,7 +677,7 @@ fn draw_score_bar(
     let (t0w, t0h) = text_size(score_scale, font, &t0);
     let (t1w, _) = text_size(score_scale, font, &t1);
 
-    let pill_h = t0h as f32 + pill_pad_y * 2.0;
+    let pill_h = (t0h as f32 + pill_pad_y * 2.0).min(bar_height - pill_margin * 2.0);
     let pill_y = (bar_height - pill_h) / 2.0;
     let text_y = pill_y as i32 + pill_pad_y as i32;
 
@@ -852,7 +852,7 @@ fn draw_pre_battle_countdown(pm: &mut Pixmap, seconds: i64, fonts: &GameFonts) {
     let text = format!("{}", seconds);
     let subtitle = "BATTLE STARTS IN";
     let glow_color: [u8; 3] = [255, 200, 50]; // gold
-    draw_battle_result_overlay(pm, &text, Some(subtitle), glow_color, fonts);
+    draw_battle_result_overlay(pm, &text, Some(subtitle), glow_color, true, fonts);
 }
 
 /// Map a DeathCause to the icon key used in the death_cause_icons HashMap.
@@ -1496,6 +1496,7 @@ fn draw_battle_result_overlay(
     text: &str,
     subtitle: Option<&str>,
     glow_color: [u8; 3],
+    subtitle_above: bool,
     fonts: &GameFonts,
 ) {
     let font = &fonts.primary;
@@ -1506,7 +1507,6 @@ fn draw_battle_result_overlay(
     let scale = fonts.scale(font_height);
     let (tw, th) = text_size(scale, font, text);
 
-    // If there's a subtitle, shift the main text up a bit to make room
     let sub_scale = fonts.scale(font_height / 4.0);
     let sub_height = subtitle
         .map(|s| text_size(sub_scale, font, s).1)
@@ -1515,7 +1515,15 @@ fn draw_battle_result_overlay(
     let total_height = th + gap as u32 + sub_height;
 
     let x = (w as i32 - tw as i32) / 2;
-    let y = (h as i32 - total_height as i32) / 2;
+    let center_y = (h as i32 - total_height as i32) / 2;
+
+    // When subtitle is above, subtitle comes first then main text;
+    // when below, main text comes first then subtitle.
+    let (main_y, sub_y) = if subtitle_above {
+        (center_y + sub_height as i32 + gap, center_y)
+    } else {
+        (center_y, center_y + th as i32 + gap)
+    };
 
     // Dark shadow behind text for contrast, then colored glow, then white text
     let glow_layers: &[(i32, [u8; 3], f32)] = &[
@@ -1543,29 +1551,28 @@ fn draw_battle_result_overlay(
             (color[2] as f32 * opacity) as u8,
         ];
         for &(dx, dy) in offsets {
-            draw_text(pm, c, x + dx * dist, y + dy * dist, scale, font, text);
+            draw_text(pm, c, x + dx * dist, main_y + dy * dist, scale, font, text);
         }
     }
-    draw_text(pm, [255, 255, 255], x, y, scale, font, text);
+    draw_text(pm, [255, 255, 255], x, main_y, scale, font, text);
 
-    // Subtitle below main text
+    // Subtitle
     if let Some(sub) = subtitle {
         let (sw, _) = text_size(sub_scale, font, sub);
         let sx = (w as i32 - sw as i32) / 2;
-        let sy = y + th as i32 + gap;
         // Subtle dark outline for readability
         for &(dx, dy) in offsets {
             draw_text(
                 pm,
                 [0, 0, 0],
                 sx + dx * 2,
-                sy + dy * 2,
+                sub_y + dy * 2,
                 sub_scale,
                 font,
                 sub,
             );
         }
-        draw_text(pm, [200, 200, 200], sx, sy, sub_scale, font, sub);
+        draw_text(pm, [200, 200, 200], sx, sub_y, sub_scale, font, sub);
     }
 }
 
@@ -2117,12 +2124,14 @@ impl RenderTarget for ImageTarget {
                 text,
                 subtitle,
                 color,
+                subtitle_above,
             } => {
                 draw_battle_result_overlay(
                     &mut self.canvas,
                     text,
                     subtitle.as_deref(),
                     *color,
+                    *subtitle_above,
                     &self.fonts,
                 );
             }
