@@ -573,38 +573,22 @@ impl<'a> MinimapRenderer<'a> {
     }
 
     /// Calculate team advantage from current controller state.
+    ///
+    /// The result is normalized so that team0 = friendly (replay owner's team)
+    /// and team1 = enemy. When the replay owner is on internal team 1, all
+    /// per-team values are swapped. See TEAM_ADVANTAGE_SCORING.md for details.
     fn calculate_team_advantage(
         &self,
         controller: &dyn BattleControllerState,
     ) -> crate::advantage::AdvantageResult {
-        use crate::advantage::{ScoringParams, TeamState, calculate_advantage};
+        use crate::advantage::{ScoringParams, TeamState, calculate_advantage, swap_breakdown};
         use std::cell::RefCell;
 
         let players = controller.player_entities();
         let entities = controller.entities_by_id();
         let swap = self.self_team_id == Some(1);
 
-        // Build per-team state
-        let mut teams = [
-            TeamState {
-                score: 0,
-                uncontested_caps: 0,
-                total_hp: 0.0,
-                max_hp: 0.0,
-                ships_alive: 0,
-                ships_total: 0,
-                ships_known: 0,
-            },
-            TeamState {
-                score: 0,
-                uncontested_caps: 0,
-                total_hp: 0.0,
-                max_hp: 0.0,
-                ships_alive: 0,
-                ships_total: 0,
-                ships_known: 0,
-            },
-        ];
+        let mut teams = [TeamState::new(), TeamState::new()];
 
         // Scores
         let scores = controller.team_scores();
@@ -625,13 +609,27 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // Aggregate ship HP and counts per team
+        // Aggregate ship HP, counts, and per-class data
         for (entity_id, player) in players {
             let team = player.initial_state().team_id() as usize;
             if team > 1 {
                 continue;
             }
             teams[team].ships_total += 1;
+
+            // Determine ship class for per-class tracking
+            let species = self.player_species.get(entity_id).map(|s| s.as_str());
+            let class_count = match species {
+                Some("Destroyer") => Some(&mut teams[team].destroyers),
+                Some("Cruiser") => Some(&mut teams[team].cruisers),
+                Some("Battleship") => Some(&mut teams[team].battleships),
+                Some("Submarine") => Some(&mut teams[team].submarines),
+                Some("AirCarrier") => Some(&mut teams[team].carriers),
+                _ => None,
+            };
+            if let Some(cc) = class_count {
+                cc.total += 1;
+            }
 
             if let Some(entity) = entities.get(entity_id)
                 && let Some(vehicle) = entity.vehicle_ref()
@@ -643,6 +641,20 @@ impl<'a> MinimapRenderer<'a> {
                 if props.is_alive() {
                     teams[team].ships_alive += 1;
                     teams[team].total_hp += props.health();
+                    // Update per-class alive counts and HP
+                    let class_count = match species {
+                        Some("Destroyer") => Some(&mut teams[team].destroyers),
+                        Some("Cruiser") => Some(&mut teams[team].cruisers),
+                        Some("Battleship") => Some(&mut teams[team].battleships),
+                        Some("Submarine") => Some(&mut teams[team].submarines),
+                        Some("AirCarrier") => Some(&mut teams[team].carriers),
+                        _ => None,
+                    };
+                    if let Some(cc) = class_count {
+                        cc.alive += 1;
+                        cc.hp += props.health();
+                        cc.max_hp += props.max_health();
+                    }
                 }
             }
         }
@@ -661,7 +673,7 @@ impl<'a> MinimapRenderer<'a> {
         let mut result =
             calculate_advantage(&teams[0], &teams[1], &scoring, controller.time_left());
 
-        // Swap the result if self is team 1, so Team0 in the output = friendly
+        // Normalize perspective: swap so team0 = friendly, team1 = enemy
         if swap {
             result.advantage = match result.advantage {
                 crate::advantage::TeamAdvantage::Team0(level) => {
@@ -672,6 +684,7 @@ impl<'a> MinimapRenderer<'a> {
                 }
                 other => other,
             };
+            swap_breakdown(&mut result.breakdown);
         }
         result
     }
