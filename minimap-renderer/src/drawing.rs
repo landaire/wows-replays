@@ -675,6 +675,11 @@ fn draw_score_bar(
     let (t0w, t0h) = text_size(score_scale, font, &t0);
     let (t1w, _) = text_size(score_scale, font, &t1);
 
+    // Pill height must not exceed the bar
+    let pill_h = (t0h as f32 + pill_pad_y * 2.0).min(bar_height);
+    let pill_y = (bar_height - pill_h) / 2.0;
+    let text_y = pill_y as i32 + pill_pad_y as i32;
+
     // ── Measure team 0 pill width ──
     let mut t0_total_w = t0w as f32;
     if let Some(timer) = team0_timer {
@@ -699,24 +704,39 @@ fn draw_score_bar(
 
     // ── Draw team 0 pill background + text ──
     let t0_pill_x = 8.0 - pill_pad_x;
-    let t0_pill_y = 2.0 - pill_pad_y;
     draw_rounded_rect(
         pm,
         t0_pill_x,
-        t0_pill_y,
+        pill_y,
         t0_total_w + pill_pad_x * 2.0,
-        t0h as f32 + pill_pad_y * 2.0,
+        pill_h,
         pill_radius,
         pill_color,
         pill_alpha,
     );
 
     let mut t0_cursor = 8i32;
-    draw_text(pm, [255, 255, 255], t0_cursor, 2, score_scale, font, &t0);
+    draw_text(
+        pm,
+        [255, 255, 255],
+        t0_cursor,
+        text_y,
+        score_scale,
+        font,
+        &t0,
+    );
     t0_cursor += t0w as i32;
     if let Some(timer) = team0_timer {
         t0_cursor += 4;
-        draw_text(pm, timer_color, t0_cursor, 3, timer_scale, font, timer);
+        draw_text(
+            pm,
+            timer_color,
+            t0_cursor,
+            text_y + 1,
+            timer_scale,
+            font,
+            timer,
+        );
         let (tw, _) = text_size(timer_scale, font, timer);
         t0_cursor += tw as i32;
     }
@@ -726,7 +746,7 @@ fn draw_score_bar(
             pm,
             [255, 255, 255],
             t0_cursor,
-            4,
+            text_y + 2,
             advantage_scale,
             font,
             advantage_label,
@@ -735,13 +755,12 @@ fn draw_score_bar(
 
     // ── Draw team 1 pill background + text ──
     let t1_pill_x = width - 8.0 - t1_total_w - pill_pad_x;
-    let t1_pill_y = 2.0 - pill_pad_y;
     draw_rounded_rect(
         pm,
         t1_pill_x,
-        t1_pill_y,
+        pill_y,
         t1_total_w + pill_pad_x * 2.0,
-        t0h as f32 + pill_pad_y * 2.0,
+        pill_h,
         pill_radius,
         pill_color,
         pill_alpha,
@@ -751,14 +770,14 @@ fn draw_score_bar(
     let mut t1_cursor = (width - 8.0) as i32; // right edge of score
     // Score (rightmost)
     let t1_x = t1_cursor - t1w as i32;
-    draw_text(pm, [255, 255, 255], t1_x, 2, score_scale, font, &t1);
+    draw_text(pm, [255, 255, 255], t1_x, text_y, score_scale, font, &t1);
     t1_cursor = t1_x;
     // Timer (left of score)
     if let Some(timer) = team1_timer {
         let (tw, _) = text_size(timer_scale, font, timer);
         t1_cursor -= 4;
         let tx = t1_cursor - tw as i32;
-        draw_text(pm, timer_color, tx, 3, timer_scale, font, timer);
+        draw_text(pm, timer_color, tx, text_y + 1, timer_scale, font, timer);
         t1_cursor = tx;
     }
     // Advantage (leftmost)
@@ -770,7 +789,7 @@ fn draw_score_bar(
             pm,
             [255, 255, 255],
             ax,
-            4,
+            text_y + 2,
             advantage_scale,
             font,
             advantage_label,
