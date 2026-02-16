@@ -124,6 +124,8 @@ impl Default for RenderOptions {
 struct SquadronInfo {
     icon_base: String,
     icon_dir: &'static str,
+    /// True for consumable-spawned fighter planes (e.g. catapult fighters)
+    is_consumable_fighter: bool,
 }
 
 /// Streaming minimap renderer.
@@ -433,11 +435,19 @@ impl<'a> MinimapRenderer<'a> {
                 PlaneCategory::Airsupport => "airsupport",
                 PlaneCategory::Controllable => "controllable",
             };
+            let is_fighter = param
+                .as_ref()
+                .and_then(|p| p.species())
+                .and_then(|sp| sp.known().cloned())
+                .map(|sp| matches!(sp, Species::Fighter))
+                .unwrap_or(false);
+            let is_consumable_fighter = matches!(category, PlaneCategory::Consumable) && is_fighter;
             self.squadron_info.insert(
                 *plane_id,
                 SquadronInfo {
                     icon_base,
                     icon_dir,
+                    is_consumable_fighter,
                 },
             );
         }
@@ -1322,12 +1332,14 @@ impl<'a> MinimapRenderer<'a> {
                     });
                 }
 
-                let player_name = if self.options.show_player_names {
+                // Skip labels for consumable fighters (catapult fighters) — too noisy
+                let is_consumable_fighter = info.map(|i| i.is_consumable_fighter).unwrap_or(false);
+                let player_name = if self.options.show_player_names && !is_consumable_fighter {
                     self.player_names.get(&owner_entity).cloned()
                 } else {
                     None
                 };
-                let ship_name = if self.options.show_ship_names {
+                let ship_name = if self.options.show_ship_names && !is_consumable_fighter {
                     self.ship_display_names.get(&owner_entity).cloned()
                 } else {
                     None

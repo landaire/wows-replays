@@ -1,6 +1,6 @@
 [package]
 name = "wows_minimap_renderer"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 publish = true
 description = """
@@ -24,7 +24,7 @@ cpu = ["dep:openh264"]
 arc = ["wows_replays/arc"]
 
 [dependencies]
-wows_replays = { version = "0.16", path = "../parser" }
+wows_replays = { version = "0.17", path = "../parser" }
 wowsunpack = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 ab_glyph = "0.2"
