@@ -310,7 +310,7 @@ fn main() -> Result<(), Report> {
         while !scan_remaining.is_empty() {
             match scan_parser.parse_packet(scan_remaining) {
                 Ok((rest, packet)) => {
-                    last_clock = packet.clock;
+                    last_clock = wows_replays::types::GameClock(packet.clock.0.max(last_clock.0));
                     scan_remaining = rest;
                 }
                 Err(_) => break,
