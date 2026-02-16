@@ -944,7 +944,7 @@ where
                 key: "score",
                 value,
             } = action
-            && let Some(score) = Self::arg_to_i64(value)
+            && let Some(score) = value.as_i64()
         {
             while self.team_scores.len() <= *team_idx {
                 self.team_scores.push(TeamScore {
@@ -965,11 +965,11 @@ where
                 if let ArgValue::FixedDict(dict) = value {
                     let zone_id = dict
                         .get("zoneId")
-                        .and_then(|v| Self::arg_to_i64(v))
+                        .and_then(|v| v.as_i64())
                         .map(|v| EntityId::from(v as i32));
                     let params_id = dict
                         .get("paramsId")
-                        .and_then(|v| Self::arg_to_i64(v))
+                        .and_then(|v| v.as_i64())
                         .map(GameParamId::from);
 
                     if let (Some(zone_id), Some(params_id)) = (zone_id, params_id) {
@@ -992,15 +992,13 @@ where
                 if let ArgValue::FixedDict(dict) = value {
                     let params_id = dict
                         .get("paramsId")
-                        .and_then(|v| Self::arg_to_i64(v))
+                        .and_then(|v| v.as_i64())
                         .map(GameParamId::from);
                     let owners: Option<Vec<EntityId>> = dict.get("owners").and_then(|v| {
                         if let ArgValue::Array(arr) = v {
                             Some(
                                 arr.iter()
-                                    .filter_map(|o| {
-                                        Self::arg_to_i64(o).map(|id| EntityId::from(id as i32))
-                                    })
+                                    .filter_map(|o| o.as_i64().map(|id| EntityId::from(id as i32)))
                                     .collect::<Vec<_>>(),
                             )
                         } else {
@@ -1154,7 +1152,7 @@ where
                             if let Some(entry_dict) = Self::as_dict(entry) {
                                 let score = entry_dict
                                     .get("score")
-                                    .and_then(|v| Self::arg_to_i64(v))
+                                    .and_then(|v| v.as_i64())
                                     .unwrap_or(0);
                                 while self.team_scores.len() <= idx {
                                     self.team_scores.push(TeamScore {
@@ -1170,7 +1168,7 @@ where
                     // Extract scoring rules: teamWinScore, hold reward/period/cpIndices
                     let team_win_score = missions_dict
                         .get("teamWinScore")
-                        .and_then(|v| Self::arg_to_i64(v))
+                        .and_then(|v| v.as_i64())
                         .unwrap_or(1000);
 
                     let mut hold_reward: i64 = 3;
@@ -1181,9 +1179,7 @@ where
                         if let Some(first_hold) = holds.first()
                             && let Some(hold_dict) = Self::as_dict(first_hold)
                         {
-                            if let Some(v) =
-                                hold_dict.get("reward").and_then(|v| Self::arg_to_i64(v))
-                            {
+                            if let Some(v) = hold_dict.get("reward").and_then(|v| v.as_i64()) {
                                 hold_reward = v;
                             }
                             if let Some(v) = hold_dict.get("period") {
@@ -1191,7 +1187,7 @@ where
                             }
                             if let Some(ArgValue::Array(indices)) = hold_dict.get("cpIndices") {
                                 for idx in indices {
-                                    if let Some(i) = Self::arg_to_i64(idx) {
+                                    if let Some(i) = idx.as_i64() {
                                         hold_cp_indices.push(i as usize);
                                     }
                                 }
@@ -1221,7 +1217,7 @@ where
                 let team_id = packet
                     .props
                     .get("teamId")
-                    .and_then(|v| Self::arg_to_i64(v))
+                    .and_then(|v| v.as_i64())
                     .unwrap_or(-1);
 
                 // Extract index, type, and initial capture state from componentsState
@@ -1241,10 +1237,10 @@ where
                         && let Some(cp_dict) = Self::as_dict(cp)
                     {
                         if let Some(idx) = cp_dict.get("index") {
-                            cp_index = Self::arg_to_i64(idx).map(|v| v as usize);
+                            cp_index = idx.as_i64().map(|v| v as usize);
                         }
                         if let Some(t) = cp_dict.get("type") {
-                            cp_type = Self::arg_to_i64(t).unwrap_or(0) as i32;
+                            cp_type = t.as_i64().unwrap_or(0) as i32;
                         }
                     }
                     // Extract initial capture logic state
@@ -1252,16 +1248,16 @@ where
                         && let Some(cl_dict) = Self::as_dict(cl)
                     {
                         if let Some(v) = cl_dict.get("hasInvaders") {
-                            has_invaders = Self::arg_to_i64(v).unwrap_or(0) != 0;
+                            has_invaders = v.as_i64().unwrap_or(0) != 0;
                         }
                         if let Some(v) = cl_dict.get("invaderTeam") {
-                            invader_team = Self::arg_to_i64(v).unwrap_or(-1);
+                            invader_team = v.as_i64().unwrap_or(-1);
                         }
                         if let Some(v) = cl_dict.get("progress") {
                             progress = v.float_32_ref().map(|f| *f as f64).unwrap_or(0.0);
                         }
                         if let Some(v) = cl_dict.get("bothInside") {
-                            both_inside = Self::arg_to_i64(v).unwrap_or(0) != 0;
+                            both_inside = v.as_i64().unwrap_or(0) != 0;
                         }
                     }
                 }
@@ -1274,7 +1270,7 @@ where
                     && let Some(cl_dict) = Self::as_dict(cl)
                     && let Some(v) = cl_dict.get("isEnabled")
                 {
-                    is_enabled = Self::arg_to_i64(v).unwrap_or(1) != 0;
+                    is_enabled = v.as_i64().unwrap_or(1) != 0;
                 }
 
                 if let Some(idx) = cp_index {
@@ -1324,23 +1320,6 @@ where
         match value {
             ArgValue::FixedDict(d) => Some(d),
             ArgValue::NullableFixedDict(Some(d)) => Some(d),
-            _ => None,
-        }
-    }
-
-    /// Convert any integer ArgValue variant to i64.
-    /// The TryInto impls on ArgValue only match exact types (e.g. Int8 -> i8),
-    /// so we need this to handle mixed-width integers from entity properties.
-    fn arg_to_i64(value: &ArgValue<'_>) -> Option<i64> {
-        match value {
-            ArgValue::Int8(v) => Some(*v as i64),
-            ArgValue::Int16(v) => Some(*v as i64),
-            ArgValue::Int32(v) => Some(*v as i64),
-            ArgValue::Int64(v) => Some(*v),
-            ArgValue::Uint8(v) => Some(*v as i64),
-            ArgValue::Uint16(v) => Some(*v as i64),
-            ArgValue::Uint32(v) => Some(*v as i64),
-            ArgValue::Uint64(v) => Some(*v as i64),
             _ => None,
         }
     }
@@ -2603,7 +2582,7 @@ where
                 }
                 // Handle targetLocalPos — packed turret aim direction
                 if prop.property == "targetLocalPos"
-                    && let Some(val) = Self::arg_to_i64(&prop.value)
+                    && let Some(val) = prop.value.as_i64()
                 {
                     let lo = (val & 0xFF) as f32;
                     // lo byte encodes world-space yaw: (lo/256)*2*PI - PI
@@ -2613,19 +2592,19 @@ where
                 // Handle InteractiveZone teamId changes (packet type 0x7)
                 if prop.property == "teamId"
                     && let Some(&cp_idx) = self.interactive_zone_indices.get(&entity_id)
-                    && let Some(v) = Self::arg_to_i64(&prop.value)
+                    && let Some(v) = prop.value.as_i64()
                 {
                     self.capture_points[cp_idx].team_id = v;
                 }
                 // Handle BattleLogic timeLeft property (seconds remaining)
                 if prop.property == "timeLeft" {
-                    if let Some(v) = Self::arg_to_i64(&prop.value) {
+                    if let Some(v) = prop.value.as_i64() {
                         self.time_left = Some(v);
                     }
                 }
                 // Handle BattleLogic battleStage property
                 if prop.property == "battleStage" {
-                    if let Some(v) = Self::arg_to_i64(&prop.value) {
+                    if let Some(v) = prop.value.as_i64() {
                         // Record when battle becomes active (raw value 0 = BattleStage::Waiting)
                         if self.battle_start_clock.is_none() {
                             let resolved = constants.common().battle_stage(v as i32).copied();
@@ -2641,12 +2620,12 @@ where
                     && let Some(dict) = Self::as_dict(&prop.value)
                 {
                     // winnerTeamId: -2 = undecided (initial), -1 = draw, 0/1 = team won
-                    if let Some(winner) = dict.get("winnerTeamId").and_then(|v| Self::arg_to_i64(v))
+                    if let Some(winner) = dict.get("winnerTeamId").and_then(|v| v.as_i64())
                         && winner >= -1
                     {
                         self.winning_team = Some(winner as i8);
                     }
-                    if let Some(reason) = dict.get("finishReason").and_then(|v| Self::arg_to_i64(v))
+                    if let Some(reason) = dict.get("finishReason").and_then(|v| v.as_i64())
                         && reason > 0
                     {
                         self.finish_type = FinishType::from_id(
@@ -2842,12 +2821,12 @@ where
                         // Capture point update
                         match *key {
                             "hasInvaders" => {
-                                if let Some(v) = Self::arg_to_i64(value) {
+                                if let Some(v) = value.as_i64() {
                                     self.capture_points[cp_idx].has_invaders = v != 0;
                                 }
                             }
                             "invaderTeam" => {
-                                if let Some(v) = Self::arg_to_i64(value) {
+                                if let Some(v) = value.as_i64() {
                                     self.capture_points[cp_idx].invader_team = v;
                                 }
                             }
@@ -2857,17 +2836,17 @@ where
                                 }
                             }
                             "bothInside" => {
-                                if let Some(v) = Self::arg_to_i64(value) {
+                                if let Some(v) = value.as_i64() {
                                     self.capture_points[cp_idx].both_inside = v != 0;
                                 }
                             }
                             "teamId" | "invaderTeamId" => {
-                                if let Some(v) = Self::arg_to_i64(value) {
+                                if let Some(v) = value.as_i64() {
                                     self.capture_points[cp_idx].invader_team = v;
                                 }
                             }
                             "isEnabled" => {
-                                if let Some(v) = Self::arg_to_i64(value) {
+                                if let Some(v) = value.as_i64() {
                                     self.capture_points[cp_idx].is_enabled = v != 0;
                                 }
                             }
@@ -3027,14 +3006,12 @@ where
                 trace!("CAMERA FREE LOOK")
             }
             crate::analyzer::decoder::DecodedPacketPayload::ShotKills { entity_id: _, hits } => {
-                // Remove matched torpedoes by composite key
                 for hit in &hits {
-                    let composite_key = format!("{}{}", hit.owner_id, hit.shot_id);
-                    if let Ok(key) = composite_key.parse::<u64>() {
-                        self.active_torpedoes.retain(|t| {
-                            let torp_key = format!("{}{}", t.torpedo.owner_id, t.torpedo.shot_id);
-                            torp_key.parse::<u64>().map(|k| k != key).unwrap_or(true)
-                        });
+                    // Remove the first torpedo matching this owner + shot_id
+                    if let Some(idx) = self.active_torpedoes.iter().position(|t| {
+                        t.torpedo.owner_id == hit.owner_id && t.torpedo.shot_id == hit.shot_id
+                    }) {
+                        self.active_torpedoes.swap_remove(idx);
                     }
                 }
             }

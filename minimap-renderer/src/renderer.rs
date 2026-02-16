@@ -29,8 +29,6 @@ const KILL_FEED_DURATION: f32 = 10.0;
 // Visual constants
 const SMOKE_COLOR: [u8; 3] = [200, 200, 200];
 const SMOKE_ALPHA: f32 = 0.5;
-const TORPEDO_FRIENDLY_COLOR: [u8; 3] = [76, 232, 170];
-const TORPEDO_ENEMY_COLOR: [u8; 3] = [254, 77, 42];
 const HP_BAR_FULL_COLOR: [u8; 3] = [0, 255, 0];
 const HP_BAR_MID_COLOR: [u8; 3] = [255, 255, 0];
 const HP_BAR_LOW_COLOR: [u8; 3] = [255, 0, 0];
@@ -125,8 +123,8 @@ impl Default for RenderOptions {
 struct SquadronInfo {
     icon_base: String,
     icon_dir: &'static str,
-    /// True for consumable-spawned fighter planes (e.g. catapult fighters)
-    is_consumable_fighter: bool,
+    /// True for consumable-spawned planes (catapult fighters, spotter planes)
+    is_consumable: bool,
 }
 
 /// Streaming minimap renderer.
@@ -445,19 +443,13 @@ impl<'a> MinimapRenderer<'a> {
                 PlaneCategory::Airsupport => "airsupport",
                 PlaneCategory::Controllable => "controllable",
             };
-            let is_fighter = param
-                .as_ref()
-                .and_then(|p| p.species())
-                .and_then(|sp| sp.known().cloned())
-                .map(|sp| matches!(sp, Species::Fighter))
-                .unwrap_or(false);
-            let is_consumable_fighter = matches!(category, PlaneCategory::Consumable) && is_fighter;
+            let is_consumable = matches!(category, PlaneCategory::Consumable);
             self.squadron_info.insert(
                 *plane_id,
                 SquadronInfo {
                     icon_base,
                     icon_dir,
-                    is_consumable_fighter,
+                    is_consumable,
                 },
             );
         }
@@ -1007,11 +999,8 @@ impl<'a> MinimapRenderer<'a> {
                     .get(&torp.torpedo.owner_id)
                     .copied()
                     .unwrap_or(Relation::new(2));
-                let color = if relation.is_self() || relation.is_ally() {
-                    TORPEDO_FRIENDLY_COLOR
-                } else {
-                    TORPEDO_ENEMY_COLOR
-                };
+                let is_div = self.division_mates.contains(&torp.torpedo.owner_id);
+                let color = ship_color_rgb(relation, is_div);
                 commands.push(DrawCommand::Torpedo {
                     pos: map_info.world_to_minimap(world, MINIMAP_SIZE),
                     color,
@@ -1342,14 +1331,14 @@ impl<'a> MinimapRenderer<'a> {
                     });
                 }
 
-                // Skip labels for consumable fighters (catapult fighters) — too noisy
-                let is_consumable_fighter = info.map(|i| i.is_consumable_fighter).unwrap_or(false);
-                let player_name = if self.options.show_player_names && !is_consumable_fighter {
+                // Skip labels for consumable planes (catapult fighters, spotters) — too noisy
+                let is_consumable = info.map(|i| i.is_consumable).unwrap_or(false);
+                let player_name = if self.options.show_player_names && !is_consumable {
                     self.player_names.get(&owner_entity).cloned()
                 } else {
                     None
                 };
-                let ship_name = if self.options.show_ship_names && !is_consumable_fighter {
+                let ship_name = if self.options.show_ship_names && !is_consumable {
                     self.ship_display_names.get(&owner_entity).cloned()
                 } else {
                     None
@@ -1463,7 +1452,7 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 8b. Ship config circles (detection, main battery, secondary, radar, hydro)
+        // 8b. Ship config circles (detection, main battery, secondary, radar, hydro, torpedo)
         if self.options.show_ship_config {
             for entity_id in &all_ship_ids {
                 // Skip dead ships
@@ -1661,6 +1650,24 @@ impl<'a> MinimapRenderer<'a> {
                             dashed: false,
                             label: Some(format!("{:.1} km", secondary_m.to_km().value())),
                             kind: ShipConfigCircleKind::SecondaryBattery,
+                            player_name: player_name.clone(),
+                            is_self,
+                        });
+                    }
+
+                    // Torpedo range
+                    if let Some(torpedo_m) = ranges.torpedo_range_m
+                        && filter.torpedo
+                    {
+                        commands.push(DrawCommand::ShipConfigCircle {
+                            entity_id: *entity_id,
+                            pos,
+                            radius_px: meters_to_px(torpedo_m.value()),
+                            color: [0, 200, 200], // cyan/teal
+                            alpha: 0.5,
+                            dashed: false,
+                            label: Some(format!("{:.1} km", torpedo_m.to_km().value())),
+                            kind: ShipConfigCircleKind::TorpedoRange,
                             player_name: player_name.clone(),
                             is_self,
                         });

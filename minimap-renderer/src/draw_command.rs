@@ -22,6 +22,7 @@ pub enum ShipConfigCircleKind {
     Detection,
     MainBattery,
     SecondaryBattery,
+    TorpedoRange,
     Radar,
     Hydro,
 }
@@ -32,6 +33,7 @@ pub struct ShipConfigFilter {
     pub detection: bool,
     pub main_battery: bool,
     pub secondary_battery: bool,
+    pub torpedo: bool,
     pub radar: bool,
     pub hydro: bool,
 }
@@ -43,6 +45,7 @@ impl ShipConfigFilter {
             ShipConfigCircleKind::Detection => self.detection,
             ShipConfigCircleKind::MainBattery => self.main_battery,
             ShipConfigCircleKind::SecondaryBattery => self.secondary_battery,
+            ShipConfigCircleKind::TorpedoRange => self.torpedo,
             ShipConfigCircleKind::Radar => self.radar,
             ShipConfigCircleKind::Hydro => self.hydro,
         }
@@ -54,6 +57,7 @@ impl ShipConfigFilter {
             detection: true,
             main_battery: true,
             secondary_battery: true,
+            torpedo: true,
             radar: true,
             hydro: true,
         }
@@ -61,7 +65,12 @@ impl ShipConfigFilter {
 
     /// Returns true if any range type is enabled.
     pub fn any_enabled(&self) -> bool {
-        self.detection || self.main_battery || self.secondary_battery || self.radar || self.hydro
+        self.detection
+            || self.main_battery
+            || self.secondary_battery
+            || self.torpedo
+            || self.radar
+            || self.hydro
     }
 }
 

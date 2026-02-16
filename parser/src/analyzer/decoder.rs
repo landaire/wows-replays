@@ -1932,15 +1932,15 @@ where
                 };
                 let owner_id: i32 = salvo_dict
                     .get("ownerID")
-                    .and_then(|v| v.try_into().ok())
+                    .and_then(ArgValue::as_i32)
                     .unwrap_or(0);
                 let params_id: u32 = salvo_dict
                     .get("paramsID")
-                    .and_then(|v| v.try_into().ok())
+                    .and_then(ArgValue::as_u32)
                     .unwrap_or(0);
                 let salvo_id: u32 = salvo_dict
                     .get("salvoID")
-                    .and_then(|v| v.try_into().ok())
+                    .and_then(ArgValue::as_u32)
                     .unwrap_or(0);
                 let shots_array = match salvo_dict.get("shots") {
                     Some(ArgValue::Array(a)) => a,
@@ -1956,11 +1956,11 @@ where
                     let tar_pos = Self::extract_vec3(shot_dict.get("tarPos"));
                     let shot_id: u32 = shot_dict
                         .get("shotID")
-                        .and_then(|v| v.try_into().ok())
+                        .and_then(ArgValue::as_u32)
                         .unwrap_or(0);
                     let speed: f32 = shot_dict
                         .get("speed")
-                        .and_then(|v| v.try_into().ok())
+                        .and_then(ArgValue::as_f32)
                         .unwrap_or(0.0);
                     shots.push(ArtilleryShotData {
                         origin: pos,
@@ -1993,15 +1993,15 @@ where
                 };
                 let owner_id: i32 = salvo_dict
                     .get("ownerID")
-                    .and_then(|v| v.try_into().ok())
+                    .and_then(ArgValue::as_i32)
                     .unwrap_or(0);
                 let params_id: u32 = salvo_dict
                     .get("paramsID")
-                    .and_then(|v| v.try_into().ok())
+                    .and_then(ArgValue::as_u32)
                     .unwrap_or(0);
                 let salvo_id: u32 = salvo_dict
                     .get("salvoID")
-                    .and_then(|v| v.try_into().ok())
+                    .and_then(ArgValue::as_u32)
                     .unwrap_or(0);
                 let torps_array = match salvo_dict.get("torpedoes") {
                     Some(ArgValue::Array(a)) => a,
@@ -2016,7 +2016,7 @@ where
                     let dir = Self::extract_vec3(torp_dict.get("dir"));
                     let shot_id: u32 = torp_dict
                         .get("shotID")
-                        .and_then(|v| v.try_into().ok())
+                        .and_then(ArgValue::as_u32)
                         .unwrap_or(0);
                     torpedoes.push(TorpedoData {
                         owner_id: EntityId::from(owner_id),
@@ -2047,7 +2047,7 @@ where
                 };
                 let owner_id: i32 = pack_dict
                     .get("ownerID")
-                    .and_then(|v| v.try_into().ok())
+                    .and_then(ArgValue::as_i32)
                     .unwrap_or(0);
                 let kills_array = match pack_dict.get("kills") {
                     Some(ArgValue::Array(a)) => a,
@@ -2060,7 +2060,7 @@ where
                     };
                     let shot_id: u32 = kill_dict
                         .get("shotID")
-                        .and_then(|v| v.try_into().ok())
+                        .and_then(ArgValue::as_u32)
                         .unwrap_or(0);
                     hits.push(ShotHit {
                         owner_id: EntityId::from(owner_id),

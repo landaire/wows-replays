@@ -1597,6 +1597,8 @@ pub struct ImageTarget {
     consumable_icons: HashMap<String, RgbaImage>,
     death_cause_icons: HashMap<String, RgbaImage>,
     powerup_icons: HashMap<String, RgbaImage>,
+    /// Bounding rects [x, y, w, h] of previously placed config-circle labels in the current frame.
+    placed_labels: Vec<[i32; 4]>,
 }
 
 impl ImageTarget {
@@ -1631,6 +1633,7 @@ impl ImageTarget {
             consumable_icons,
             death_cause_icons,
             powerup_icons,
+            placed_labels: Vec::new(),
         }
     }
 
@@ -1648,6 +1651,7 @@ impl ImageTarget {
 impl RenderTarget for ImageTarget {
     fn begin_frame(&mut self) {
         self.canvas = self.base_canvas.clone();
+        self.placed_labels.clear();
     }
 
     fn draw(&mut self, cmd: &DrawCommand) {
@@ -2088,16 +2092,70 @@ impl RenderTarget for ImageTarget {
                     draw_circle_outline(&mut self.canvas, x, y, r, *color, *alpha, 1.0);
                 }
                 if let Some(text) = label {
+                    let font = self.fonts.font_for_text(text);
                     let scale = self.fonts.scale(11.0);
-                    let lx = x as i32 + r as i32 + 3;
-                    let ly = y as i32 - 5;
+                    let (tw, th) = text_size(scale, font, text);
+                    let tw = tw as i32;
+                    let th = th as i32;
+                    let cx = x as i32;
+                    let cy = y as i32;
+                    let ri = *radius_px as i32;
+                    let gap = 3;
+
+                    // 8 candidate angles: top, top-right, right, bottom-right, bottom, bottom-left, left, top-left
+                    let candidates: [(f32, f32); 8] = [
+                        (0.0, -1.0),    // top
+                        (0.707, -0.707), // top-right
+                        (1.0, 0.0),     // right
+                        (0.707, 0.707),  // bottom-right
+                        (0.0, 1.0),     // bottom
+                        (-0.707, 0.707), // bottom-left
+                        (-1.0, 0.0),    // left
+                        (-0.707, -0.707), // top-left
+                    ];
+
+                    let compute_rect = |cos: f32, sin: f32| -> [i32; 4] {
+                        let ax = cx + ((ri + gap) as f32 * cos) as i32;
+                        let ay = cy + ((ri + gap) as f32 * sin) as i32;
+                        let lx = if cos < -0.3 {
+                            ax - tw
+                        } else if cos > 0.3 {
+                            ax
+                        } else {
+                            ax - tw / 2
+                        };
+                        let ly = if sin < -0.3 {
+                            ay - th
+                        } else if sin > 0.3 {
+                            ay
+                        } else {
+                            ay - th / 2
+                        };
+                        [lx, ly, tw, th]
+                    };
+
+                    let rects_overlap = |a: &[i32; 4], b: &[i32; 4]| -> bool {
+                        a[0] < b[0] + b[2] && a[0] + a[2] > b[0] && a[1] < b[1] + b[3] && a[1] + a[3] > b[1]
+                    };
+
+                    let mut best = compute_rect(candidates[0].0, candidates[0].1);
+                    for &(cos, sin) in &candidates {
+                        let rect = compute_rect(cos, sin);
+                        let overlaps = self.placed_labels.iter().any(|prev| rects_overlap(prev, &rect));
+                        if !overlaps {
+                            best = rect;
+                            break;
+                        }
+                    }
+
+                    self.placed_labels.push(best);
                     draw_text_shadow(
                         &mut self.canvas,
                         *color,
-                        lx,
-                        ly,
+                        best[0],
+                        best[1],
                         scale,
-                        &self.fonts.primary,
+                        font,
                         text,
                     );
                 }
