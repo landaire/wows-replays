@@ -629,7 +629,7 @@ fn draw_score_bar(
     fonts: &GameFonts,
 ) {
     let width = pm.width() as f32;
-    let bar_height = 20.0f32;
+    let bar_height = crate::HUD_HEIGHT as f32;
     let max_score = max_score as f32;
     let half = width / 2.0;
     let center_gap = 2.0f32; // small gap between the two bars
@@ -660,23 +660,24 @@ fn draw_score_bar(
     }
 
     let font = &fonts.primary;
-    let score_scale = fonts.scale(14.0);
-    let timer_scale = fonts.scale(12.0);
-    let advantage_scale = fonts.scale(11.0);
     let timer_color: [u8; 3] = [200, 200, 200];
     let pill_pad_x = 4.0f32;
     let pill_pad_y = 1.0f32;
+    let pill_margin = 2.0f32;
     let pill_radius = 3.0f32;
     let pill_color: [u8; 3] = [0, 0, 0];
     let pill_alpha = 0.55f32;
+
+    let score_scale = fonts.scale(14.0);
+    let timer_scale = fonts.scale(12.0);
+    let advantage_scale = fonts.scale(11.0);
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
     let (t0w, t0h) = text_size(score_scale, font, &t0);
     let (t1w, _) = text_size(score_scale, font, &t1);
 
-    // Pill height must not exceed the bar
-    let pill_h = (t0h as f32 + pill_pad_y * 2.0).min(bar_height);
+    let pill_h = t0h as f32 + pill_pad_y * 2.0;
     let pill_y = (bar_height - pill_h) / 2.0;
     let text_y = pill_y as i32 + pill_pad_y as i32;
 
@@ -908,7 +909,7 @@ fn draw_kill_feed(
     let text_h = text_h as i32;
 
     for (i, entry) in entries.iter().take(5).enumerate() {
-        let y = 22 + i as i32 * line_height;
+        let y = crate::HUD_HEIGHT as i32 + i as i32 * line_height;
         let icon_y = y + (text_h - icon_size) / 2;
 
         // Get death cause icon key
@@ -1973,7 +1974,7 @@ impl RenderTarget for ImageTarget {
             } => {
                 let icon_size = 16i32;
                 let gap = 2i32;
-                let buff_y = 22i32;
+                let buff_y = HUD_HEIGHT as i32;
                 let count_scale = self.fonts.scale(10.0);
 
                 // Friendly buffs: left side, starting from x=4

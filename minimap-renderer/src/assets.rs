@@ -573,6 +573,10 @@ pub struct GameFonts {
     pub primary_scale_factor: f32,
     /// Per-fallback scale correction factors (same order as `fallbacks`).
     pub fallback_scale_factors: Vec<f32>,
+    /// Raw TTF bytes of the primary font (for external consumers like egui).
+    pub primary_bytes: Vec<u8>,
+    /// Raw TTF bytes of the fallback fonts (same order as `fallbacks`).
+    pub fallback_bytes: Vec<Vec<u8>>,
 }
 
 impl GameFonts {
@@ -664,7 +668,7 @@ fn compute_scale_factor(font: &FontArc) -> f32 {
 /// (Korean, Japanese, Chinese) are loaded if present. Each font gets a
 /// scale correction factor computed automatically.
 pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> GameFonts {
-    let load_font = |path: &str| -> Option<FontArc> {
+    let load_font = |path: &str| -> Option<(FontArc, Vec<u8>)> {
         let file_path = Path::new(path);
         let mut buf = Vec::new();
         if file_tree
@@ -672,10 +676,11 @@ pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> Game
             .is_ok()
             && !buf.is_empty()
         {
+            let raw_bytes = buf.clone();
             match FontArc::try_from_vec(buf) {
                 Ok(font) => {
                     debug!(path, "Loaded game font");
-                    return Some(font);
+                    return Some((font, raw_bytes));
                 }
                 Err(_) => {
                     warn!(path, "Failed to parse game font");
@@ -685,7 +690,7 @@ pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> Game
         None
     };
 
-    let primary = load_font("gui/fonts/Warhelios.ttf")
+    let (primary, primary_bytes) = load_font("gui/fonts/Warhelios.ttf")
         .or_else(|| load_font("gui/fonts/Warhelios_Regular.ttf"))
         .or_else(|| load_font("gui/fonts/Warhelios_Bold.ttf"))
         .expect(
@@ -698,10 +703,12 @@ pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> Game
         "gui/fonts/Source_Han_Sans_JP_Bold_WH.ttf",
         "gui/fonts/Source_Han_Sans_CN_Bold_WH.ttf",
     ];
-    let fallbacks: Vec<FontArc> = fallback_paths
+    let fallbacks_with_bytes: Vec<(FontArc, Vec<u8>)> = fallback_paths
         .iter()
         .filter_map(|path| load_font(path))
         .collect();
+    let fallback_bytes: Vec<Vec<u8>> = fallbacks_with_bytes.iter().map(|(_, b)| b.clone()).collect();
+    let fallbacks: Vec<FontArc> = fallbacks_with_bytes.into_iter().map(|(f, _)| f).collect();
 
     let primary_scale_factor = compute_scale_factor(&primary);
     let fallback_scale_factors: Vec<f32> = fallbacks.iter().map(compute_scale_factor).collect();
@@ -716,5 +723,7 @@ pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> Game
         fallbacks,
         primary_scale_factor,
         fallback_scale_factors,
+        primary_bytes,
+        fallback_bytes,
     }
 }
