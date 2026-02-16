@@ -1,10 +1,9 @@
 use std::sync::LazyLock;
 
-use wowsunpack::data::idx::FileNode;
-use wowsunpack::data::pkg::PkgFileLoader;
 pub use wowsunpack::game_constants::{
     BattleConstants, ChannelConstants, CommonConstants, ShipsConstants, WeaponsConstants,
 };
+use wowsunpack::vfs::VfsPath;
 
 pub static DEFAULT_GAME_CONSTANTS: LazyLock<GameConstants> = LazyLock::new(GameConstants::defaults);
 
@@ -19,14 +18,14 @@ pub struct GameConstants {
 }
 
 impl GameConstants {
-    /// Load all constants from game files.
-    pub fn from_pkg(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> Self {
+    /// Load all constants from game files via VFS.
+    pub fn from_vfs(vfs: &VfsPath) -> Self {
         Self {
-            battle: BattleConstants::load(file_tree, pkg_loader),
-            ships: ShipsConstants::load(file_tree, pkg_loader),
-            weapons: WeaponsConstants::load(file_tree, pkg_loader),
-            common: CommonConstants::load(file_tree, pkg_loader),
-            channel: ChannelConstants::load(file_tree, pkg_loader),
+            battle: BattleConstants::load(vfs),
+            ships: ShipsConstants::load(vfs),
+            weapons: WeaponsConstants::load(vfs),
+            common: CommonConstants::load(vfs),
+            channel: ChannelConstants::load(vfs),
         }
     }
 

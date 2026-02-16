@@ -10,11 +10,11 @@ members = [
 ]
 
 [workspace.dependencies]
-wowsunpack = { version = "0.17", default-features = false, features = ["json"] }
+wowsunpack = { version = "0.17", default-features = false, features = ["json", "vfs"] }
 pickled = "2.0.0-alpha3"
 tracing = "0.1.44"
 
 [patch.crates-io]
-#wowsunpack = { path = "../wowsunpack" }
+wowsunpack = { path = "../wowsunpack" }
 #pickled = { path = "../pickled" }
 # muxide = { path = "../muxide" }

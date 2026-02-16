@@ -1,10 +1,9 @@
 use ab_glyph::{Font, FontArc, PxScale};
 use image::{RgbImage, RgbaImage};
 use std::collections::HashMap;
-use std::path::Path;
+use std::io::Read;
 use tracing::{debug, warn};
-use wowsunpack::data::idx::FileNode;
-use wowsunpack::data::pkg::PkgFileLoader;
+use wowsunpack::vfs::VfsPath;
 
 use crate::MINIMAP_SIZE;
 use crate::map_data;
@@ -13,28 +12,24 @@ use crate::map_data;
 /// Scales proportionally with minimap size (18px at 768px minimap).
 pub const ICON_SIZE: u32 = MINIMAP_SIZE * 3 / 128;
 
-pub fn load_packed_image(
-    path: &str,
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-) -> Option<image::DynamicImage> {
-    let file_path = Path::new(path);
+/// Read a file from the VFS, returning its bytes or None if not found/empty.
+fn read_vfs_file(vfs: &VfsPath, path: &str) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
-    if file_tree
-        .read_file_at_path(file_path, pkg_loader, &mut buf)
-        .is_ok()
-        && let Ok(img) = image::load_from_memory(&buf)
-    {
-        return Some(img);
-    }
-    None
+    vfs.join(path)
+        .ok()?
+        .open_file()
+        .ok()?
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.is_empty() { None } else { Some(buf) }
 }
 
-pub fn load_map_image(
-    map_name: &str,
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-) -> Option<RgbImage> {
+pub fn load_packed_image(path: &str, vfs: &VfsPath) -> Option<image::DynamicImage> {
+    let buf = read_vfs_file(vfs, path)?;
+    image::load_from_memory(&buf).ok()
+}
+
+pub fn load_map_image(map_name: &str, vfs: &VfsPath) -> Option<RgbImage> {
     // map_name from meta is e.g. "spaces/28_naval_mission"
     // minimap images live at spaces/<map>/minimap.png in the packed files
     let bare_name = map_name.strip_prefix("spaces/").unwrap_or(map_name);
@@ -44,8 +39,8 @@ pub fn load_map_image(
 
     // Load water (background) and land (foreground with alpha) separately,
     // then composite land over water to get the final map image.
-    let water = load_packed_image(&water_path, file_tree, pkg_loader);
-    let land = load_packed_image(&land_path, file_tree, pkg_loader);
+    let water = load_packed_image(&water_path, vfs);
+    let land = load_packed_image(&land_path, vfs);
 
     let result = match (water, land) {
         (Some(water_img), Some(land_img)) => {
@@ -86,11 +81,7 @@ pub fn load_map_image(
     Some(result)
 }
 
-pub fn load_map_info(
-    map_name: &str,
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-) -> Option<map_data::MapInfo> {
+pub fn load_map_info(map_name: &str, vfs: &VfsPath) -> Option<map_data::MapInfo> {
     let bare_name = map_name.strip_prefix("spaces/").unwrap_or(map_name);
 
     // Try multiple path variants — the virtual filesystem layout may differ
@@ -98,25 +89,21 @@ pub fn load_map_info(
         format!("spaces/{}/space.settings", bare_name),
         format!("content/gameplay/{}/space.settings", bare_name),
     ];
-    let mut buf = Vec::new();
-    let mut found = false;
+    let mut buf = None;
     for candidate in &candidates {
-        buf.clear();
-        let file_path = Path::new(candidate);
-        if file_tree
-            .read_file_at_path(file_path, pkg_loader, &mut buf)
-            .is_ok()
-            && !buf.is_empty()
-        {
+        if let Some(data) = read_vfs_file(vfs, candidate) {
             debug!(path = %candidate, "Loaded space.settings");
-            found = true;
+            buf = Some(data);
             break;
         }
     }
-    if !found {
-        warn!(map = %bare_name, tried = ?candidates, "Could not load space.settings, using defaults");
-        return None;
-    }
+    let buf = match buf {
+        Some(b) => b,
+        None => {
+            warn!(map = %bare_name, tried = ?candidates, "Could not load space.settings, using defaults");
+            return None;
+        }
+    };
 
     let content = String::from_utf8_lossy(&buf);
     let doc = roxmltree::Document::parse(&content).ok()?;
@@ -179,10 +166,7 @@ pub fn load_map_info(
 /// - `"{Species}_dead"` — destroyed ship
 /// - `"{Species}_invisible"` — not currently detected
 /// - `"{Species}_last_visible"` — last known position (minimap-only)
-pub fn load_ship_icons(
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-) -> HashMap<String, RgbaImage> {
+pub fn load_ship_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
     let species_names = [
         "Destroyer",
         "Cruiser",
@@ -200,16 +184,11 @@ pub fn load_ship_icons(
     ];
     let mut icons = HashMap::new();
     let load_svg = |path: &str, key: &str, icons: &mut HashMap<String, RgbaImage>| {
-        let file_path = Path::new(path);
-        let mut buf = Vec::new();
-        if file_tree
-            .read_file_at_path(file_path, pkg_loader, &mut buf)
-            .is_ok()
-            && !buf.is_empty()
-            && let Some(img) = rasterize_svg(&buf, ICON_SIZE)
-        {
-            icons.insert(key.to_string(), img);
-            return true;
+        if let Some(buf) = read_vfs_file(vfs, path) {
+            if let Some(img) = rasterize_svg(&buf, ICON_SIZE) {
+                icons.insert(key.to_string(), img);
+                return true;
+            }
         }
         false
     };
@@ -261,10 +240,7 @@ pub fn load_ship_icons(
 }
 
 /// Load all plane icons from game files into a HashMap keyed by name (e.g. "fighter_ally").
-pub fn load_plane_icons(
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-) -> HashMap<String, RgbaImage> {
+pub fn load_plane_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
     let dirs = [
         "gui/battle_hud/markers_minimap/plane/consumables",
         "gui/battle_hud/markers_minimap/plane/controllable",
@@ -303,7 +279,7 @@ pub fn load_plane_icons(
             for suffix in &suffixes {
                 let name = format!("{}_{}", base, suffix);
                 let path = format!("{}/{}.png", dir, name);
-                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
+                if let Some(img) = load_packed_image(&path, vfs) {
                     let key = format!("{}/{}", dir_name, name);
                     let rgba = img.to_rgba8();
                     // Resize to ICON_SIZE to scale with minimap
@@ -326,37 +302,31 @@ pub fn load_plane_icons(
 ///
 /// Discovers all `consumable_PCY*.png` files in `gui/consumables/` to support
 /// all ability variants (base, Premium, Super, TimeBased, etc.).
-pub fn load_consumable_icons(
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-) -> HashMap<String, RgbaImage> {
+pub fn load_consumable_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
-    // Navigate to gui/consumables/ directory and enumerate all files
-    let consumables_dir = file_tree
-        .children()
-        .get("gui")
-        .and_then(|gui| gui.children().get("consumables"));
-
-    if let Some(dir) = consumables_dir {
-        for filename in dir.children().keys() {
-            // Match files like "consumable_PCY009_CrashCrewPremium.png"
-            if let Some(pcy_name) = filename
-                .strip_prefix("consumable_")
-                .and_then(|s| s.strip_suffix(".png"))
-            {
-                if !pcy_name.starts_with("PCY") {
-                    continue;
-                }
-                let path = format!("gui/consumables/{}", filename);
-                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
-                    let resized = image::imageops::resize(
-                        &img,
-                        28,
-                        28,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    icons.insert(pcy_name.to_string(), resized);
+    if let Ok(dir) = vfs.join("gui/consumables") {
+        if let Ok(entries) = dir.read_dir() {
+            for entry in entries {
+                let filename = entry.filename();
+                // Match files like "consumable_PCY009_CrashCrewPremium.png"
+                if let Some(pcy_name) = filename
+                    .strip_prefix("consumable_")
+                    .and_then(|s| s.strip_suffix(".png"))
+                {
+                    if !pcy_name.starts_with("PCY") {
+                        continue;
+                    }
+                    let path = format!("gui/consumables/{}", filename);
+                    if let Some(img) = load_packed_image(&path, vfs) {
+                        let resized = image::imageops::resize(
+                            &img,
+                            28,
+                            28,
+                            image::imageops::FilterType::Lanczos3,
+                        );
+                        icons.insert(pcy_name.to_string(), resized);
+                    }
                 }
             }
         }
@@ -370,34 +340,27 @@ pub fn load_consumable_icons(
 ///
 /// Discovers `icon_frag_*.png` files in `gui/battle_hud/icon_frag/` and stores
 /// them resized to `size x size` pixels, keyed by the base name (e.g. `"main_caliber"`).
-pub fn load_death_cause_icons(
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-    size: u32,
-) -> HashMap<String, RgbaImage> {
+pub fn load_death_cause_icons(vfs: &VfsPath, size: u32) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
-    let frag_dir = file_tree
-        .children()
-        .get("gui")
-        .and_then(|gui| gui.children().get("battle_hud"))
-        .and_then(|bh| bh.children().get("icon_frag"));
-
-    if let Some(dir) = frag_dir {
-        for filename in dir.children().keys() {
-            if let Some(base_name) = filename
-                .strip_prefix("icon_frag_")
-                .and_then(|s| s.strip_suffix(".png"))
-            {
-                let path = format!("gui/battle_hud/icon_frag/{}", filename);
-                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
-                    let resized = image::imageops::resize(
-                        &img,
-                        size,
-                        size,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    icons.insert(base_name.to_string(), resized);
+    if let Ok(dir) = vfs.join("gui/battle_hud/icon_frag") {
+        if let Ok(entries) = dir.read_dir() {
+            for entry in entries {
+                let filename = entry.filename();
+                if let Some(base_name) = filename
+                    .strip_prefix("icon_frag_")
+                    .and_then(|s| s.strip_suffix(".png"))
+                {
+                    let path = format!("gui/battle_hud/icon_frag/{}", filename);
+                    if let Some(img) = load_packed_image(&path, vfs) {
+                        let resized = image::imageops::resize(
+                            &img,
+                            size,
+                            size,
+                            image::imageops::FilterType::Lanczos3,
+                        );
+                        icons.insert(base_name.to_string(), resized);
+                    }
                 }
             }
         }
@@ -411,38 +374,31 @@ pub fn load_death_cause_icons(
 ///
 /// Discovers `icon_marker_*.png` files in `gui/powerups/drops/` and stores them
 /// resized to `size x size` pixels, keyed by marker name (e.g. `"damage_active"`).
-pub fn load_powerup_icons(
-    file_tree: &FileNode,
-    pkg_loader: &PkgFileLoader,
-    size: u32,
-) -> HashMap<String, RgbaImage> {
+pub fn load_powerup_icons(vfs: &VfsPath, size: u32) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
-    let drops_dir = file_tree
-        .children()
-        .get("gui")
-        .and_then(|gui| gui.children().get("powerups"))
-        .and_then(|pu| pu.children().get("drops"));
-
-    if let Some(dir) = drops_dir {
-        for filename in dir.children().keys() {
-            if let Some(marker_name) = filename
-                .strip_prefix("icon_marker_")
-                .and_then(|s| s.strip_suffix(".png"))
-            {
-                // Skip _small variants
-                if marker_name.ends_with("_small") {
-                    continue;
-                }
-                let path = format!("gui/powerups/drops/{}", filename);
-                if let Some(img) = load_packed_image(&path, file_tree, pkg_loader) {
-                    let resized = image::imageops::resize(
-                        &img,
-                        size,
-                        size,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    icons.insert(marker_name.to_string(), resized);
+    if let Ok(dir) = vfs.join("gui/powerups/drops") {
+        if let Ok(entries) = dir.read_dir() {
+            for entry in entries {
+                let filename = entry.filename();
+                if let Some(marker_name) = filename
+                    .strip_prefix("icon_marker_")
+                    .and_then(|s| s.strip_suffix(".png"))
+                {
+                    // Skip _small variants
+                    if marker_name.ends_with("_small") {
+                        continue;
+                    }
+                    let path = format!("gui/powerups/drops/{}", filename);
+                    if let Some(img) = load_packed_image(&path, vfs) {
+                        let resized = image::imageops::resize(
+                            &img,
+                            size,
+                            size,
+                            image::imageops::FilterType::Lanczos3,
+                        );
+                        icons.insert(marker_name.to_string(), resized);
+                    }
                 }
             }
         }
@@ -554,7 +510,7 @@ pub fn rasterize_svg(svg_data: &[u8], size: u32) -> Option<RgbaImage> {
 
 // ── Game Fonts ─────────────────────────────────────────────────────────────
 
-/// Game fonts loaded from pkg files, with CJK fallback support.
+/// Game fonts loaded from game files, with CJK fallback support.
 ///
 /// The `primary` font is used for all UI text. For chat messages that contain
 /// characters not covered by the primary font, `font_for_text()` selects
@@ -667,27 +623,20 @@ fn compute_scale_factor(font: &FontArc) -> f32 {
 /// Tries to load Warhelios Bold as the primary font. CJK fallback fonts
 /// (Korean, Japanese, Chinese) are loaded if present. Each font gets a
 /// scale correction factor computed automatically.
-pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> GameFonts {
+pub fn load_game_fonts(vfs: &VfsPath) -> GameFonts {
     let load_font = |path: &str| -> Option<(FontArc, Vec<u8>)> {
-        let file_path = Path::new(path);
-        let mut buf = Vec::new();
-        if file_tree
-            .read_file_at_path(file_path, pkg_loader, &mut buf)
-            .is_ok()
-            && !buf.is_empty()
-        {
-            let raw_bytes = buf.clone();
-            match FontArc::try_from_vec(buf) {
-                Ok(font) => {
-                    debug!(path, "Loaded game font");
-                    return Some((font, raw_bytes));
-                }
-                Err(_) => {
-                    warn!(path, "Failed to parse game font");
-                }
+        let buf = read_vfs_file(vfs, path)?;
+        let raw_bytes = buf.clone();
+        match FontArc::try_from_vec(buf) {
+            Ok(font) => {
+                debug!(path, "Loaded game font");
+                Some((font, raw_bytes))
+            }
+            Err(_) => {
+                warn!(path, "Failed to parse game font");
+                None
             }
         }
-        None
     };
 
     let (primary, primary_bytes) = load_font("gui/fonts/Warhelios.ttf")

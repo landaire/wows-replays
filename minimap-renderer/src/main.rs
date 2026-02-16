@@ -168,14 +168,13 @@ fn main() -> Result<(), Report> {
     let wows_dir = Path::new(game_dir);
     let resources =
         game_data::load_game_resources(wows_dir, &replay_version).map_err(|e| report!("{e}"))?;
-    let file_tree = &resources.file_tree;
-    let pkg_loader = &resources.pkg_loader;
+    let vfs = &resources.vfs;
     let specs = &resources.specs;
 
     info!("Loading game params");
-    let mut game_params = GameMetadataProvider::from_pkg(file_tree, pkg_loader)
+    let mut game_params = GameMetadataProvider::from_vfs(vfs)
         .map_err(|e| report!("Failed to load GameParams: {e:?}"))?;
-    let controller_game_params = GameMetadataProvider::from_pkg(file_tree, pkg_loader)
+    let controller_game_params = GameMetadataProvider::from_vfs(vfs)
         .map_err(|e| report!("Failed to load GameParams for controller: {e:?}"))?;
 
     // Load translations for ship name localization
@@ -189,23 +188,15 @@ fn main() -> Result<(), Report> {
     }
 
     info!("Loading fonts and icons");
-    let game_fonts = load_game_fonts(file_tree, pkg_loader);
-    let ship_icons = load_ship_icons(file_tree, pkg_loader);
-    let plane_icons = load_plane_icons(file_tree, pkg_loader);
-    let consumable_icons = load_consumable_icons(file_tree, pkg_loader);
-    let death_cause_icons = load_death_cause_icons(
-        file_tree,
-        pkg_loader,
-        wows_minimap_renderer::assets::ICON_SIZE,
-    );
-    let powerup_icons = load_powerup_icons(
-        file_tree,
-        pkg_loader,
-        wows_minimap_renderer::assets::ICON_SIZE,
-    );
+    let game_fonts = load_game_fonts(vfs);
+    let ship_icons = load_ship_icons(vfs);
+    let plane_icons = load_plane_icons(vfs);
+    let consumable_icons = load_consumable_icons(vfs);
+    let death_cause_icons = load_death_cause_icons(vfs, wows_minimap_renderer::assets::ICON_SIZE);
+    let powerup_icons = load_powerup_icons(vfs, wows_minimap_renderer::assets::ICON_SIZE);
 
     // Load game constants from game data (falls back to hardcoded defaults per-field)
-    let game_constants = GameConstants::from_pkg(file_tree, pkg_loader);
+    let game_constants = GameConstants::from_vfs(vfs);
 
     if let Some(mode_name) = game_constants.game_mode_name(replay_file.meta.gameMode as i32) {
         info!(mode = %mode_name, id = replay_file.meta.gameMode, "Game mode");
@@ -213,8 +204,8 @@ fn main() -> Result<(), Report> {
 
     // Load map image and metadata from game files
     let map_name = &replay_file.meta.mapName;
-    let map_image = load_map_image(map_name, file_tree, pkg_loader);
-    let map_info = load_map_info(map_name, file_tree, pkg_loader);
+    let map_image = load_map_image(map_name, vfs);
+    let map_info = load_map_info(map_name, vfs);
 
     let game_duration = replay_file.meta.duration as f32;
 
