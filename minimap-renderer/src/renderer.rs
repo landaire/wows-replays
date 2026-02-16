@@ -13,8 +13,9 @@ use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::{EntityId, GameClock, GameParamId, PlaneId, Relation};
 
+use crate::assets::GameFonts;
 use crate::draw_command::{
-    ChatEntry, DrawCommand, KillFeedEntry, ShipConfigCircleKind, ShipConfigVisibility,
+    ChatEntry, DrawCommand, FontHint, KillFeedEntry, ShipConfigCircleKind, ShipConfigVisibility,
     ShipVisibility,
 };
 use crate::map_data;
@@ -165,6 +166,9 @@ pub struct MinimapRenderer<'a> {
 
     /// Position history per entity for trail rendering: (position, game_clock, speed_raw)
     position_history: HashMap<EntityId, Vec<(map_data::MinimapPos, GameClock, u16)>>,
+
+    /// Game fonts for CJK fallback selection on chat messages.
+    fonts: Option<GameFonts>,
 }
 
 impl<'a> MinimapRenderer<'a> {
@@ -194,7 +198,13 @@ impl<'a> MinimapRenderer<'a> {
             players_populated: false,
             self_team_id: None,
             position_history: HashMap::new(),
+            fonts: None,
         }
+    }
+
+    /// Set the game fonts for CJK fallback selection on chat messages.
+    pub fn set_fonts(&mut self, fonts: GameFonts) {
+        self.fonts = Some(fonts);
     }
 
     /// Reset all cached state, allowing the renderer to be reused after a seek.
@@ -1810,6 +1820,12 @@ impl<'a> MinimapRenderer<'a> {
                     ChatChannel::Global => [255, 255, 255], // white
                     _ => [200, 200, 200],                   // gray fallback
                 };
+                let font_hint = self
+                    .fonts
+                    .as_ref()
+                    .and_then(|f| f.font_hint_for_text(&msg.message))
+                    .map(FontHint::Fallback)
+                    .unwrap_or(FontHint::Primary);
                 chat_entries.push(ChatEntry {
                     clan_tag,
                     clan_color,
@@ -1820,6 +1836,7 @@ impl<'a> MinimapRenderer<'a> {
                     message: msg.message.clone(),
                     message_color,
                     opacity,
+                    font_hint,
                 });
                 if chat_entries.len() >= max_messages {
                     break;

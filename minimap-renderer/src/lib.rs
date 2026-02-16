@@ -15,7 +15,10 @@ pub const HUD_HEIGHT: u32 = 32;
 /// Total canvas height: minimap + HUD.
 pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT;
 
-pub use draw_command::{DrawCommand, RenderTarget, ShipConfigFilter, ShipConfigVisibility, ShipVisibility};
+pub use assets::GameFonts;
+pub use draw_command::{
+    DrawCommand, FontHint, RenderTarget, ShipConfigFilter, ShipConfigVisibility, ShipVisibility,
+};
 pub use drawing::{ImageTarget, ShipIcon};
 pub use map_data::{MapInfo, MinimapPos};
 pub use renderer::MinimapRenderer;

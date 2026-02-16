@@ -15,8 +15,8 @@ use wows_replays::analyzer::battle_controller::BattleController;
 use wows_replays::game_constants::GameConstants;
 
 use wows_minimap_renderer::assets::{
-    load_consumable_icons, load_death_cause_icons, load_map_image, load_map_info, load_plane_icons,
-    load_powerup_icons, load_ship_icons,
+    load_consumable_icons, load_death_cause_icons, load_game_fonts, load_map_image, load_map_info,
+    load_plane_icons, load_powerup_icons, load_ship_icons,
 };
 use wows_minimap_renderer::config::RendererConfig;
 use wows_minimap_renderer::drawing::ImageTarget;
@@ -188,7 +188,8 @@ fn main() -> Result<(), Report> {
         warn!(path = ?mo_path, "Translations not found, ship names will be unavailable");
     }
 
-    info!("Loading icons");
+    info!("Loading fonts and icons");
+    let game_fonts = load_game_fonts(file_tree, pkg_loader);
     let ship_icons = load_ship_icons(file_tree, pkg_loader);
     let plane_icons = load_plane_icons(file_tree, pkg_loader);
     let consumable_icons = load_consumable_icons(file_tree, pkg_loader);
@@ -219,6 +220,7 @@ fn main() -> Result<(), Report> {
 
     let mut target = ImageTarget::new(
         map_image,
+        game_fonts.clone(),
         ship_icons,
         plane_icons,
         consumable_icons,
@@ -252,6 +254,7 @@ fn main() -> Result<(), Report> {
         replay_version.clone(),
         options,
     );
+    renderer.set_fonts(game_fonts);
 
     let mut encoder = VideoEncoder::new(output, dump_mode, game_duration);
     if matches.is_present("CPU") {

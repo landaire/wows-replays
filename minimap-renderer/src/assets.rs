@@ -1,3 +1,4 @@
+use ab_glyph::{Font, FontArc, PxScale};
 use image::{RgbImage, RgbaImage};
 use std::collections::HashMap;
 use std::path::Path;
@@ -549,4 +550,171 @@ pub fn rasterize_svg(svg_data: &[u8], size: u32) -> Option<RgbaImage> {
     image::imageops::overlay(&mut output, &resized, ox as i64, oy as i64);
 
     Some(output)
+}
+
+// ── Game Fonts ─────────────────────────────────────────────────────────────
+
+/// Game fonts loaded from pkg files, with CJK fallback support.
+///
+/// The `primary` font is used for all UI text. For chat messages that contain
+/// characters not covered by the primary font, `font_for_text()` selects
+/// the first fallback font that can render all glyphs.
+///
+/// Each font carries a scale correction factor so that glyphs render at
+/// visually consistent sizes regardless of the font's internal metrics.
+/// Use `scale()` instead of `PxScale::from()` to get correctly-adjusted sizes.
+#[derive(Clone)]
+pub struct GameFonts {
+    /// Primary font (Warhelios Bold) — used for all UI text.
+    pub primary: FontArc,
+    /// Fallback fonts for CJK characters, tried in order (KO, JP, CN).
+    pub fallbacks: Vec<FontArc>,
+    /// Scale correction factor for the primary font.
+    pub primary_scale_factor: f32,
+    /// Per-fallback scale correction factors (same order as `fallbacks`).
+    pub fallback_scale_factors: Vec<f32>,
+}
+
+impl GameFonts {
+    /// Pick the best font that can render all characters in `text`.
+    ///
+    /// Tries primary first, then each fallback in order. Returns primary
+    /// if no font fully covers the text.
+    pub fn font_for_text(&self, text: &str) -> &FontArc {
+        if Self::can_render(&self.primary, text) {
+            return &self.primary;
+        }
+        for fallback in &self.fallbacks {
+            if Self::can_render(fallback, text) {
+                return fallback;
+            }
+        }
+        &self.primary
+    }
+
+    /// Returns the index into `fallbacks` if a fallback was selected, or None for primary.
+    pub fn font_hint_for_text(&self, text: &str) -> Option<usize> {
+        if Self::can_render(&self.primary, text) {
+            return None;
+        }
+        for (i, fallback) in self.fallbacks.iter().enumerate() {
+            if Self::can_render(fallback, text) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Get a corrected `PxScale` for the primary font.
+    ///
+    /// Use this instead of `PxScale::from()` to ensure consistent visual sizing.
+    pub fn scale(&self, size: f32) -> PxScale {
+        PxScale::from(size * self.primary_scale_factor)
+    }
+
+    /// Get a corrected `PxScale` for the font indicated by a `FontHint`.
+    pub fn scale_for_hint(&self, size: f32, hint: crate::draw_command::FontHint) -> PxScale {
+        use crate::draw_command::FontHint;
+        let factor = match hint {
+            FontHint::Primary => self.primary_scale_factor,
+            FontHint::Fallback(i) => self
+                .fallback_scale_factors
+                .get(i)
+                .copied()
+                .unwrap_or(self.primary_scale_factor),
+        };
+        PxScale::from(size * factor)
+    }
+
+    /// Check if a font can render every character in a string.
+    fn can_render(font: &FontArc, text: &str) -> bool {
+        use ab_glyph::Font;
+        text.chars().all(|c| font.glyph_id(c).0 != 0)
+    }
+}
+
+/// Compute a scale correction factor for a font so that its cap-height
+/// matches the reference (DejaVu Sans Bold).
+///
+/// Measures the 'M' glyph height at a known scale and compares to a reference
+/// ratio. Returns a multiplier to apply to all `PxScale` values.
+fn compute_scale_factor(font: &FontArc) -> f32 {
+    // Reference cap-height ratio — tuned for visual clarity on minimap.
+    const REFERENCE_RATIO: f32 = 0.80;
+
+    let scale = PxScale::from(100.0);
+    let glyph_id = font.glyph_id('M');
+    let glyph = glyph_id.with_scale_and_position(scale, ab_glyph::point(0.0, 100.0));
+    if let Some(outlined) = font.outline_glyph(glyph) {
+        let bounds = outlined.px_bounds();
+        let actual_height = bounds.max.y - bounds.min.y;
+        let actual_ratio = actual_height / 100.0;
+        if actual_ratio > 0.01 {
+            let factor = REFERENCE_RATIO / actual_ratio;
+            debug!(actual_ratio, factor, "Font scale factor computed");
+            return factor;
+        }
+    }
+    1.0
+}
+
+/// Load game fonts from packed game files.
+///
+/// Tries to load Warhelios Bold as the primary font. CJK fallback fonts
+/// (Korean, Japanese, Chinese) are loaded if present. Each font gets a
+/// scale correction factor computed automatically.
+pub fn load_game_fonts(file_tree: &FileNode, pkg_loader: &PkgFileLoader) -> GameFonts {
+    let load_font = |path: &str| -> Option<FontArc> {
+        let file_path = Path::new(path);
+        let mut buf = Vec::new();
+        if file_tree
+            .read_file_at_path(file_path, pkg_loader, &mut buf)
+            .is_ok()
+            && !buf.is_empty()
+        {
+            match FontArc::try_from_vec(buf) {
+                Ok(font) => {
+                    debug!(path, "Loaded game font");
+                    return Some(font);
+                }
+                Err(_) => {
+                    warn!(path, "Failed to parse game font");
+                }
+            }
+        }
+        None
+    };
+
+    let primary = load_font("gui/fonts/Warhelios.ttf")
+        .or_else(|| load_font("gui/fonts/Warhelios_Regular.ttf"))
+        .or_else(|| load_font("gui/fonts/Warhelios_Bold.ttf"))
+        .expect(
+            "Failed to load Warhelios font from game files. \
+             Make sure the game directory is correct.",
+        );
+
+    let fallback_paths = [
+        "gui/fonts/WarheliosKO_Bold.ttf",
+        "gui/fonts/Source_Han_Sans_JP_Bold_WH.ttf",
+        "gui/fonts/Source_Han_Sans_CN_Bold_WH.ttf",
+    ];
+    let fallbacks: Vec<FontArc> = fallback_paths
+        .iter()
+        .filter_map(|path| load_font(path))
+        .collect();
+
+    let primary_scale_factor = compute_scale_factor(&primary);
+    let fallback_scale_factors: Vec<f32> = fallbacks.iter().map(compute_scale_factor).collect();
+
+    debug!(
+        fallback_count = fallbacks.len(),
+        primary_scale_factor, "Loaded game fonts"
+    );
+
+    GameFonts {
+        primary,
+        fallbacks,
+        primary_scale_factor,
+        fallback_scale_factors,
+    }
 }

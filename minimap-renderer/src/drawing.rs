@@ -1,19 +1,16 @@
 use std::collections::HashMap;
 
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{Rgb, RgbImage, RgbaImage};
 use tiny_skia::{
     BlendMode, FillRule, FilterQuality, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint,
     Stroke, StrokeDash, Transform,
 };
 
-use crate::draw_command::{ChatEntry, DrawCommand, KillFeedEntry, RenderTarget, ShipVisibility};
-
-const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSans-Bold.ttf");
-
-fn load_font() -> FontRef<'static> {
-    FontRef::try_from_slice(FONT_DATA).expect("failed to load embedded font")
-}
+use crate::assets::GameFonts;
+use crate::draw_command::{
+    ChatEntry, DrawCommand, FontHint, KillFeedEntry, RenderTarget, ShipVisibility,
+};
 
 // ── Pixmap conversion helpers ──────────────────────────────────────────────
 
@@ -111,7 +108,7 @@ fn draw_text(
     x: i32,
     y: i32,
     scale: PxScale,
-    font: &FontRef,
+    font: &impl Font,
     text: &str,
 ) {
     let scaled = font.as_scaled(scale);
@@ -165,7 +162,7 @@ fn draw_text(
 }
 
 /// Measure the width and height of text at the given scale.
-fn text_size(scale: PxScale, font: &FontRef, text: &str) -> (u32, u32) {
+fn text_size(scale: PxScale, font: &impl Font, text: &str) -> (u32, u32) {
     let scaled = font.as_scaled(scale);
     let mut w = 0.0f32;
     let mut last_glyph_id = None;
@@ -188,7 +185,7 @@ fn draw_text_shadow(
     x: i32,
     y: i32,
     scale: PxScale,
-    font: &FontRef,
+    font: &impl Font,
     text: &str,
 ) {
     draw_text(pm, [0, 0, 0], x + 1, y + 1, scale, font, text);
@@ -348,7 +345,7 @@ fn draw_capture_point(
     label: &str,
     progress: f32,
     invader_color: Option<[u8; 3]>,
-    font: &FontRef,
+    fonts: &GameFonts,
 ) {
     // Base filled circle with owner's color
     draw_filled_circle(pm, x, y, radius, color, alpha);
@@ -401,11 +398,11 @@ fn draw_capture_point(
     draw_circle_outline(pm, x, y, radius, outline_color, 0.6, 2.0);
 
     // Centered label
-    let scale = PxScale::from(16.0);
-    let (tw, th) = text_size(scale, font, label);
+    let scale = fonts.scale(16.0);
+    let (tw, th) = text_size(scale, &fonts.primary, label);
     let tx = x as i32 - tw as i32 / 2;
     let ty = y as i32 - th as i32 / 2;
-    draw_text_shadow(pm, [255, 255, 255], tx, ty, scale, font, label);
+    draw_text_shadow(pm, [255, 255, 255], tx, ty, scale, &fonts.primary, label);
 }
 
 /// Draw player name and/or ship name labels centered above a ship icon.
@@ -416,9 +413,10 @@ fn draw_ship_labels(
     player_name: Option<&str>,
     ship_name: Option<&str>,
     name_color: Option<[u8; 3]>,
-    font: &FontRef,
+    fonts: &GameFonts,
 ) {
-    let scale = PxScale::from(10.0);
+    let font = &fonts.primary;
+    let scale = fonts.scale(10.0);
     let line_height = 12i32;
     let line_count = player_name.is_some() as i32 + ship_name.is_some() as i32;
     if line_count == 0 {
@@ -628,7 +626,7 @@ fn draw_score_bar(
     team1_timer: Option<&str>,
     advantage_label: &str,
     advantage_team: i32,
-    font: &FontRef,
+    fonts: &GameFonts,
 ) {
     let width = pm.width() as f32;
     let bar_height = 20.0f32;
@@ -661,9 +659,10 @@ fn draw_score_bar(
         );
     }
 
-    let score_scale = PxScale::from(14.0);
-    let timer_scale = PxScale::from(12.0);
-    let advantage_scale = PxScale::from(11.0);
+    let font = &fonts.primary;
+    let score_scale = fonts.scale(14.0);
+    let timer_scale = fonts.scale(12.0);
+    let advantage_scale = fonts.scale(11.0);
     let timer_color: [u8; 3] = [200, 200, 200];
     let pill_pad_x = 4.0f32;
     let pill_pad_y = 1.0f32;
@@ -780,10 +779,11 @@ fn draw_score_bar(
 }
 
 /// Draw the game timer.
-fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: f32, font: &FontRef) {
+fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: f32, fonts: &GameFonts) {
+    let font = &fonts.primary;
     let center_x = pm.width() as i32 / 2;
-    let main_scale = PxScale::from(16.0);
-    let small_scale = PxScale::from(11.0);
+    let main_scale = fonts.scale(16.0);
+    let small_scale = fonts.scale(11.0);
 
     if let Some(remaining) = time_remaining {
         // Show time remaining as main timer (centered)
@@ -828,11 +828,11 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: f32, font: 
     }
 }
 
-fn draw_pre_battle_countdown(pm: &mut Pixmap, seconds: i64, font: &FontRef) {
+fn draw_pre_battle_countdown(pm: &mut Pixmap, seconds: i64, fonts: &GameFonts) {
     let text = format!("{}", seconds);
     let subtitle = "BATTLE STARTS IN";
     let glow_color: [u8; 3] = [255, 200, 50]; // gold
-    draw_battle_result_overlay(pm, &text, Some(subtitle), glow_color, font);
+    draw_battle_result_overlay(pm, &text, Some(subtitle), glow_color, fonts);
 }
 
 /// Map a DeathCause to the icon key used in the death_cause_icons HashMap.
@@ -871,11 +871,12 @@ fn death_cause_icon_key(
 fn draw_kill_feed(
     pm: &mut Pixmap,
     entries: &[KillFeedEntry],
-    font: &FontRef,
+    fonts: &GameFonts,
     ship_icons: &HashMap<String, ShipIcon>,
     death_cause_icons: &HashMap<String, RgbaImage>,
 ) {
-    let name_scale = PxScale::from(12.0);
+    let font = &fonts.primary;
+    let name_scale = fonts.scale(12.0);
     let ship_scale = name_scale;
     let line_height = 20i32;
     let right_margin = 4i32;
@@ -1091,7 +1092,7 @@ fn draw_kill_feed_icon(
 /// Word-wrap text to fit within `max_width` pixels, breaking on word boundaries.
 ///
 /// Returns a vector of lines. Each line fits within `max_width` when rendered at `scale`.
-fn word_wrap(text: &str, max_width: u32, scale: PxScale, font: &FontRef) -> Vec<String> {
+fn word_wrap(text: &str, max_width: u32, scale: PxScale, font: &impl Font) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current_line = String::new();
 
@@ -1140,7 +1141,7 @@ fn force_break_word(
     word: &str,
     max_width: u32,
     scale: PxScale,
-    font: &FontRef,
+    font: &impl Font,
     lines: &mut Vec<String>,
 ) {
     let mut segment = String::new();
@@ -1161,7 +1162,7 @@ fn force_break_word(
 
 /// Truncate `text` with ellipsis so it fits within `max_width` pixels.
 /// Returns the original string if it already fits.
-fn truncate_to_fit(text: &str, max_width: u32, scale: PxScale, font: &FontRef) -> String {
+fn truncate_to_fit(text: &str, max_width: u32, scale: PxScale, font: &impl Font) -> String {
     let (w, _) = text_size(scale, font, text);
     if w <= max_width {
         return text.to_string();
@@ -1194,10 +1195,11 @@ fn truncate_to_fit(text: &str, max_width: u32, scale: PxScale, font: &FontRef) -
 fn draw_chat_overlay(
     pm: &mut Pixmap,
     entries: &[ChatEntry],
-    font: &FontRef,
+    fonts: &GameFonts,
     ship_icons: &HashMap<String, ShipIcon>,
     y_offset: u32,
 ) {
+    let font = &fonts.primary;
     if entries.is_empty() {
         return;
     }
@@ -1206,8 +1208,8 @@ fn draw_chat_overlay(
     let max_box_width = (minimap_w / 4) as i32; // 1/4 of minimap = 192px
     let margin = 6i32;
     let inner_width = (max_box_width - margin * 2) as u32;
-    let header_scale = PxScale::from(11.0);
-    let msg_scale = PxScale::from(11.0);
+    let header_scale = fonts.scale(11.0);
+    let msg_scale = fonts.scale(11.0);
     let line_height = 14i32;
     let entry_gap = 6i32;
     let icon_size = 12i32;
@@ -1254,8 +1256,13 @@ fn draw_chat_overlay(
             truncate_to_fit(name, available, header_scale, font)
         });
 
-        // Message lines (word-wrapped)
-        let msg_lines = word_wrap(&entry.message, inner_width, msg_scale, font);
+        // Message lines (word-wrapped), using the font selected by font_hint
+        let msg_font = match entry.font_hint {
+            FontHint::Primary => &fonts.primary,
+            FontHint::Fallback(i) => fonts.fallbacks.get(i).unwrap_or(&fonts.primary),
+        };
+        let entry_msg_scale = fonts.scale_for_hint(11.0, entry.font_hint);
+        let msg_lines = word_wrap(&entry.message, inner_width, entry_msg_scale, msg_font);
 
         let line_count = 1 + has_ship_line as i32 + msg_lines.len() as i32;
         let entry_height = line_count * line_height;
@@ -1386,10 +1393,22 @@ fn draw_chat_overlay(
             cur_y += line_height;
         }
 
-        // Message lines
+        // Message lines (using font selected by font_hint)
+        let msg_font: &FontArc = match entry.font_hint {
+            FontHint::Primary => &fonts.primary,
+            FontHint::Fallback(i) => fonts.fallbacks.get(i).unwrap_or(&fonts.primary),
+        };
         let msg_color = apply_opacity(entry.message_color, opacity);
         for line in &layout.msg_lines {
-            draw_text(pm, msg_color, box_x + margin, cur_y, msg_scale, font, line);
+            draw_text(
+                pm,
+                msg_color,
+                box_x + margin,
+                cur_y,
+                msg_scale,
+                msg_font,
+                line,
+            );
             cur_y += line_height;
         }
 
@@ -1398,11 +1417,12 @@ fn draw_chat_overlay(
 }
 
 /// Draw the 10x10 grid overlay with labels.
-fn draw_grid(pm: &mut Pixmap, minimap_size: u32, y_off: u32, font: &FontRef) {
+fn draw_grid(pm: &mut Pixmap, minimap_size: u32, y_off: u32, fonts: &GameFonts) {
+    let font = &fonts.primary;
     let cell = minimap_size as f32 / 10.0;
     let grid_color = [180, 180, 180];
     let alpha = 0.25f32;
-    let label_scale = PxScale::from(11.0);
+    let label_scale = fonts.scale(11.0);
 
     // Draw 9 interior lines in each direction
     for i in 1..10 {
@@ -1456,17 +1476,18 @@ fn draw_battle_result_overlay(
     text: &str,
     subtitle: Option<&str>,
     glow_color: [u8; 3],
-    font: &FontRef,
+    fonts: &GameFonts,
 ) {
+    let font = &fonts.primary;
     let w = pm.width();
     let h = pm.height();
 
     let font_height = w as f32 / 8.0;
-    let scale = PxScale::from(font_height);
+    let scale = fonts.scale(font_height);
     let (tw, th) = text_size(scale, font, text);
 
     // If there's a subtitle, shift the main text up a bit to make room
-    let sub_scale = PxScale::from(font_height / 4.0);
+    let sub_scale = fonts.scale(font_height / 4.0);
     let sub_height = subtitle
         .map(|s| text_size(sub_scale, font, s).1)
         .unwrap_or(0);
@@ -1543,7 +1564,7 @@ pub struct ImageTarget {
     canvas: Pixmap,
     /// Pre-built background: map image + grid overlay. Cloned at start of each frame.
     base_canvas: Pixmap,
-    font: FontRef<'static>,
+    fonts: GameFonts,
     ship_icons: HashMap<String, ShipIcon>,
     plane_icons: HashMap<String, RgbaImage>,
     consumable_icons: HashMap<String, RgbaImage>,
@@ -1554,6 +1575,7 @@ pub struct ImageTarget {
 impl ImageTarget {
     pub fn new(
         map_image: Option<RgbImage>,
+        fonts: GameFonts,
         ship_icons: HashMap<String, ShipIcon>,
         plane_icons: HashMap<String, RgbaImage>,
         consumable_icons: HashMap<String, RgbaImage>,
@@ -1562,7 +1584,6 @@ impl ImageTarget {
     ) -> Self {
         let map = map_image
             .unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
-        let font = load_font();
 
         // Pre-build the base canvas: dark background + map + grid
         let mut base_rgb = RgbImage::from_pixel(MINIMAP_SIZE, CANVAS_HEIGHT, Rgb([20, 25, 35]));
@@ -1572,12 +1593,12 @@ impl ImageTarget {
             }
         }
         let mut base = rgb_to_pixmap(&base_rgb);
-        draw_grid(&mut base, MINIMAP_SIZE, HUD_HEIGHT, &font);
+        draw_grid(&mut base, MINIMAP_SIZE, HUD_HEIGHT, &fonts);
 
         Self {
             canvas: Pixmap::new(MINIMAP_SIZE, CANVAS_HEIGHT).unwrap(),
             base_canvas: base,
-            font,
+            fonts,
             ship_icons,
             plane_icons,
             consumable_icons,
@@ -1682,7 +1703,7 @@ impl RenderTarget for ImageTarget {
                     label,
                     *progress,
                     *invader_color,
-                    &self.font,
+                    &self.fonts,
                 );
             }
             DrawCommand::TurretDirection {
@@ -1770,7 +1791,7 @@ impl RenderTarget for ImageTarget {
                     player_name.as_deref(),
                     ship_name.as_deref(),
                     *name_color,
-                    &self.font,
+                    &self.fonts,
                 );
             }
             DrawCommand::HealthBar {
@@ -1839,7 +1860,7 @@ impl RenderTarget for ImageTarget {
                     player_name.as_deref(),
                     ship_name.as_deref(),
                     None,
-                    &self.font,
+                    &self.fonts,
                 );
             }
             DrawCommand::ConsumableRadius {
@@ -1911,7 +1932,7 @@ impl RenderTarget for ImageTarget {
                     team1_timer.as_deref(),
                     advantage_label,
                     *advantage_team,
-                    &self.font,
+                    &self.fonts,
                 );
             }
             DrawCommand::TeamAdvantage { .. } => {
@@ -1922,10 +1943,10 @@ impl RenderTarget for ImageTarget {
                 time_remaining,
                 elapsed,
             } => {
-                draw_timer(&mut self.canvas, *time_remaining, *elapsed, &self.font);
+                draw_timer(&mut self.canvas, *time_remaining, *elapsed, &self.fonts);
             }
             DrawCommand::PreBattleCountdown { seconds } => {
-                draw_pre_battle_countdown(&mut self.canvas, *seconds, &self.font);
+                draw_pre_battle_countdown(&mut self.canvas, *seconds, &self.fonts);
             }
             DrawCommand::TeamBuffs {
                 friendly_buffs,
@@ -1934,7 +1955,7 @@ impl RenderTarget for ImageTarget {
                 let icon_size = 16i32;
                 let gap = 2i32;
                 let buff_y = 22i32;
-                let count_scale = PxScale::from(10.0);
+                let count_scale = self.fonts.scale(10.0);
 
                 // Friendly buffs: left side, starting from x=4
                 let mut x = 4i32;
@@ -1960,10 +1981,10 @@ impl RenderTarget for ImageTarget {
                                 x + icon_size,
                                 buff_y + 4,
                                 count_scale,
-                                &self.font,
+                                &self.fonts.primary,
                                 &label,
                             );
-                            let (tw, _) = text_size(count_scale, &self.font, &label);
+                            let (tw, _) = text_size(count_scale, &self.fonts.primary, &label);
                             x += icon_size + tw as i32 + gap;
                         } else {
                             x += icon_size + gap;
@@ -1984,7 +2005,7 @@ impl RenderTarget for ImageTarget {
                         );
                         if *count > 1 {
                             let label = format!("{}", count);
-                            let (tw, _) = text_size(count_scale, &self.font, &label);
+                            let (tw, _) = text_size(count_scale, &self.fonts.primary, &label);
                             x -= tw as i32;
                             draw_text_shadow(
                                 &mut self.canvas,
@@ -1992,7 +2013,7 @@ impl RenderTarget for ImageTarget {
                                 x,
                                 buff_y + 4,
                                 count_scale,
-                                &self.font,
+                                &self.fonts.primary,
                                 &label,
                             );
                             x -= icon_size;
@@ -2040,17 +2061,25 @@ impl RenderTarget for ImageTarget {
                     draw_circle_outline(&mut self.canvas, x, y, r, *color, *alpha, 1.0);
                 }
                 if let Some(text) = label {
-                    let scale = PxScale::from(11.0);
+                    let scale = self.fonts.scale(11.0);
                     let lx = x as i32 + r as i32 + 3;
                     let ly = y as i32 - 5;
-                    draw_text_shadow(&mut self.canvas, *color, lx, ly, scale, &self.font, text);
+                    draw_text_shadow(
+                        &mut self.canvas,
+                        *color,
+                        lx,
+                        ly,
+                        scale,
+                        &self.fonts.primary,
+                        text,
+                    );
                 }
             }
             DrawCommand::KillFeed { entries } => {
                 draw_kill_feed(
                     &mut self.canvas,
                     entries,
-                    &self.font,
+                    &self.fonts,
                     &self.ship_icons,
                     &self.death_cause_icons,
                 );
@@ -2059,7 +2088,7 @@ impl RenderTarget for ImageTarget {
                 draw_chat_overlay(
                     &mut self.canvas,
                     entries,
-                    &self.font,
+                    &self.fonts,
                     &self.ship_icons,
                     HUD_HEIGHT,
                 );
@@ -2074,7 +2103,7 @@ impl RenderTarget for ImageTarget {
                     text,
                     subtitle.as_deref(),
                     *color,
-                    &self.font,
+                    &self.fonts,
                 );
             }
         }

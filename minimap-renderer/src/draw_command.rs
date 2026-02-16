@@ -83,7 +83,11 @@ impl ShipConfigVisibility {
     pub fn filter_for(&self, is_self: bool, entity_id: EntityId) -> Option<ShipConfigFilter> {
         match self {
             ShipConfigVisibility::SelfOnly => {
-                if is_self { Some(ShipConfigFilter::all_enabled()) } else { None }
+                if is_self {
+                    Some(ShipConfigFilter::all_enabled())
+                } else {
+                    None
+                }
             }
             ShipConfigVisibility::Filtered(cb) => cb(entity_id),
         }
@@ -114,6 +118,19 @@ impl std::fmt::Debug for ShipConfigVisibility {
     }
 }
 
+/// Hint for which font to use when rendering text.
+///
+/// Allows render backends (egui, ImageTarget) to select the correct font
+/// without needing access to `GameFonts` directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FontHint {
+    /// Use the primary UI font (Warhelios Bold).
+    #[default]
+    Primary,
+    /// Use the fallback font at the given index in `GameFonts::fallbacks`.
+    Fallback(usize),
+}
+
 /// A single chat message entry for the chat overlay.
 #[derive(Debug, Clone)]
 pub struct ChatEntry {
@@ -135,6 +152,8 @@ pub struct ChatEntry {
     pub message_color: [u8; 3],
     /// Opacity (0.0 = fully faded, 1.0 = fully visible)
     pub opacity: f32,
+    /// Which font to use for the message text (primary or CJK fallback).
+    pub font_hint: FontHint,
 }
 
 /// A single entry in the kill feed.
