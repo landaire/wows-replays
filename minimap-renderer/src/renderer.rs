@@ -5,7 +5,7 @@ use wowsunpack::game_params::provider::GameMetadataProvider;
 use wowsunpack::game_params::types::{GameParamProvider, Meters, PlaneCategory, Species};
 
 use wows_replays::analyzer::decoder::{
-    BattleStage, DepthState, FinishType, Recognized, WeaponType,
+    BattleStage, BuoyancyState, FinishType, Recognized, WeaponType,
 };
 
 use wows_replays::analyzer::battle_controller::ChatChannel;
@@ -489,9 +489,10 @@ impl<'a> MinimapRenderer<'a> {
         let vehicle = controller.entities_by_id().get(entity_id)?.vehicle_ref()?;
         let vehicle = vehicle.borrow();
         match vehicle.props().buoyancy_current_state().known()? {
-            DepthState::Periscope => Some(" (Scope)"),
-            DepthState::Working => Some(" (30m)"),
-            DepthState::Invulnerable => Some(" (60m)"),
+            BuoyancyState::Periscope => Some(" (Scope)"),
+            BuoyancyState::SemiDeepWater => Some(" (30m)"),
+            BuoyancyState::DeepWater => Some(" (60m)"),
+            BuoyancyState::DeepWaterInvul => Some(" (60m*)"),
             _ => None,
         }
     }

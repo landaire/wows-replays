@@ -54,8 +54,8 @@ impl DecoderBuilder {
     }
 }
 pub use wowsunpack::game_types::{
-    BatteryState, BattleStage, CameraMode, Consumable, DeathCause, DepthState, FinishType, Ribbon,
-    VoiceLine, WeaponType,
+    BatteryState, BattleStage, BuoyancyState, CameraMode, Consumable, DeathCause, FinishType,
+    Ribbon, VoiceLine, WeaponType,
 };
 pub use wowsunpack::recognized::Recognized;
 

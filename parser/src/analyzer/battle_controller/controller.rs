@@ -25,7 +25,7 @@ use crate::{
     analyzer::{
         analyzer::Analyzer,
         decoder::{
-            ChatMessageExtra, DeathCause, DepthState, FinishType, PlayerStateData, Recognized,
+            BuoyancyState, ChatMessageExtra, DeathCause, FinishType, PlayerStateData, Recognized,
             WeaponType,
         },
     },
@@ -1668,7 +1668,7 @@ pub struct VehicleProps {
     engine_dir: i8,
     state: VehicleState,
     team_id: i8,
-    buoyancy_current_state: Recognized<DepthState>,
+    buoyancy_current_state: Recognized<BuoyancyState>,
     ui_enabled: bool,
     respawn_time: u16,
     engine_power: u8,
@@ -1728,7 +1728,7 @@ impl Default for VehicleProps {
             engine_dir: 0,
             state: VehicleState::default(),
             team_id: 0,
-            buoyancy_current_state: Recognized::Known(DepthState::Surface),
+            buoyancy_current_state: Recognized::Known(BuoyancyState::Surface),
             ui_enabled: false,
             respawn_time: 0,
             engine_power: 0,
@@ -1935,7 +1935,7 @@ impl VehicleProps {
         self.team_id
     }
 
-    pub fn buoyancy_current_state(&self) -> &Recognized<DepthState> {
+    pub fn buoyancy_current_state(&self) -> &Recognized<BuoyancyState> {
         &self.buoyancy_current_state
     }
 
@@ -2183,7 +2183,7 @@ impl UpdateFromReplayArgs for VehicleProps {
 
         set_arg_value!(self.team_id, args, TEAM_ID_KEY, i8);
         if args.contains_key(BUOYANCY_CURRENT_STATE_KEY) {
-            if let Some(ds) = DepthState::from_id(
+            if let Some(ds) = BuoyancyState::from_id(
                 arg_value_to_type!(args, BUOYANCY_CURRENT_STATE_KEY, u8) as i32,
                 constants.battle(),
                 version,
