@@ -32,4 +32,5 @@ wowsunpack = { workspace = true }
 bon = "3.9.0"
 
 [features]
+default = ["arc"]
 arc = ["wowsunpack/arc"]
