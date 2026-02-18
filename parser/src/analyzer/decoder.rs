@@ -86,7 +86,7 @@ pub struct PlayerStateData {
     /// The player's DB ID (unique player ID)
     pub(crate) db_id: AccountId,
     /// The realm this player belongs to
-    pub(crate) realm: String,
+    pub(crate) realm: Option<String>,
     /// Their meta ID in the game (account-level identifier)
     pub(crate) meta_ship_id: AccountId,
     /// This player's entity created by a CreateEntity packet
@@ -354,9 +354,7 @@ impl PlayerStateData {
             .get(Self::KEY_REALM)
             .unwrap()
             .string_ref()
-            .expect("realm is not a string")
-            .inner()
-            .clone();
+            .map(|realm| realm.inner().clone());
 
         let db_id = mapped_values
             .get(Self::KEY_ACCOUNT_DBID)
@@ -495,7 +493,7 @@ impl PlayerStateData {
         if let Some(v) = values.get(Self::KEY_REALM)
             && let Some(s) = v.string_ref()
         {
-            self.realm = s.inner().clone();
+            self.realm = Some(s.inner().clone());
         }
         if let Some(v) = values.get(Self::KEY_ACCOUNT_DBID)
             && let Some(id) = v.i64_ref()
@@ -562,8 +560,8 @@ impl PlayerStateData {
         self.db_id
     }
 
-    pub fn realm(&self) -> &str {
-        &self.realm
+    pub fn realm(&self) -> Option<&str> {
+        self.realm.as_deref()
     }
 
     pub fn avatar_id(&self) -> Option<AccountId> {
